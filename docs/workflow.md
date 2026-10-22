@@ -2,6 +2,8 @@
 
 项目首次明确接入后，Lead 读取本文件和[Lead 指引](roles/lead.md)。实施工作包只附本文件、[Worker 指引](roles/worker.md)和直接项目资料；审查工作包改附[Reviewer 指引](roles/reviewer.md)。验证或实际失败时读[验证约定](references/validation.md)，需要复杂交付时读[报告约定](references/reports.md)，Codeg 交接或接续时读[适配说明](adapters/codeg.md)。
 
+Lead、Worker、Reviewer 按职责分配，依据用户已确认的安排、当前可用工具和任务需要选择智能体；不按客户端或模型名称固定角色。主会话承担 Lead，受委派会话按工作包承担 Worker 或 Reviewer；同一种智能体可在独立会话中承担不同角色。hook 安装参数只选择宿主接入方式，自动接入的支持范围见 [README](../README.md#角色与接入支持)。
+
 ## 分流
 
 先核对当前用户目标、项目现有入口、直接相关实现和验收。已有确认计划直接沿用；只做计划的请求停在方案，不实施。能从仓库和工具确认的信息先查；真实缺失的需求、权限、接口或负责人整理成具体问题，已有独立工作继续。

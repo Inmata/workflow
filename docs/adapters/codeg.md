@@ -2,7 +2,7 @@
 
 ## 接续
 
-当前已确认安排为 Codex Lead、Claude Code/OpenCode Worker、Pi Reviewer；实际类型、入口和并发上限以当前宿主及已有授权为准。不以泛泛执行请求替代缺失的新增角色决定。角色入口失效时可准备自包含交接文本，只有真实返回 task_id/handle、状态和成果才称已启动/送达。Codeg 委派不自动建隔离 worktree，明确传工作目录，先约定接口和基准。
+角色分工遵循[公共方法](../workflow.md)，由当前用户已确认的安排、实际类型、入口和并发上限决定。Codex、Claude Code、OpenCode、Pi 的名称不构成固定角色映射；例如 Claude Code 可以作为 Lead，通过当前可用且已授权的委派通道分配 Worker 和 Reviewer。不以泛泛执行请求替代缺失的新增角色决定。角色入口失效时可准备自包含交接文本，只有真实返回 task_id/handle、状态和成果才称已启动/送达。Codeg 委派不自动建隔离 worktree，明确传工作目录，先约定接口和基准。
 
 使用实际可用的 Codeg 委派通道，不静默换路由/模型或修改全局配置。High 仅工具支持且已指定时设置，不自动升 Max。Jev 已配置不表示已调用，只在当前决策有用途且获授权时使用，报告真实结果；简单确定性工作不追加模型调用。网络连接问题可按当前本机约定尝试 7897 代理，不改全局网络。GitHub 用现有 gh/API 认证，只核对状态，不读凭据。
 
@@ -12,7 +12,7 @@
 
 ## hooks
 
-用户级 hooks.json 作为本版唯一注册途径，发布副本和文档一起固定版本。元数据不另外自动注册同一事件。安装不写 trust 记录；发现与信任需实际宿主核对。修改配置后新会话/新连接验证，复用旧连接可能仍加载旧配置。全局 CLI 版本不代表 ACP 内嵌版本。
+用户级宿主配置（Codex `hooks.json`、Claude `settings.json`）作为本版唯一注册途径，发布副本和文档一起固定版本。元数据不另外自动注册同一事件。安装不写 trust 记录；发现与信任需实际宿主核对。修改配置后新会话/新连接验证，复用旧连接可能仍加载旧配置。全局 CLI 版本不代表 ACP 内嵌版本。Claude 侧字段差异见[适配说明](claude.md)。
 
 SessionStart/UserPromptSubmit 提供入口；PostToolUse 限定本插件 signal 输出；Stop 仅核对显式 delivering；Interrupt 保存而不续轮；压缩保留任务与预算。明确 transcript_path=null 才按后台过滤，缺字段不当后台；未知事件/损坏状态放行。等待工具或文本反问先 waiting-user，插件不读问号/关键词猜测。
 

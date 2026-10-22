@@ -1,10 +1,14 @@
 import path from 'node:path';
-import { canonical, digest, mutate, readState, samePath } from './store.mjs';
+import { canonical, digest, id, mutate, observeHost, readState, samePath } from './store.mjs';
 import { acceptSignal, interrupt, openTurn, pendingFor, sessionKey, stop, taskKey } from './protocol.mjs';
 import { resolveProject } from './projects.mjs';
 import { PRODUCT_ROOT, projectContext } from './context.mjs';
 
 export const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'Interrupt', 'SessionEnd', 'PreCompact', 'PostCompact'];
+// Claude Code 没有 Interrupt 事件；StopFailure 承担中断保存语义，其余同名事件语义与 Codex 对齐。
+export const CLAUDE_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'StopFailure', 'SessionEnd', 'PreCompact', 'PostCompact'];
+export const HOST_EVENTS = { codex: EVENTS, claude: CLAUDE_EVENTS };
+export const HOSTS = ['codex', 'claude'];
 const contextOutput = (event, text) => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
 function parseText(value) {
   if (typeof value !== 'string') return null;
@@ -19,6 +23,8 @@ function extractSignals(response, depth = 0) {
   }
   if (typeof response !== 'object' || Array.isArray(response)) return [];
   if (Object.hasOwn(response, 'workflow_signal')) return [response.workflow_signal];
+  // Claude Code 的 Bash tool_response 把命令输出放在 stdout；只认 stdout，不读 stderr。
+  if (Object.hasOwn(response, 'stdout')) return extractSignals(response.stdout, depth + 1);
   if (Object.hasOwn(response, 'output')) return extractSignals(response.output, depth + 1);
   if (Array.isArray(response.content)) return response.content.filter(block => block.type === 'text').flatMap(block => extractSignals(block.text, depth + 1));
   return [];
@@ -39,9 +45,15 @@ function shellTokens(command) {
   }
   return tokens;
 }
+export function signalCommand(event) {
+  const raw = event.tool_input?.command ?? event.tool_input?.cmd;
+  if (typeof raw !== 'string') return null;
+  // PowerShell 的直接调用可以带前导调用运算符 `&`；组合命令仍由 shellTokens 拒绝。
+  return raw.trim().replace(/^&\s+/, '');
+}
 export async function isSignalInvocation(event, entry = path.join(PRODUCT_ROOT, 'bin', 'workflow.mjs')) {
-  if (!['Bash', 'exec_command'].includes(event.tool_name)) return false;
-  const tokens = shellTokens(event.tool_input?.command ?? event.tool_input?.cmd);
+  if (!['Bash', 'exec_command', 'PowerShell', 'powershell', 'pwsh'].includes(event.tool_name)) return false;
+  const tokens = shellTokens(signalCommand(event));
   if (!tokens || tokens.length < 3) return false;
   const nodeToken = tokens[0];
   if (!['node', 'node.exe'].includes(nodeToken.toLowerCase()) && !samePath(path.resolve(nodeToken), process.execPath)) return false;
@@ -52,10 +64,14 @@ export async function isSignalInvocation(event, entry = path.join(PRODUCT_ROOT, 
 }
 export async function handleHook(directory, event, options = {}) {
   try {
-    if (!event || typeof event !== 'object' || !EVENTS.includes(event.hook_event_name)) return {};
-    if (Object.hasOwn(event, 'transcript_path') && event.transcript_path === null) return {};
+    const agent = HOSTS.includes(options.agent) ? options.agent : 'codex';
+    if (!event || typeof event !== 'object' || !HOST_EVENTS[agent].includes(event.hook_event_name)) return {};
+    if (agent === 'codex' && Object.hasOwn(event, 'transcript_path') && event.transcript_path === null) return {};
     if (typeof event.cwd !== 'string' || typeof event.session_id !== 'string' || !event.session_id) return {};
     const name = event.hook_event_name;
+    // Codex 每个事件都带 turn_id；Claude Code 的入口事件带 prompt_id，用宿主值建立回合，缺失时才本机生成。
+    const hostTurn = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : typeof event.prompt_id === 'string' && event.prompt_id ? event.prompt_id : null;
+    const turnId = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : null;
     // Avoid creating even a lock or empty state for unregistered projects.
     const existing = await readState(directory);
     if (existing.install?.status === 'installed' && !options.synthetic) {
@@ -71,16 +87,20 @@ export async function handleHook(directory, event, options = {}) {
       const project = resolved.project;
       let session = state.sessions[sessionKey(project.projectId, event.session_id)];
       // Observed callbacks prove execution of these hooks, not global discovery or trust policy.
-      state.hostObservations ||= {};
-      state.hostObservations[name] = { at: new Date().toISOString(), sessionId: event.session_id, source: options.synthetic ? 'synthetic' : 'callback' };
+      observeHost(state, agent, name, { at: new Date().toISOString(), sessionId: event.session_id, source: options.synthetic ? 'synthetic' : 'callback' });
       if (session && event.event_id && session.observed[event.event_id]) return {};
       if (name === 'SessionStart' || name === 'UserPromptSubmit') {
-        if (typeof event.turn_id === 'string' && event.turn_id) {
-          session = openTurn(state, project, event.session_id, event.turn_id, { compact: event.source === 'compact', eventId: event.event_id, mode: event.permission_mode });
+        if (name === 'UserPromptSubmit') {
+          // 每个用户回合开新票据；Claude 入口缺 prompt_id 时用本机值，后续事件按当前回合关联，不因标识缺失丢弃回执。
+          session = openTurn(state, project, event.session_id, hostTurn || id('turn'), { compact: event.source === 'compact', eventId: event.event_id, mode: event.permission_mode });
+        } else if (hostTurn) {
+          session = openTurn(state, project, event.session_id, hostTurn, { compact: event.source === 'compact', eventId: event.event_id, mode: event.permission_mode });
         }
         return contextOutput(name, `workflow 入口：${JSON.stringify(projectContext(state, resolved, 'lead', event.session_id))}`);
       }
-      if (!session || (event.turn_id && session.turnId !== event.turn_id)) return {};
+      if (!session) return {};
+      // Codex 严格核对 turn_id；Claude 的 prompt_id 只在入口事件保证存在，后续事件按当前回合关联。
+      if (turnId && session.turnId !== turnId) return {};
       if (event.event_id) session.observed[event.event_id] = digest(JSON.stringify({ name, turn: event.turn_id }));
       if (name === 'PostToolUse') {
         if (['request_user_input', 'mcp__codeg_mcp__ask_user_question'].includes(event.tool_name)) {
@@ -105,13 +125,12 @@ export async function handleHook(directory, event, options = {}) {
         return contextOutput(name, `workflow 回执：${JSON.stringify(result)}`);
       }
       if (name === 'Stop') {
-        if (typeof event.turn_id !== 'string' || event.turn_id !== session.turnId) return {};
         const output = stop(state, project, session, event);
         // The budget must be durable before returning a continuation decision.
         await save();
         return output;
       }
-      if (name === 'Interrupt') { interrupt(state, project, session); return {}; }
+      if (name === 'Interrupt' || name === 'StopFailure') { interrupt(state, project, session); return {}; }
       if (name === 'SessionEnd') {
         if (session.taskId) {
           const task = state.tasks[taskKey(project.projectId, session.taskId)];

@@ -25,7 +25,27 @@ export async function atomicWrite(file, content) {
 }
 export const writeJSON = (file, value) => atomicWrite(file, `${JSON.stringify(value, null, 2)}\n`);
 export function emptyState() {
-  return { schemaVersion: SCHEMA_VERSION, revision: 0, projects: {}, tasks: {}, sessions: {}, transactions: {}, pending: {}, install: null };
+  return { schemaVersion: SCHEMA_VERSION, revision: 0, projects: {}, tasks: {}, sessions: {}, transactions: {}, pending: {}, install: null, installs: {} };
+}
+// 回调观测按宿主分开，避免一个宿主的执行证据被另一个宿主的 doctor 当成自己的。
+export function hostObservations(state, agent = 'codex') {
+  const all = state.hostObservations || {};
+  const nested = all[agent];
+  if (nested && typeof nested === 'object' && !Array.isArray(nested) && !Object.hasOwn(nested, 'at')) return nested;
+  if (agent === 'codex') {
+    const legacy = Object.fromEntries(Object.entries(all).filter(([, value]) => value && typeof value === 'object' && typeof value.at === 'string'));
+    if (Object.keys(legacy).length) return legacy;
+  }
+  return {};
+}
+export function observeHost(state, agent, event, value) {
+  state.hostObservations ||= {};
+  const legacy = Object.fromEntries(Object.entries(state.hostObservations).filter(([, item]) => item && typeof item === 'object' && typeof item.at === 'string'));
+  // 旧状态只记录扁平结构，来源只能是当时的 Codex 宿主；迁移后再按宿主分层。
+  if (Object.keys(legacy).length) state.hostObservations = { codex: legacy };
+  state.hostObservations[agent] ||= {};
+  state.hostObservations[agent][event] = value;
+  return state.hostObservations[agent];
 }
 export function validateState(state) {
   if (state?.schemaVersion !== SCHEMA_VERSION) fail('SCHEMA', '未知状态版本；保留原文件并停止维护');
@@ -33,6 +53,8 @@ export function validateState(state) {
   for (const key of ['projects', 'tasks', 'sessions', 'transactions', 'pending']) {
     if (!state[key] || typeof state[key] !== 'object' || Array.isArray(state[key])) fail('STATE', `状态 ${key} 损坏`);
   }
+  // installs 是本版新增的多宿主安装记录；旧状态文件没有该键时按空记录迁移。
+  if (state.installs !== undefined && (!state.installs || typeof state.installs !== 'object' || Array.isArray(state.installs))) fail('STATE', '状态 installs 损坏');
   return state;
 }
 export async function readState(directory) {

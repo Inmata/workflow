@@ -1,5 +1,5 @@
 {
   "name": "workflow",
-  "version": "0.1.0",
-  "description": "项目协作方法、受限知识维护和 Codex 收尾查漏"
+  "version": "0.2.0",
+  "description": "跨智能体项目协作、受限知识维护和任务收尾查漏"
 }

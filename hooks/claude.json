@@ -1,0 +1,13 @@
+{
+  "description": "workflow Claude Code 用户级 hook 注册模板；由 install --agent claude 写入 ~/.claude/settings.json 的 hooks 段，实际使用固定发布路径，不另启用插件级重复注册",
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "node", "args": ["${PLUGIN_ROOT}/bin/workflow.mjs", "hook", "--agent", "claude"], "timeout": 10 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node", "args": ["${PLUGIN_ROOT}/bin/workflow.mjs", "hook", "--agent", "claude"], "timeout": 10 }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "node", "args": ["${PLUGIN_ROOT}/bin/workflow.mjs", "hook", "--agent", "claude"], "timeout": 10 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node", "args": ["${PLUGIN_ROOT}/bin/workflow.mjs", "hook", "--agent", "claude"], "timeout": 10 }] }],
+    "StopFailure": [{ "hooks": [{ "type": "command", "command": "node", "args": ["${PLUGIN_ROOT}/bin/workflow.mjs", "hook", "--agent", "claude"], "timeout": 10 }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "node", "args": ["${PLUGIN_ROOT}/bin/workflow.mjs", "hook", "--agent", "claude"], "timeout": 10 }] }],
+    "PreCompact": [{ "hooks": [{ "type": "command", "command": "node", "args": ["${PLUGIN_ROOT}/bin/workflow.mjs", "hook", "--agent", "claude"], "timeout": 10 }] }],
+    "PostCompact": [{ "hooks": [{ "type": "command", "command": "node", "args": ["${PLUGIN_ROOT}/bin/workflow.mjs", "hook", "--agent", "claude"], "timeout": 10 }] }]
+  }
+}

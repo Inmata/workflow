@@ -130,3 +130,60 @@ test('V14 发布复制失败保留现场与用户配置，后续安装可直接�
   const installedConfig = JSON.parse(await readFile(configFile, 'utf8'));
   assert.equal(installedConfig.hooks.Stop[0].hooks[0].command, 'preserved-hook');
 });
+
+test('V14 Claude 安装写入 settings.json 的 hooks 段，保留其他插件与顶层配置', async () => {
+  const area = await temporary('install-claude-');
+  const directory = path.join(area, 'state');
+  const userDir = path.join(area, 'user', '.claude');
+  await mkdir(userDir, { recursive: true });
+  const existing = {
+    env: { PRESERVED: 'yes' },
+    model: 'opus',
+    hooks: {
+      SessionStart: [{ hooks: [{ type: 'command', command: 'D:/other/hook.exe', args: ['claude'], timeout: 10 }] }],
+      Stop: [{ hooks: [{ type: 'command', command: 'other-stop-hook' }] }],
+    },
+  };
+  await writeFile(path.join(userDir, 'settings.json'), JSON.stringify(existing));
+  const installed = await install(directory, { userDir, agent: 'claude' });
+  assert.equal(installed.status, 'installed');
+  assert.equal(installed.agent, 'claude');
+  const config = JSON.parse(await readFile(path.join(userDir, 'settings.json'), 'utf8'));
+  assert.deepEqual(config.env, existing.env);
+  assert.equal(config.model, 'opus');
+  const own = config.hooks.PostToolUse[0].hooks[0];
+  assert.equal(own.command, process.execPath.replaceAll('\\', '/'));
+  assert.ok(own.args[0].endsWith('bin/workflow.mjs'));
+  assert.deepEqual(own.args.slice(1, 5), ['hook', '--agent', 'claude', '--state-dir']);
+  assert.equal(config.hooks.SessionStart[0].hooks[0].command, 'D:/other/hook.exe');
+  assert.deepEqual(config.hooks.Stop.map(group => group.hooks[0].command), ['other-stop-hook', own.command]);
+  const info = await doctor(directory, undefined, { agent: 'claude' });
+  assert.equal(info.agent, 'claude');
+  assert.equal(info.registration, 'registered');
+  assert.equal(info.integrity, 'verified');
+  assert.equal((await uninstall(directory, { agent: 'claude' })).status, 'uninstalled');
+  const restored = JSON.parse(await readFile(path.join(userDir, 'settings.json'), 'utf8'));
+  assert.equal(restored.hooks.SessionStart.length, 1);
+  assert.equal(restored.hooks.SessionStart[0].hooks[0].command, 'D:/other/hook.exe');
+  assert.equal(restored.hooks.Stop.length, 1);
+  assert.equal(restored.hooks.PostToolUse, undefined);
+  assert.deepEqual(restored.env, existing.env);
+});
+
+test('V14 Codex 与 Claude 安装记录互不覆盖，可分别撤销', async () => {
+  const area = await temporary('install-both-');
+  const directory = path.join(area, 'state');
+  const codexDir = path.join(area, '.codex');
+  const claudeDir = path.join(area, '.claude');
+  assert.equal((await install(directory, { userDir: codexDir })).status, 'installed');
+  assert.equal((await install(directory, { userDir: claudeDir, agent: 'claude' })).status, 'installed');
+  const state = await readState(directory);
+  assert.equal(state.install.agent, 'codex');
+  assert.equal(state.installs.codex.status, 'installed');
+  assert.equal(state.installs.claude.status, 'installed');
+  assert.equal((await uninstall(directory, { agent: 'claude' })).status, 'uninstalled');
+  assert.equal((await doctor(directory)).registration, 'registered');
+  assert.equal((await doctor(directory, undefined, { agent: 'claude' })).registration, 'not-installed');
+  assert.equal((await uninstall(directory)).status, 'uninstalled');
+  assert.equal((await readState(directory)).installs.claude.status, 'uninstalled');
+});

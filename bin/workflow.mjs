@@ -6,7 +6,7 @@ import { enableProject, disableProject, attachWorktree, resolveProject, setOwner
 import { getContext } from '../src/context.mjs';
 import { applyKnowledge, createPending, inspectKnowledge, recoverTransaction } from '../src/knowledge.mjs';
 import { handleHook } from '../src/hooks.mjs';
-import { doctor, install, uninstall } from '../src/install.mjs';
+import { AGENTS, doctor, install, uninstall } from '../src/install.mjs';
 
 const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'help']);
 function argumentsFor(argv) {
@@ -32,7 +32,7 @@ async function inputJSON(options) {
 const help = {
   usage: 'node bin/workflow.mjs <命令> [--state-dir <本机状态目录>]',
   commands: [
-    'install --agent codex [--user-dir <.codex目录>]', 'uninstall --agent codex', 'doctor [--project <目录>]',
+    'install --agent codex|claude [--user-dir <宿主配置目录>]', 'uninstall --agent codex|claude', 'doctor [--agent codex|claude] [--project <目录>]',
     'project enable --root <目录> [--owner <sessionId>] [--coexistence-mode bounded|pending-only]',
     'project disable --root <目录>', 'project attach-worktree --project <projectId> --root <目录>',
     'project owner --project <projectId> --session <sessionId>',
@@ -41,7 +41,7 @@ const help = {
     'knowledge inspect --path <资料路径> [--project <目录>]',
     'knowledge apply --input <JSON文件>', 'knowledge recover --transaction <id> [--project <目录>]',
     'pending list [--project <目录>]', 'pending inspect --pending <id> [--project <目录>]', 'pending create --input <JSON文件>',
-    'hook --agent codex（stdin 为宿主事件）',
+    'hook --agent codex|claude（stdin 为宿主事件）',
   ],
   note: 'signal 只输出，需当前宿主 PostToolUse 接受；未知状态、提问和中断不发补偿。不会自动提交或发布。',
 };
@@ -52,17 +52,18 @@ async function main() {
   const [command, action] = commands;
   if (options.help || !command) return help;
   if (commands.length > (['project', 'knowledge', 'pending'].includes(command) ? 2 : 1)) fail('ARGUMENT', '命令后存在多余的位置参数');
-  if (options.agent && options.agent !== 'codex') fail('AGENT', '首版只支持 Codex hooks');
+  const agent = options.agent || 'codex';
+  if (!AGENTS.includes(agent)) fail('AGENT', `未知宿主 ${agent}；支持 ${AGENTS.join('/')}`);
   const directory = stateDirectory(options['state-dir']);
   const root = options.root || options.project || process.cwd();
   if (command === 'signal') return { workflow_signal: await inputJSON(options) };
   if (command === 'hook') {
-    try { return await handleHook(directory, await inputJSON(options)); }
+    try { return await handleHook(directory, await inputJSON(options), { agent }); }
     catch { return { systemMessage: 'workflow 事件输入无效，已保守放行。' }; }
   }
-  if (command === 'install') return install(directory, { userDir: options['user-dir'] });
-  if (command === 'uninstall') return uninstall(directory);
-  if (command === 'doctor') return doctor(directory, options.project);
+  if (command === 'install') return install(directory, { userDir: options['user-dir'], agent });
+  if (command === 'uninstall') return uninstall(directory, { agent });
+  if (command === 'doctor') return doctor(directory, options.project, { agent });
   if (command === 'context') return getContext(directory, root, options.role || 'lead', options.session);
   if (command === 'project') {
     if (action === 'enable') { if (!options.root) fail('ARGUMENT', 'enable 需要明确 --root'); return enableProject(directory, options.root, { owner: options.owner, coexistenceMode: options['coexistence-mode'] }); }

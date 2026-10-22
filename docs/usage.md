@@ -2,23 +2,39 @@
 
 ## 使用
 
-首版适用 Windows、Node.js 24+ 和 Codeg Codex ACP。运行时无第三方依赖，无常驻服务，不新增付费模型调用。公共方法由[文档入口](workflow.md)集中维护，不要求日常手动调用技能。
+运行环境为 Windows、Node.js 24+，自动 hooks 已适配 Claude Code 与 Codex / Codeg Codex ACP。Lead、Worker、Reviewer 按[公共方法](workflow.md)分配，均不绑定客户端或模型；其他智能体通过实际可用的委派工具协作，原生 hooks 支持范围见 [README](../README.md#角色与接入支持)。运行时无第三方依赖，无常驻服务，不新增付费模型调用，不要求日常手动调用技能。
 
 开发验证在仓库根目录运行 `npm test`、`npm run check`、`npm run demo`。测试和 demo 使用系统临时目录下 `workflow-tests/` 中的隔离目录、本地 Git 远端和合成事件，不写入仓库，也不改真实全局配置。
 
 ### 安装与首次接入
 
+选择实际使用的宿主安装并检查：
+
 ```powershell
+# Claude Code
+node bin/workflow.mjs install --agent claude
+node bin/workflow.mjs doctor --agent claude
+
+# Codex / Codeg Codex ACP
 node bin/workflow.mjs install --agent codex
-node bin/workflow.mjs doctor
+node bin/workflow.mjs doctor --agent codex
+```
+
+只用一个宿主时，只执行对应两条命令。Claude Code 写入 `~/.claude/settings.json`，Codex 写入 `~/.codex/hooks.json`；两个宿主分别安装、升级和 `uninstall`，可共用发布副本和状态目录。
+
+然后接入项目，并在该目录用所选宿主打开新主会话，当前主会话承担 Lead：
+
+```powershell
 node bin/workflow.mjs project enable --root "D:/某个已明确允许接入的项目"
 ```
 
-第一条修改实际用户 hooks 注册，只在已决定安装时执行。安装生成固定发布副本；没有需要用户配置的运行时依赖。状态默认 `%LOCALAPPDATA%/workflow`；隔离试用为每条命令指定相同 `--state-dir`，安装另指定临时 `--user-dir`（直接指向 `.codex` 目录，不是用户根）。发布副本与公共资料固定同一版本，活动任务/prepared 事务导致升级延期，完成或明确结束后再安装。安装副本被用户改写时停止覆盖并报告差异。
+同一本机目录的绑定由两种宿主共用，切换已安装适配的宿主不必重新接入。多个独立 Lead 对共享资料的写入归属仍需明确，见下文的 `project owner`。
+
+`install` 修改所选宿主的实际用户 hooks 注册，只在已决定安装时执行。安装生成固定发布副本；没有需要用户配置的运行时依赖。状态默认 `%LOCALAPPDATA%/workflow`；隔离试用为每条命令指定相同 `--state-dir`，安装另指定临时 `--user-dir`（直接指向宿主配置目录，如 `.codex` 或 `.claude`，不是用户根）。发布副本与公共资料固定同一版本，活动任务/prepared 事务导致升级延期，完成或明确结束后再安装。安装副本被用户改写时停止覆盖并报告差异。
 
 新副本先在状态根 `release-staging/` 中复制并核对完整性，完成后才切换到正式发布目录。复制失败或中断不改用户配置；残留暂存目录保留供核查，可直接重试安装，清理时使用系统回收站。
 
-安装只注册自有 handlers，保留已有插件和用户配置；不写 config.toml 信任记录。使用当前宿主支持的 `/hooks` 审查定义，在新 Codeg 连接验证回调。doctor 分别报告 registration/discovery/trust/execution；配置存在不证明后面三项。回调记录也需结合真实 ACP 证据确认来源，不能用合成事件冒充。全局 Codex 版本不能代表 ACP 内嵌版本。
+安装只注册自有 handlers，保留已有插件和用户配置（Claude 侧保留 `settings.json` 的 `env`、`model` 等全部顶层配置）；不写信任记录。使用当前宿主支持的 `/hooks` 审查定义，在新会话或新连接验证回调。doctor 分别报告 registration/discovery/trust/execution；配置存在不证明后面三项。回调记录也需结合真实宿主证据确认来源，不能用合成事件冒充。全局 Codex 版本不能代表 ACP 内嵌版本；Claude 侧的回合、中断和回执字段见[适配说明](adapters/claude.md)。
 
 接入写本机身份绑定和 AGENTS 短管理区，保留用户正文；不要求补齐 README/spec/计划、不创建空 LESSONS。AGENTS 不含机器安装绝对路径；每次 hook 给实际公共资料和 CLI 路径。资料采用其他命名时继续使用，不改名。非 Git 项目可接入。复制/移动/重 clone 的目录不会静默继承，需要重新明确接入。
 
@@ -83,6 +99,7 @@ apply 输入身份与 `changes`，每项有 path、baseline、content、responsi
 ```powershell
 node bin/workflow.mjs project disable --root "<试点项目>"
 node bin/workflow.mjs uninstall --agent codex
+node bin/workflow.mjs uninstall --agent claude
 ```
 
 disable 先停用绑定，仅在管理区指纹一致时撤下该区；用户手改则保留并报告。uninstall 仅撤销未被修改的自有 handlers，保留其他插件/新增配置，保留发布副本、项目资料、LESSONS 和追溯记录。用户改动冲突不整文件覆盖。

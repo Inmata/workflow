@@ -65,8 +65,8 @@ PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输�
 
 ## 安装和版本
 
-`install --agent codex [--user-dir <dir>]` 将发布白名单复制到状态根 `releases/<version>-<digest>`，命令使用固定 Node 与入口路径。只合并 `hooks.json` 中 workflow 自有分组；不写 config.toml 的信任记录。保存自有分组、配置前后指纹和逆向操作，备份只含自有条目。活动任务或 prepared 事务存在则延期更新。发布副本指纹不符拒绝覆盖/使用，doctor 报告 unavailable。
+`install --agent codex|claude [--user-dir <dir>]` 将发布白名单复制到状态根 `releases/<version>-<digest>`，命令使用固定 Node 与入口路径。只合并宿主配置（Codex `hooks.json`、Claude `settings.json`）中 workflow 自有分组；不写信任记录。Codex 记录保留在 `state.install`（兼容旧版），两个宿主另存于 `state.installs`，分别安装与撤销。自有 handler 必须 command 与 args 同时一致才可移除，避免误删共享 Node 路径的其他插件。保存自有分组、配置前后指纹和逆向操作，备份只含自有条目。活动任务或 prepared 事务存在则延期更新。发布副本指纹不符拒绝覆盖/使用，doctor 报告 unavailable。
 
 AGENTS 仅有可携带的短管理区，不含机器绝对路径。disable 仅在管理区指纹一致时撤下，保留其他正文；用户改动时报告 conflict。uninstall 仅撤销与安装记录一致的自有 hooks；用户后来新增配置全部保留。doctor 分别报告 registration/discovery/trust/execution：未观测的宿主状态为 unknown，不能由配置存在推断可信或执行。
 
-官方接口依据：[Codex hooks](https://learn.chatgpt.com/docs/hooks)、[插件包装](https://developers.openai.com/plugins/build/plugins)。合成 fixture 明确标记 synthetic；宿主是否实际执行仍需在真实会话中核验。
+官方接口依据：[Codex hooks](https://learn.chatgpt.com/docs/hooks)、[插件包装](https://developers.openai.com/plugins/build/plugins)。Claude Code 侧依据本机 2.1.292 内嵌的 hook schema：`prompt_id` 关联用户回合，`StopFailure` 承担中断保存，`hookSpecificOutput.additionalContext` 仅对 SessionStart、UserPromptSubmit、PostToolUse、Stop 生效。合成 fixture 明确标记 synthetic；宿主是否实际执行仍需在真实会话中核验。

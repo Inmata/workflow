@@ -37,12 +37,17 @@ export async function fixture(options = {}) {
   if (options.git) git(project, ['init', '-b', 'main']);
   await writeFile(path.join(project, 'README.md'), '# 项目\n原始内容\n');
   const binding = await enableProject(directory, project, { owner: options.autoOwner ? undefined : 'session-1', coexistenceMode: options.coexistenceMode });
-  const f = { area, project, directory, projectId: binding.projectId, sessionId: 'session-1', turnId: 'turn-1', taskId: 'task-1' };
-  await event(f, 'UserPromptSubmit');
+  const f = { area, project, directory, projectId: binding.projectId, sessionId: 'session-1', turnId: 'turn-1', promptId: 'prompt-1', taskId: 'task-1' };
+  if (options.claude) await claudeEvent(f, 'UserPromptSubmit');
+  else await event(f, 'UserPromptSubmit');
   return f;
 }
 export async function event(f, name, extra = {}) {
   return handleHook(f.directory, { hook_event_name: name, cwd: f.project, session_id: f.sessionId, turn_id: f.turnId, permission_mode: 'default', ...extra }, { synthetic: true, entry });
+}
+// Claude Code 事件没有 turn_id，用 prompt_id 关联同一用户回合；hook 输出结构与 Codex 同形。
+export async function claudeEvent(f, name, extra = {}) {
+  return handleHook(f.directory, { hook_event_name: name, cwd: f.project, session_id: f.sessionId, prompt_id: f.promptId, permission_mode: 'default', ...extra }, { synthetic: true, entry, agent: 'claude' });
 }
 export async function identity(f) { return (await getContext(f.directory, f.project, 'lead', f.sessionId)).identity; }
 export async function emit(f, value) {
@@ -54,6 +59,21 @@ export async function emit(f, value) {
   const text = output.hookSpecificOutput?.additionalContext;
   assert.ok(text?.startsWith('workflow 回执：'), JSON.stringify(output));
   return { payload, result: JSON.parse(text.slice('workflow 回执：'.length)) };
+}
+export async function claudeEmit(f, value) {
+  const payload = { ...await identity(f), taskId: f.taskId, signalId: `signal-${crypto.randomUUID()}`, ...value };
+  const output = await claudeEvent(f, 'PostToolUse', {
+    tool_name: 'Bash', tool_input: { command: `node "${entry}" signal --base64 e30=` },
+    tool_response: { stdout: JSON.stringify({ workflow_signal: payload }), stderr: '', interrupted: false },
+  });
+  const text = output.hookSpecificOutput?.additionalContext;
+  assert.ok(text?.startsWith('workflow 回执：'), JSON.stringify(output));
+  return { payload, result: JSON.parse(text.slice('workflow 回执：'.length)) };
+}
+export async function claudeStart(f, permissions = { mode: 'write', allowedPaths: ['README.md', 'LESSONS.md', 'docs/说明.md'] }) {
+  const result = await claudeEmit(f, { action: 'task-start', goal: 'Claude 隔离验证任务', permissions });
+  assert.equal(result.result.accepted, true, JSON.stringify(result));
+  return result;
 }
 export async function start(f, permissions = { mode: 'write', allowedPaths: ['README.md', 'LESSONS.md', 'docs/说明.md'] }) {
   const result = await emit(f, { action: 'task-start', goal: '隔离验证任务', permissions });

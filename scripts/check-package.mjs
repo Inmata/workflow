@@ -2,7 +2,7 @@ import path from 'node:path';
 import { lstat, readFile, readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { EVENTS } from '../src/hooks.mjs';
+import { CLAUDE_EVENTS, EVENTS } from '../src/hooks.mjs';
 import { RELEASE_PATHS } from '../src/install.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -35,6 +35,9 @@ for (const relative of ['plugin.json', '.codex-plugin/plugin.json']) {
 const hooks = await json('hooks/codex.json');
 check(JSON.stringify(Object.keys(hooks.hooks).sort()) === JSON.stringify([...EVENTS].sort()), 'hook 事件声明不一致');
 check(hooks.hooks.Interrupt[0].hooks[0].timeout <= 3, 'Interrupt 超时超过宿主限制');
+const claudeHooks = await json('hooks/claude.json');
+check(JSON.stringify(Object.keys(claudeHooks.hooks).sort()) === JSON.stringify([...CLAUDE_EVENTS].sort()), 'Claude hook 事件声明不一致');
+check(claudeHooks.hooks.PostToolUse[0].hooks[0].args?.includes('--agent') && claudeHooks.hooks.PostToolUse[0].hooks[0].args?.includes('claude'), 'Claude hook 模板缺少宿主参数');
 const codeFiles = [...await walk('src'), ...await walk('bin'), ...await walk('scripts'), ...await walk('test'), ...await walk('examples')].filter(file => file.endsWith('.mjs'));
 for (const relative of codeFiles) {
   const result = spawnSync(process.execPath, ['--check', path.join(root, relative)], { encoding: 'utf8', windowsHide: true, timeout: 10000 });

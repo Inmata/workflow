@@ -1,8 +1,23 @@
 # workflow
 
-给 Codex / Codeg 用的一套项目协作与知识维护规则。它解决三件事：**谁做什么**（Lead、Worker、Reviewer 的分工与边界）、**怎么收尾**（任务阶段、知识处置、待恢复状态）、**怎么留下经验**（写回项目原有资料，而不是另建一套空文档）。
+workflow 是一套跨智能体的项目协作与知识维护规则。它解决三件事：**谁做什么**（Lead、Worker、Reviewer 的分工与边界）、**怎么收尾**（任务阶段、知识处置、待恢复状态）、**怎么留下经验**（写回项目原有资料）。
 
-首版面向 Windows + Node.js 24+ + Codeg Codex ACP，ESM，无第三方运行时依赖，无常驻服务，不新增付费模型调用。
+**Lead、Worker、Reviewer 是职责，角色不绑定客户端或模型。** Claude Code 可以担任 Lead，也可以担任 Worker 或 Reviewer；Codex、OpenCode、Pi 等同样按当前授权和实际能力分工。具体安排由用户已确认的角色、可用工具和任务需要决定。
+
+## 角色与接入支持
+
+角色方法共用同一套[公共方法](docs/workflow.md)和[角色指引](docs/roles/lead.md)。同一种智能体也可以用不同的独立会话分别实施和审查。
+
+自动 hook 接入目前支持以下宿主，两者都能作为 Lead 接收项目上下文、提交任务信号和完成知识处置：
+
+| 宿主 | 安装参数 | 用户配置 | 适配说明 |
+| --- | --- | --- | --- |
+| Claude Code | `--agent claude` | `~/.claude/settings.json` | [Claude Code](docs/adapters/claude.md) |
+| Codex / Codeg Codex ACP | `--agent codex` | `~/.codex/hooks.json` | [Codeg ACP](docs/adapters/codeg.md) |
+
+`--agent` 选择 hook 的宿主适配，不指定协作角色。OpenCode、Pi 等可通过宿主已有的委派工具参加协作，角色由工作包指定；它们的原生 hook 自动接入尚未实现，独立运行时不能保证同样的自动收尾。
+
+运行环境为 Windows + Node.js 24+，ESM，无第三方运行时依赖，无常驻服务，不新增付费模型调用。
 
 ## 新用户从这里开始
 
@@ -10,23 +25,36 @@
 
 ### 第 1 步：安装到本机
 
+选择你实际使用的宿主安装，两个入口任选其一，也可以都装。
+
+**Claude Code：**
+
 ```powershell
-node bin/workflow.mjs install --agent codex
-node bin/workflow.mjs doctor
+node bin/workflow.mjs install --agent claude
+node bin/workflow.mjs doctor --agent claude
 ```
 
-`install` 会做四件事：把当前源码复制成一份固定发布副本、在 `hooks.json` 里注册八个事件、记录安装事务、保留旧副本。它**不会**写宿主信任、不会改项目、不会提交 Git。
+**Codex / Codeg Codex ACP：**
+
+```powershell
+node bin/workflow.mjs install --agent codex
+node bin/workflow.mjs doctor --agent codex
+```
+
+只用 Claude Code 时，只需安装 Claude 适配。
+
+`install` 会做四件事：把当前源码复制成一份固定发布副本、在宿主配置里注册本插件的事件（Codex 写 `hooks.json`，Claude 写 `settings.json`）、记录安装事务、保留旧副本。它**不会**写宿主信任、不会改项目、不会提交 Git。
 
 `doctor` 看的是四项不同的事，不要混为一谈：
 
 | 字段 | 含义 |
 | --- | --- |
-| `registration` | hooks.json 里有没有本插件的定义 |
+| `registration` | 宿主配置里有没有本插件的定义 |
 | `discovery` / `trust` | 宿主是否发现并信任了当前定义（插件查不到时显示 `unknown`，这是正常的） |
 | `execution` | 是否真实收到过回调事件 |
 | `integrity` | 发布副本是否与安装记录逐文件一致 |
 
-安装或升级后，信任状态会变成 `modified`。这时在 Codex/Codeg 里执行 `/hooks`，逐项确认本插件的八个条目为 trusted。插件不替你写信任记录。
+安装或升级后，在所用宿主的 `/hooks` 中核对 workflow 条目。Codex / Codeg 若显示 `modified`，按宿主提示重新确认信任；Claude Code 核对已加载的 hooks，并处理宿主实际出现的确认提示。然后打开新会话观察回调。插件不替你写信任记录。
 
 ### 第 2 步：让项目接入
 
@@ -36,11 +64,11 @@ node bin/workflow.mjs project enable --root "D:/你的项目"
 
 这一步是在项目根目录插入一段很短的 `AGENTS.md` 管理区，并建立本机绑定。它保留你原有的 AGENTS 正文，不要求你补 README、spec 或计划，也不会创建空 LESSONS。
 
-接入后打开**该项目里的新会话**，插件才会给出对应上下文。
+接入后，在已安装适配的 Claude Code 或 Codex 中打开**该项目里的新会话**，插件才会给出对应上下文。同一本机目录共用项目绑定，切换这两个宿主无需重复 `project enable`。多个独立 Lead 并行时，共享资料的写入需明确[知识负责人](docs/usage.md#安装与首次接入)。
 
 ### 第 3 步：在新会话里正常工作
 
-不需要记命令。你在项目会话里正常提需求，Lead 会按任务大小自行分流：
+不需要记命令。你在 Claude Code 主会话里提出需求，就由 Claude Code 承担 Lead；在 Codex 主会话里则由 Codex 承担 Lead。Lead 沿用已确认的角色安排，按任务大小自行分流：
 
 | 你的请求 | 通常怎么处理 |
 | --- | --- |
@@ -64,17 +92,17 @@ node bin/workflow.mjs project enable --root "D:/你的项目"
 
 ## 一次完整使用的例子
 
-假设项目 `D:/my-app` 要修一个登录超时的问题：
+假设你使用 Claude Code 作为 Lead，项目 `D:/my-app` 要修一个登录超时的问题：
 
-1. 你执行 `project enable --root "D:/my-app"`，并在该目录开新会话。
+1. 你安装 `--agent claude`，执行 `project enable --root "D:/my-app"`，并在该目录开一个 Claude Code 新会话。
 2. 你说"登录 30 秒后超时，帮我查一下并修掉"。
-3. Lead 读项目现有资料，确认这是真实代码修复，派一个 Worker 改实现并自测。
+3. Claude Code 作为 Lead 读项目现有资料，确认这是真实代码修复，通过可用且已授权的委派工具派一个 Worker 改实现并自测。
 4. Worker 交回差异和测试结果，Lead 派独立 Reviewer 做只读审查。
 5. Reviewer 有意见就退给原 Worker 定向修复，没问题就 Lead 集成并跑必要回归。
 6. Lead 把可复用的结论写回项目原有文档，回复你改了什么、怎么验证的、还剩什么。
 7. 任务结束（task-end）。整个过程不需要你手动发信号。
 
-如果你只想让它看看状态，第 3～5 步都会跳过，Lead 直接回你。
+换成 Codex 作为 Lead 时，流程相同，安装选择 `--agent codex`。Worker、Reviewer 的智能体类型按当前安排选择；缺少必要的委派入口时明确报告阻塞，不把交接文本当成已启动的智能体。如果你只想让它看看状态，第 3～5 步都会跳过，Lead 直接回你。
 
 ## 什么时候需要自己敲命令
 
@@ -82,25 +110,28 @@ node bin/workflow.mjs project enable --root "D:/你的项目"
 
 | 目的 | 命令 |
 | --- | --- |
-| 看安装/信任/回调状态 | `node bin/workflow.mjs doctor` |
+| 看 Claude 安装/信任/回调状态 | `node bin/workflow.mjs doctor --agent claude` |
+| 看 Codex 安装/信任/回调状态 | `node bin/workflow.mjs doctor --agent codex` |
 | 项目接入 | `node bin/workflow.mjs project enable --root "<项目>"` |
 | 项目停用 | `node bin/workflow.mjs project disable --root "<项目>"` |
 | 查看角色上下文 | `node bin/workflow.mjs context --role lead --project "<项目>"` |
-| 撤销全局注册 | `node bin/workflow.mjs uninstall --agent codex` |
+| 撤销 Codex 注册 | `node bin/workflow.mjs uninstall --agent codex` |
+| 撤销 Claude 注册 | `node bin/workflow.mjs uninstall --agent claude` |
 
-`disable` 只停用单个项目，管理区没被手改才撤下；`uninstall` 只移除本插件自己的八个 handler，其他插件、发布副本、项目资料和经验全部保留。
+`disable` 只停用单个项目，管理区没被手改才撤下；`uninstall` 只移除该宿主上本插件自己的 handler，其他插件、发布副本、项目资料和经验全部保留。
 
 ## 升级
 
-修好代码或文档后，重新执行一次 `install`：
+修好代码或文档后，对已安装的每个宿主分别重新执行 `install`；只装了一个宿主时，只运行对应命令：
 
 ```powershell
+node bin/workflow.mjs install --agent claude
 node bin/workflow.mjs install --agent codex
 ```
 
-它会先算出新的发布摘要，复制到新的固定副本，完整性校验通过后才切换 hooks 命令，旧副本保留不动。有活动任务或未辨认事务时会拒绝升级并告诉你原因，等任务结束再来即可。
+它会先算出新的发布摘要，复制到新的固定副本，完整性校验通过后才切换该宿主的 hooks 命令，旧副本保留不动。两个宿主可以复用同一发布副本，但安装命令只更新所选宿主的注册。有活动任务或未辨认事务时会拒绝升级并告诉你原因，等任务结束再来即可。
 
-切换后同样要到 `/hooks` 确认八个条目重新 trusted，然后开一个新会话观察第一次回调。
+切换后按对应宿主核对 `/hooks` 与确认提示，然后开一个新会话观察第一次回调。
 
 ## 这些概念的关系
 
@@ -130,8 +161,10 @@ npm run demo
 
 ## 当前状态与限制
 
-0.1.0 的核心、CLI、hooks、隔离安装、代码合流、压缩与恢复均已实现。首次安装及每次升级后的 `/hooks` 信任确认由用户完成，插件不代写。
+0.2.0 已实现协作规则、CLI、两种宿主的 hooks 适配、隔离安装和知识维护。角色分配与模型无关，自动收尾依赖实际宿主适配和回调。
 
-宿主是否实际执行 hook、压缩后的上下文行为以及外部编码代理的具体接续能力，会随 Codex / Codeg 版本变化。`doctor` 能核对本机注册与副本完整性；以 `/hooks` 和真实会话回调确认宿主侧状态。
+宿主是否实际执行 hook、压缩后的上下文行为以及外部编码代理的具体接续能力，会随 Codex / Codeg / Claude Code 版本变化。`doctor --agent <宿主>` 能核对对应注册与副本完整性；以 `/hooks` 和真实会话回调确认宿主侧状态。
+
+Claude Code 侧的字段差异（`prompt_id` 回合、`StopFailure` 中断、stdout 回执）见 [Claude Code 适配](docs/adapters/claude.md)。
 
 workflow 管项目开发知识；document-learning 独立管理个人文档经验。两者不共享库、信号或补偿预算。
