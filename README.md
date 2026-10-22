@@ -43,7 +43,7 @@ node bin/workflow.mjs doctor --agent codex
 
 只用 Claude Code 时，只需安装 Claude 适配。
 
-`install` 会做四件事：把当前源码复制成一份固定发布副本、在宿主配置里注册本插件的事件（Codex 写 `hooks.json`，Claude 写 `settings.json`）、记录安装事务、保留旧副本。它**不会**写宿主信任、不会改项目、不会提交 Git。
+`install` 会做四件事：把当前源码复制成一份带摘要的发布副本（`releases/<version>-<digest>`）、把固定入口 `current` 指向它、在宿主配置里注册本插件的事件（Codex 写 `hooks.json`，Claude 写 `settings.json`）、记录安装事务。hook 命令只包含 `current` 路径，所以升级后路径不变，宿主信任只需做一次；旧副本保留作回滚。它**不会**写宿主信任、不会改项目、不会提交 Git。
 
 `doctor` 看的是四项不同的事，不要混为一谈：
 
@@ -65,6 +65,15 @@ node bin/workflow.mjs project enable --root "D:/你的项目"
 这一步是在项目根目录插入一段很短的 `AGENTS.md` 管理区，并建立本机绑定。它保留你原有的 AGENTS 正文，不要求你补 README、spec 或计划，也不会创建空 LESSONS。
 
 接入后，在已安装适配的 Claude Code 或 Codex 中打开**该项目里的新会话**，插件才会给出对应上下文。同一本机目录共用项目绑定，切换这两个宿主无需重复 `project enable`。多个独立 Lead 并行时，共享资料的写入需明确[知识负责人](docs/usage.md#安装与首次接入)。
+
+首次会话，Lead 会先做一次[项目对齐](docs/alignment.md)：只读扫描项目文档和工具链，把权威资料、验收入口、项目约定与 workflow 默认的差异写进 `docs/WORKFLOW-ALIGNMENT.md`。项目做法与 workflow 默认不同时**逐条问你**，不擅自按任何一方执行；发现文档过期或结构问题时只报告，批准后才改。之后会话开始和每个用户回合只 stat 索引，文件变了才增量更新，不会重扫整个项目。
+
+对齐可以手动触发：
+
+```powershell
+node bin/workflow.mjs project align scan --root "D:/你的项目"
+node bin/workflow.mjs project align status --root "D:/你的项目"
+```
 
 ### 第 3 步：在新会话里正常工作
 
@@ -114,6 +123,8 @@ node bin/workflow.mjs project enable --root "D:/你的项目"
 | 看 Codex 安装/信任/回调状态 | `node bin/workflow.mjs doctor --agent codex` |
 | 项目接入 | `node bin/workflow.mjs project enable --root "<项目>"` |
 | 项目停用 | `node bin/workflow.mjs project disable --root "<项目>"` |
+| 项目对齐扫描 | `node bin/workflow.mjs project align scan --root "<项目>"` |
+| 检查对齐是否过期 | `node bin/workflow.mjs project align status --root "<项目>"` |
 | 查看角色上下文 | `node bin/workflow.mjs context --role lead --project "<项目>"` |
 | 撤销 Codex 注册 | `node bin/workflow.mjs uninstall --agent codex` |
 | 撤销 Claude 注册 | `node bin/workflow.mjs uninstall --agent claude` |
@@ -129,7 +140,7 @@ node bin/workflow.mjs install --agent claude
 node bin/workflow.mjs install --agent codex
 ```
 
-它会先算出新的发布摘要，复制到新的固定副本，完整性校验通过后才切换该宿主的 hooks 命令，旧副本保留不动。两个宿主可以复用同一发布副本，但安装命令只更新所选宿主的注册。有活动任务或未辨认事务时会拒绝升级并告诉你原因，等任务结束再来即可。
+它会先算出新的发布摘要，复制到新的带摘要副本，完整性校验通过后才把 `current` 入口切换到新副本；hooks 命令字符串不变，宿主不需要重新信任。旧副本保留不动。两个宿主可以复用同一发布副本和同一入口，但安装命令只更新所选宿主的注册。有活动任务或未辨认事务时会拒绝升级并告诉你原因，等任务结束再来即可。
 
 切换后按对应宿主核对 `/hooks` 与确认提示，然后开一个新会话观察第一次回调。
 
@@ -139,6 +150,7 @@ node bin/workflow.mjs install --agent codex
 - **Worker**：在给定的允许路径内实施和自测，不递归派工。
 - **Reviewer**：只读审查，不改代码；分 Diff、Deep、Escalated 三档。
 - **AGENTS.md**：只是短导航，指向项目原有资料，不承载全部正文。
+- **项目对齐**：首次会话把项目资料与 workflow 默认的差异写成固定文件；真实差异逐条由你裁决，索引过期时增量更新。
 - **知识事务**：写入前存快照，失败留待办，不覆盖你的手改。
 - **任务信号**：task-start / phase / task-end 由 hook 与会话身份驱动，正常使用不必手工构造。
 

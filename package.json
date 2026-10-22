@@ -11,5 +11,5 @@
     "check": "node scripts/check-package.mjs",
     "demo": "node examples/demo.mjs"
   },
-  "files": ["bin", "src", "hooks", ".codex-plugin", "docs/workflow.md", "docs/roles", "docs/references", "docs/adapters", "docs/usage.md", "docs/design/protocol.md", "examples", "package.json", "plugin.json", "README.md"]
+  "files": ["bin", "src", "hooks", ".codex-plugin", "docs/workflow.md", "docs/alignment.md", "docs/roles", "docs/references", "docs/adapters", "docs/usage.md", "docs/design/protocol.md", "examples", "package.json", "plugin.json", "README.md"]
 }

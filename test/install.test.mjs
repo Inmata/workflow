@@ -36,6 +36,34 @@ test('V14 临时用户目录安装/重复安装/撤销保留其他插件和新�
   assert.deepEqual(restored.hooks.Stop.map(group => group.hooks[0].command), ['other-plugin-hook', 'later-user-hook']);
   assert.equal((await uninstall(directory)).status, 'not-installed');
 });
+test('V14 hook 指向固定入口 current，升级只替换链接目标', async () => {
+  const area = await temporary('install-current-');
+  const directory = path.join(area, 'state');
+  const userDir = path.join(area, '.codex');
+  const first = await install(directory, { userDir });
+  const link = path.join(directory, 'current');
+  assert.equal(await fs.realpath(link), await fs.realpath(first.releaseRoot));
+  const configFile = path.join(userDir, 'hooks.json');
+  const command = JSON.parse(await readFile(configFile, 'utf8')).hooks.SessionStart[0].hooks[0].command;
+  assert.ok(command.includes('/current/'), command);
+  assert.ok(!command.includes('/releases/'), command);
+  const once = await readFile(configFile, 'utf8');
+  assert.equal((await install(directory, { userDir })).status, 'already-installed');
+  assert.equal(await readFile(configFile, 'utf8'), once);
+  // 源码变化后升级：入口指向新快照，hook 命令字符串保持不变。
+  const source = path.join(area, 'source');
+  await fs.cp(root, source, { recursive: true, filter: item => !item.includes('.git') && !item.includes('node_modules') });
+  await fs.appendFile(path.join(source, 'README.md'), '\n升级标记\n');
+  const second = await install(directory, { userDir, sourceRoot: source });
+  assert.equal(second.status, 'installed');
+  assert.notEqual(second.releaseRoot, first.releaseRoot);
+  assert.equal(await fs.realpath(link), await fs.realpath(second.releaseRoot));
+  assert.equal(JSON.parse(await readFile(configFile, 'utf8')).hooks.SessionStart[0].hooks[0].command, command);
+  // 入口被换成普通目录时 doctor 报告不可用。
+  await fs.unlink(link);
+  await fs.mkdir(link);
+  assert.equal((await doctor(directory)).integrity, 'unavailable');
+});
 test('V14 自有 handler 被手改时撤销不覆盖，发布副本被改时停止维护', async () => {
   const area = await temporary('install-conflict-');
   const directory = path.join(area, 'state');

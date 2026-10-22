@@ -96,7 +96,7 @@ export async function handleHook(directory, event, options = {}) {
         } else if (hostTurn) {
           session = openTurn(state, project, event.session_id, hostTurn, { compact: event.source === 'compact', eventId: event.event_id, mode: event.permission_mode });
         }
-        return contextOutput(name, `workflow 入口：${JSON.stringify(projectContext(state, resolved, 'lead', event.session_id))}`);
+        return contextOutput(name, `workflow 入口：${JSON.stringify(await projectContext(state, resolved, 'lead', event.session_id))}`);
       }
       if (!session) return {};
       // Codex 严格核对 turn_id；Claude 的 prompt_id 只在入口事件保证存在，后续事件按当前回合关联。

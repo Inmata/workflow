@@ -5,10 +5,11 @@ import { fail, readState, stateDirectory } from '../src/store.mjs';
 import { enableProject, disableProject, attachWorktree, resolveProject, setOwner } from '../src/projects.mjs';
 import { getContext } from '../src/context.mjs';
 import { applyKnowledge, createPending, inspectKnowledge, recoverTransaction } from '../src/knowledge.mjs';
+import { alignmentStatus, applyAlignment, decideAlignment, scanAlignment, suggestAlignment } from '../src/alignment.mjs';
 import { handleHook } from '../src/hooks.mjs';
 import { AGENTS, doctor, install, uninstall } from '../src/install.mjs';
 
-const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'help']);
+const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'max-files', 'help']);
 function argumentsFor(argv) {
   const options = {}, commands = [];
   for (let index = 0; index < argv.length; index++) {
@@ -36,6 +37,8 @@ const help = {
     'project enable --root <目录> [--owner <sessionId>] [--coexistence-mode bounded|pending-only]',
     'project disable --root <目录>', 'project attach-worktree --project <projectId> --root <目录>',
     'project owner --project <projectId> --session <sessionId>',
+    'project align scan|status --root <目录> [--max-files N]',
+    'project align apply|decide|suggest --root <目录> --input <JSON文件>',
     'context --role lead|worker|reviewer [--project <目录>] [--session <sessionId>]',
     'signal --input <JSON文件> | --base64 <UTF-8 JSON>',
     'knowledge inspect --path <资料路径> [--project <目录>]',
@@ -49,9 +52,10 @@ const help = {
 allowed.add('path');
 async function main() {
   const { options, commands } = argumentsFor(process.argv.slice(2));
-  const [command, action] = commands;
+  const [command, action, subaction] = commands;
   if (options.help || !command) return help;
-  if (commands.length > (['project', 'knowledge', 'pending'].includes(command) ? 2 : 1)) fail('ARGUMENT', '命令后存在多余的位置参数');
+  const positional = command === 'project' && action === 'align' ? 3 : ['project', 'knowledge', 'pending'].includes(command) ? 2 : 1;
+  if (commands.length > positional) fail('ARGUMENT', '命令后存在多余的位置参数');
   const agent = options.agent || 'codex';
   if (!AGENTS.includes(agent)) fail('AGENT', `未知宿主 ${agent}；支持 ${AGENTS.join('/')}`);
   const directory = stateDirectory(options['state-dir']);
@@ -70,6 +74,13 @@ async function main() {
     if (action === 'disable') { if (!options.root) fail('ARGUMENT', 'disable 需要明确 --root'); return disableProject(directory, options.root); }
     if (action === 'attach-worktree') { if (!options.project || !options.root) fail('ARGUMENT', '需要明确 --project ID 和 --root'); return attachWorktree(directory, options.project, options.root); }
     if (action === 'owner') return setOwner(directory, options.project, options.session);
+    if (action === 'align') {
+      if (subaction === 'scan') return scanAlignment(directory, root, { maxFiles: options['max-files'] });
+      if (subaction === 'status') return alignmentStatus(directory, root);
+      if (subaction === 'apply') return applyAlignment(directory, root, await inputJSON(options));
+      if (subaction === 'decide') return decideAlignment(directory, root, await inputJSON(options));
+      if (subaction === 'suggest') return suggestAlignment(directory, root, await inputJSON(options));
+    }
   }
   if (command === 'knowledge') {
     if (action === 'inspect') return inspectKnowledge(directory, root, options.path);

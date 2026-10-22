@@ -30,7 +30,7 @@ node bin/workflow.mjs project enable --root "D:/某个已明确允许接入的�
 
 同一本机目录的绑定由两种宿主共用，切换已安装适配的宿主不必重新接入。多个独立 Lead 对共享资料的写入归属仍需明确，见下文的 `project owner`。
 
-`install` 修改所选宿主的实际用户 hooks 注册，只在已决定安装时执行。安装生成固定发布副本；没有需要用户配置的运行时依赖。状态默认 `%LOCALAPPDATA%/workflow`；隔离试用为每条命令指定相同 `--state-dir`，安装另指定临时 `--user-dir`（直接指向宿主配置目录，如 `.codex` 或 `.claude`，不是用户根）。发布副本与公共资料固定同一版本，活动任务/prepared 事务导致升级延期，完成或明确结束后再安装。安装副本被用户改写时停止覆盖并报告差异。
+`install` 修改所选宿主的实际用户 hooks 注册，只在已决定安装时执行。安装生成带摘要的发布副本，并用固定入口 `current` 指向它；hook 命令只含 `current` 路径，升级时路径不变，宿主信任只需做一次。没有需要用户配置的运行时依赖。状态默认 `%LOCALAPPDATA%/workflow`；隔离试用为每条命令指定相同 `--state-dir`，安装另指定临时 `--user-dir`（直接指向宿主配置目录，如 `.codex` 或 `.claude`，不是用户根）。发布副本与公共资料固定同一版本，活动任务/prepared 事务导致升级延期，完成或明确结束后再安装。安装副本被用户改写时停止覆盖并报告差异。
 
 新副本先在状态根 `release-staging/` 中复制并核对完整性，完成后才切换到正式发布目录。复制失败或中断不改用户配置；残留暂存目录保留供核查，可直接重试安装，清理时使用系统回收站。
 
@@ -47,6 +47,28 @@ node bin/workflow.mjs context --role lead --project "D:/已接入项目" --sessi
 ```
 
 未关联工作树、嵌套独立仓库、复制来的 AGENTS 不参与维护。多个 Lead 且未指定负责人时保留候选，禁止抢写。项目首次会话可暂定唯一 Lead；出现第二个独立 Lead 自动取消该推定，显式 owner 后才继续写共享资料。
+
+### 项目对齐
+
+首次进入已接入项目时，Lead 按[项目对齐协议](alignment.md)只读扫描文档和工具链，把结论写入 `docs/WORKFLOW-ALIGNMENT.md`。项目现有做法与 workflow 默认不同时，每条都作为待裁决差异逐条询问：项目现在怎么做、workflow 默认怎么做、实际影响、建议及理由。用户选择后才记录，不默认项目优先，也不默认插件优先。文档过期、重复或链接失效只写进结构建议，批准后才在后续任务修改。
+
+```powershell
+# 只扫描并写本机索引，不碰项目文件；默认 200 个文件
+node bin/workflow.mjs project align scan --root "D:/已接入项目"
+node bin/workflow.mjs project align scan --root "D:/已接入项目" --max-files 300
+
+# 检查索引是否过期；返回 changed/missing/directoryChanged 和待裁决数量
+node bin/workflow.mjs project align status --root "D:/已接入项目"
+
+# 写回 Lead 生成的对齐正文；只替换标记区，保留手写内容
+node bin/workflow.mjs project align apply --root "D:/已接入项目" --input align.json
+
+# 记录裁决、追加结构建议，并同步文档维护区
+node bin/workflow.mjs project align decide --root "D:/已接入项目" --input decision.json
+node bin/workflow.mjs project align suggest --root "D:/已接入项目" --input finding.json
+```
+
+`scan` 只记录路径、大小、mtime 和分类，不读正文；符号链接、硬链接和构建目录不进入索引。`apply`/`decide`/`suggest` 写入前核对文档指纹，用户或其他会话改过文档时返回 `CONFLICT` 并保留原文，重新 `scan` 后再写。会话上下文新增 `alignment` 字段：`exists=false` 表示未对齐，`stale=true` 表示索引文件或目录变化，`pendingDecisions`/`pendingFindings` 提醒还有多少项待确认。hook 只读状态，不自动写项目文件；对齐不新增 phase，也不派 Worker。
 
 ### 任务与回执
 

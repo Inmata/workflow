@@ -76,7 +76,7 @@ async function portableBlock(root) {
   for (const relative of ['README.md', 'spec.md', 'SPEC.md', 'PLAN.md', 'LESSONS.md']) {
     if (await readText(path.join(root, relative)) !== null) links.push(`[${relative}](${relative})`);
   }
-  return `${BEGIN}\nworkflow 已在本机明确接入；以当前会话 hook 提供的入口读取公共方法和对应角色指引。\n无 hook 入口时遵循项目已有约定，不由复制来的管理区推定接入。\n${links.length ? `已有资料：${links.join('、')}。\n` : ''}${END}`;
+  return `${BEGIN}\nworkflow 已在本机明确接入；以当前会话 hook 提供的入口读取公共方法和对应角色指引。\n无 hook 入口时遵循项目已有约定，不由复制来的管理区推定接入。\n首次会话先做项目对齐：结论写入 docs/WORKFLOW-ALIGNMENT.md，差异逐条询问用户，不擅自按任何一方执行。\n${links.length ? `已有资料：${links.join('、')}。\n` : ''}${END}`;
 }
 export async function enableProject(directory, root, options = {}) {
   root = await canonical(root);

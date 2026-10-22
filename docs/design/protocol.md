@@ -6,7 +6,7 @@
 
 状态根为 `--state-dir`，默认 `%LOCALAPPDATA%/workflow`（非 Windows 回退到用户数据目录）。`state.json` 的 `schemaVersion=1`，保存 `revision`、`projects`、`tasks`、`sessions`、`transactions`、`pending`、`install`。未知 schema 或损坏状态拒绝修改，hook 保守放行。锁通过独占创建获得，持有文件句柄；锁竞争立即返回 pending，不根据超时抢锁。锁释放保留可回收的诊断文件，不永久删除用户文件。
 
-项目保存 `projectId`、`root`（realpath）、`identity`（目录 dev/ino/birthtime 和 Git 公共目录）、`worktrees`、`knowledgeRoot`、`ownerSessionId`、`leadSessions`、`managedBlockHash`、`enabled`、`coexistenceMode`。同名、remote 相同、拷贝入口均不建立绑定。子目录识别遇到独立 `.git` 即停止继承；worktree 必须显式关联且核对公共目录。项目重绑需要显式 enable。多个 Lead 首次冲突时清空自动推定的知识负责人，显式 `project owner` 后才可共享写入。
+项目保存 `projectId`、`root`（realpath）、`identity`（目录 dev/ino/birthtime 和 Git 公共目录）、`worktrees`、`knowledgeRoot`、`ownerSessionId`、`leadSessions`、`managedBlockHash`、`enabled`、`coexistenceMode`；可选 `alignment` 见下文“项目对齐”。同名、remote 相同、拷贝入口均不建立绑定。子目录识别遇到独立 `.git` 即停止继承；worktree 必须显式关联且核对公共目录。项目重绑需要显式 enable。多个 Lead 首次冲突时清空自动推定的知识负责人，显式 `project owner` 后才可共享写入。
 
 任务为项目级稳定 ID，记录 `goal`、`parentTaskId`、`lifecycle`、`repairIssued`、`deliveries`、`candidates`、`permissions`。任务 ID 只可经 signal 显式绑定；hook 不根据提示词猜任务，不把新用户回合自动视为新任务。任务由 `task-start` 建立，`task-end` 明确结束；完成可有知识待办。权限包含 `mode=write|read-only|plan` 和本任务资料相对路径 `allowedPaths`，不允许任意源代码或配置写入。
 
@@ -63,9 +63,19 @@ PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输�
 
 锁文件在成功释放时移到状态根内的 retired-locks，临时失败产物保留。用户文件和安装副本不自动永久删除；uninstall 撤销自有注册并保留发布副本与记录。
 
+## 项目对齐
+
+对齐是接入后的准备工作，不新增 phase、不改 signal schema，也不建立任务。`project align scan` 只读扫描项目根并写本机状态 `state.projects[projectId].alignment`，不碰项目文件；`status` 只 stat 索引路径；`apply`、`decide`、`suggest` 才写 `docs/WORKFLOW-ALIGNMENT.md` 或根目录同名文件。
+
+索引保存 `schemaVersion`、`generatedAt`、`docPath`、`docFingerprint`、`files`（`path/size/mtimeMs/kind`）、`directories`（索引文件父目录的 `path/mtimeMs`）、`decisions` 与 `findings`（只存 ID、状态和裁决时间）。扫描收集文档文本和工具链入口，排除 `.git`、`node_modules`、`bin`、`obj`、`dist`、`build`、`work`、`release-staging`、缓存和临时目录；默认 200 个文件，`--max-files` 最大 1000。符号链接、硬链接和目录逃逸不进入索引，在 `skipped` 报告原因。每个文件只取大小和 mtime，不读正文；对齐文档自身不进入索引，避免写回后自判过期。
+
+`apply` 用 `workflow-alignment:begin/end` 标记区维护正文，标记外逐字保留；`decide`、`suggest` 按 `## 已裁决记录`、`## 结构建议` 标题定位小节，同一 ID 原位替换。写入前核对 `docFingerprint`（或输入 `baseline`），不一致返回 `CONFLICT` 并保留原文；写入使用同目录临时文件原子替换。首次 `apply`/`decide`/`suggest` 若索引为空，会先补一次只读扫描，保证后续变更检测有效。
+
+`projectContext` 注入 `alignment:{path,exists,docExists,stale,changed,missing,directoryChanged,pendingDecisions,pendingFindings}`。`stale` 只由索引文件大小/mtime 和父目录 mtime 变化得出，不读正文；`pendingDecisions`/`pendingFindings` 以对齐文档表格为准并与索引状态合并，绕过 `decide`/`suggest` 直接写表也不会漏计；`exists=false` 时按未对齐处理。hook 不自动写项目文件，只提示 Lead 增量更新或逐条确认待裁决项。
+
 ## 安装和版本
 
-`install --agent codex|claude [--user-dir <dir>]` 将发布白名单复制到状态根 `releases/<version>-<digest>`，命令使用固定 Node 与入口路径。只合并宿主配置（Codex `hooks.json`、Claude `settings.json`）中 workflow 自有分组；不写信任记录。Codex 记录保留在 `state.install`（兼容旧版），两个宿主另存于 `state.installs`，分别安装与撤销。自有 handler 必须 command 与 args 同时一致才可移除，避免误删共享 Node 路径的其他插件。保存自有分组、配置前后指纹和逆向操作，备份只含自有条目。活动任务或 prepared 事务存在则延期更新。发布副本指纹不符拒绝覆盖/使用，doctor 报告 unavailable。
+`install --agent codex|claude [--user-dir <dir>]` 将发布白名单复制到状态根 `releases/<version>-<digest>`，再把状态根 `current` 目录联接指向该副本；hook 命令固定使用 `current/bin/workflow.mjs`，升级只切换链接目标，配置字符串和宿主信任不变。只合并宿主配置（Codex `hooks.json`、Claude `settings.json`）中 workflow 自有分组；不写信任记录。Codex 记录保留在 `state.install`（兼容旧版），两个宿主另存于 `state.installs`，分别安装与撤销。自有 handler 必须 command 与 args 同时一致才可移除，避免误删共享 Node 路径的其他插件。保存自有分组、配置前后指纹和逆向操作，备份只含自有条目。活动任务或 prepared 事务存在则延期更新。发布副本指纹不符或 `current` 指向与记录不一致时拒绝覆盖/使用，doctor 报告 unavailable。
 
 AGENTS 仅有可携带的短管理区，不含机器绝对路径。disable 仅在管理区指纹一致时撤下，保留其他正文；用户改动时报告 conflict。uninstall 仅撤销与安装记录一致的自有 hooks；用户后来新增配置全部保留。doctor 分别报告 registration/discovery/trust/execution：未观测的宿主状态为 unknown，不能由配置存在推断可信或执行。
 

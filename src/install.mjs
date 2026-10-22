@@ -1,12 +1,12 @@
 import path from 'node:path';
 import os from 'node:os';
-import { copyFile, lstat, mkdir, readdir, readFile, rename } from 'node:fs/promises';
-import { atomicWrite, digest, fail, hostObservations, id, mutate, readState, readText, writeJSON } from './store.mjs';
+import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, symlink, unlink } from 'node:fs/promises';
+import { atomicWrite, digest, fail, hostObservations, id, mutate, readState, readText, samePath, writeJSON } from './store.mjs';
 import { PRODUCT_ROOT } from './context.mjs';
 import { CLAUDE_EVENTS, EVENTS, HOSTS as HOST_NAMES } from './hooks.mjs';
 
 export const RELEASE_PATHS = [
-  'bin', 'src', 'hooks', '.codex-plugin', 'docs/workflow.md', 'docs/roles',
+  'bin', 'src', 'hooks', '.codex-plugin', 'docs/workflow.md', 'docs/alignment.md', 'docs/roles',
   'docs/references', 'docs/adapters', 'docs/usage.md', 'docs/design/protocol.md',
   'examples', 'package.json', 'plugin.json', 'README.md',
 ];
@@ -38,6 +38,45 @@ export function hookCommand(releaseRoot, directory) {
   return `${start}${quote(process.execPath.replaceAll('\\', '/'))} ${quote(path.join(releaseRoot, 'bin', 'workflow.mjs').replaceAll('\\', '/'))} hook --agent codex --state-dir ${quote(directory.replaceAll('\\', '/'))}`;
 }
 const slash = value => value.replaceAll('\\', '/');
+// 宿主 hook 指向固定入口 current，升级只替换链接目标；配置字符串和宿主信任都不必重做。
+export function currentRoot(directory) {
+  return path.join(directory, 'current');
+}
+async function removeEntry(file) {
+  const info = await lstat(file).catch(() => null);
+  if (!info) return;
+  if (info.isSymbolicLink()) await unlink(file);
+  else await rm(file, { recursive: true, force: true });
+}
+async function pointCurrent(directory, releaseRoot) {
+  const link = currentRoot(directory);
+  const next = path.join(directory, `.current-${id('link')}`);
+  await removeEntry(next);
+  await symlink(releaseRoot, next, 'junction');
+  const aside = path.join(directory, `.current-old-${id('link')}`);
+  const existing = await lstat(link).catch(() => null);
+  if (existing) await rename(link, aside);
+  try {
+    await rename(next, link);
+  } catch (error) {
+    if (existing) await rename(aside, link).catch(() => {});
+    throw error;
+  }
+  if (existing) await removeEntry(aside);
+  return link;
+}
+async function currentTarget(directory) {
+  try { return await realpath(currentRoot(directory)); } catch { return null; }
+}
+// 快照内容与 fixed 入口指向必须同时正确，才算完整。
+async function releaseIntegrity(directory, record) {
+  if (!await verifyRelease(record)) return 'unavailable';
+  if (record.currentRoot) {
+    const target = await currentTarget(directory);
+    if (!target || !samePath(target, record.releaseRoot)) return 'unavailable';
+  }
+  return 'verified';
+}
 // 每个宿主的配置位置、事件集合和 handler 形状不同；安装记录按宿主分开维护，互不覆盖。
 export const HOSTS = {
   codex: {
@@ -123,7 +162,7 @@ export async function install(directory, { userDir, sourceRoot = PRODUCT_ROOT, a
     if (active && active.configFile !== configFile) fail('CONFIG', '已有另一用户目录安装，先明确撤销旧注册');
     const stripped = removeOwned(current.config, active);
     if (stripped.conflicts.length) fail('CONFLICT', `自有 hook 被手改/移除，保留配置：${stripped.conflicts.join(',')}`);
-    if (active?.releaseHash === releaseHash) return { status: 'already-installed', agent, version: active.version, releaseRoot: active.releaseRoot, requiresTrust: 'unknown' };
+    if (active?.releaseHash === releaseHash && active?.currentRoot && samePath(active.currentRoot, currentRoot(directory))) return { status: 'already-installed', agent, version: active.version, releaseRoot: active.releaseRoot, currentRoot: active.currentRoot, requiresTrust: 'unknown' };
     const activeTasks = Object.values(state.tasks).filter(task => task.lifecycle === 'active').map(task => task.taskId);
     const activeTransactions = Object.values(state.transactions).filter(tx => tx.status === 'prepared').map(tx => tx.transactionId);
     if (activeTasks.length || activeTransactions.length) return { status: 'deferred', reason: '仍有活动任务或未辨认的事务；保留当前发布副本和配置', activeTasks, activeTransactions };
@@ -144,11 +183,13 @@ export async function install(directory, { userDir, sourceRoot = PRODUCT_ROOT, a
       await mkdir(path.dirname(releaseRoot), { recursive: true });
       await rename(stagingRoot, releaseRoot);
     }
+    // 配置只认固定入口；releaseRoot 仅作完整性校验和回滚快照。
+    const link = await pointCurrent(directory, releaseRoot);
     const next = stripped.config;
     next.hooks ||= {};
     const handlers = {};
     for (const event of host.events) {
-      const handler = host.handler(releaseRoot, directory, event);
+      const handler = host.handler(link, directory, event);
       handlers[event] = handler;
       next.hooks[event] ||= [];
       next.hooks[event].push({ hooks: [handler] });
@@ -156,7 +197,7 @@ export async function install(directory, { userDir, sourceRoot = PRODUCT_ROOT, a
     const after = JSON.stringify(next, null, 2) + '\n';
     const changeId = id('install');
     const target = handlers[host.events[0]];
-    const record = { status: 'prepared', agent, events: host.events, changeId, version: packageInfo.version, releaseHash, releaseRoot, files, configFile, command: target.command, args: target.args ?? null, handlers, beforeHash: current.text === null ? null : digest(current.text), afterHash: digest(after), registeredAt: new Date().toISOString(), previousOwned: active ? { command: active.command, args: active.args ?? null, handlers: active.handlers } : null };
+    const record = { status: 'prepared', agent, events: host.events, changeId, version: packageInfo.version, releaseHash, releaseRoot, currentRoot: link, files, configFile, command: target.command, args: target.args ?? null, handlers, beforeHash: current.text === null ? null : digest(current.text), afterHash: digest(after), registeredAt: new Date().toISOString(), previousOwned: active ? { command: active.command, args: active.args ?? null, handlers: active.handlers } : null };
     // Only owned definitions and fingerprints are backed up, never unrelated configuration or credentials.
     await writeJSON(path.join(directory, 'installation-changes', `${changeId}.json`), record);
     state.installs[agent] = record;
@@ -166,7 +207,7 @@ export async function install(directory, { userDir, sourceRoot = PRODUCT_ROOT, a
     await atomicWrite(configFile, after);
     record.status = 'installed';
     await save();
-    return { status: 'installed', agent, version: record.version, releaseRoot, configFile, changeId, requiresTrust: '请用实际宿主支持的 /hooks 审核当前定义；新会话验证，不自动修改信任记录' };
+    return { status: 'installed', agent, version: record.version, releaseRoot, currentRoot: link, configFile, changeId, requiresTrust: '请用实际宿主支持的 /hooks 审核当前定义；新会话验证，不自动修改信任记录' };
   });
 }
 export async function uninstall(directory, { agent = 'codex' } = {}) {
@@ -203,7 +244,7 @@ export async function doctor(directory, root, { agent = 'codex' } = {}) {
   return {
     schemaVersion: 1, agent, registration: configuration, discovery: 'unknown', trust: 'unknown',
     execution: actual.length ? { status: 'callback-observed-host-unverified', events: actual } : 'unknown',
-    integrity: record ? await verifyRelease(record) ? 'verified' : 'unavailable' : 'not-installed',
+    integrity: record ? await releaseIntegrity(directory, record) : 'not-installed',
     version: record?.version || null,
     activeTasks: Object.values(state.tasks).filter(task => task.lifecycle === 'active').map(task => task.taskId),
     project: project ? { projectId: project.project.projectId, enabled: true, coexistenceMode: project.project.coexistenceMode, ownerSessionId: project.project.ownerSessionId } : null,
