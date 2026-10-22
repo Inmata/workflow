@@ -24,15 +24,17 @@ export function openTurn(state, project, sessionId, turnId, { compact = false, e
     ticket: id('ticket'), interruptEpoch: session?.interruptEpoch || 0,
     revision: (session?.revision || 0) + 1, phase: 'unknown', interrupted: false,
     permissionMode: mode || 'unknown', eventId: eventId || null,
-    receipts: session?.receipts || {}, observed: session?.observed || {},
+    receipts: session?.receipts || {}, observed: session?.observed || {}, contextKey: session?.contextKey,
   };
   state.sessions[key] = session;
-  if (!project.leadSessions.includes(sessionId)) {
-    project.leadSessions.push(sessionId);
-    if (project.leadSessions.length === 1 && !project.ownerExplicit) project.ownerSessionId = sessionId;
-    else if (!project.ownerExplicit) project.ownerSessionId = null;
-  }
+  refreshOwners(state, project);
   return session;
+}
+export function refreshOwners(state, project) {
+  project.leadSessions = Object.values(state.sessions).filter(s => s.projectId === project.projectId && !s.interrupted && s.ticket).map(s => s.sessionId);
+  const owner = Object.values(state.sessions).find(s => s.projectId === project.projectId && s.sessionId === project.ownerSessionId);
+  if (project.ownerExplicit && owner?.interrupted) { project.ownerExplicit = false; project.ownerSessionId = null; }
+  if (!project.ownerExplicit) project.ownerSessionId = project.leadSessions.length === 1 ? project.leadSessions[0] : null;
 }
 export function currentIdentity(state, payload, { replay = false, requireTask = true } = {}) {
   if (payload?.schemaVersion !== SCHEMA_VERSION) fail('SCHEMA', '未知信号版本');
@@ -47,9 +49,10 @@ export function currentIdentity(state, payload, { replay = false, requireTask = 
   return { project, session, task };
 }
 export function pendingFor(state, projectId, taskId, reason, kind = 'knowledge-pending', extra = {}) {
-  const existing = Object.values(state.pending).find(p => p.projectId === projectId && p.taskId === taskId && p.kind === kind && p.status === 'open');
+  const scope = extra.transactionId || extra.deliveryId || digest(JSON.stringify({ reason, candidateIds: extra.candidateIds || [] }));
+  const existing = Object.values(state.pending).find(p => p.projectId === projectId && p.taskId === taskId && p.kind === kind && p.status === 'open' && (p.transactionId || p.deliveryId || p.scope) === scope);
   if (existing) { existing.reason = reason; Object.assign(existing, extra); return existing; }
-  const pending = { pendingId: id('pending'), projectId, taskId, kind, status: 'open', reason, createdAt: new Date().toISOString(), ...extra };
+  const pending = { pendingId: id('pending'), projectId, taskId, kind, scope, status: 'open', reason, createdAt: new Date().toISOString(), ...extra };
   state.pending[pending.pendingId] = pending;
   return pending;
 }
@@ -91,7 +94,7 @@ export function acceptSignal(state, payload) {
       task = { projectId: project.projectId, taskId: payload.taskId, goal: payload.goal, parentTaskId: payload.parentTaskId || null, lifecycle: 'active', repairIssued: false, deliveries: {}, candidates: {}, permissions, createdAt: new Date().toISOString() };
       state.tasks[key] = task;
     } else {
-      if (task.lifecycle !== 'active' && !Object.values(state.pending).some(p => p.projectId === project.projectId && p.taskId === payload.taskId && p.kind === 'knowledge-pending' && p.status === 'open')) fail('TASK', '已完成任务无待接续知识');
+      if (!['active', 'suspended'].includes(task.lifecycle) && !Object.values(state.pending).some(p => p.projectId === project.projectId && p.taskId === payload.taskId && p.kind === 'knowledge-pending' && p.status === 'open')) fail('TASK', '已完成任务无待接续知识');
       task.lifecycle = 'active';
     }
     session.taskId = payload.taskId;
@@ -107,7 +110,6 @@ export function acceptSignal(state, payload) {
         task.deliveries[payload.deliveryId] ||= { deliveryId: payload.deliveryId, disposition: null };
       }
     } else if (payload.action === 'task-end') {
-      if (session.phase === 'delivering' && !validDisposition(state, session, task.deliveries[session.deliveryId]?.disposition)) fail('DISPOSITION', '明确交付需先处置或留下可定位待办，再结束任务');
       task.lifecycle = 'complete';
       session.phase = 'unknown';
     } else if (payload.action !== 'disposition') fail('ACTION', '未知信号动作');
@@ -115,9 +117,9 @@ export function acceptSignal(state, payload) {
       if (payload.deliveryId !== session.deliveryId || !task.deliveries[payload.deliveryId]) fail('DELIVERY', '交付身份不匹配');
       if (!validDisposition(state, payload, payload.disposition)) fail('DISPOSITION', '无有效事务、理由或待办；未接受处置');
       task.deliveries[payload.deliveryId].disposition = payload.disposition;
-      if (payload.disposition.status !== 'pending-recovery') {
+      if (payload.disposition.status === 'updated') {
         for (const pending of Object.values(state.pending)) {
-          if (pending.projectId === project.projectId && pending.taskId === task.taskId && pending.kind === 'knowledge-pending') pending.status = 'closed';
+          if (pending.projectId === project.projectId && pending.taskId === task.taskId && payload.disposition.transactionIds.includes(pending.transactionId) && state.transactions[pending.transactionId]?.status === 'applied') pending.status = 'closed';
         }
       }
     }
@@ -128,15 +130,8 @@ export function acceptSignal(state, payload) {
   return result;
 }
 export function stop(state, project, session, event = {}) {
-  if (!session || session.interrupted || session.phase !== 'delivering') return {};
-  const task = state.tasks[taskKey(project.projectId, session.taskId)];
-  if (!task || task.lifecycle !== 'active') return {};
-  const delivery = task.deliveries[session.deliveryId];
-  if (validDisposition(state, session, delivery?.disposition)) return {};
-  pendingFor(state, project.projectId, task.taskId, '明确交付缺少有效知识处置', 'knowledge-pending', { deliveryId: session.deliveryId });
-  if (task.repairIssued || event.stop_hook_active === true || project.coexistenceMode === 'pending-only') return {};
-  task.repairIssued = true;
-  return { decision: 'block', reason: `workflow：任务 ${task.taskId} 已明确交付但缺少处置。本任务仅补此一轮：核对项目资料，提交 updated、no-new-learning 或 pending-recovery；只处理 workflow 知识待办，不恢复业务，不重跑其他插件。先用 context 取得当前身份。` };
+  // 经验采集独立于业务交付；Stop 从不启动复盘或要求补写经验。
+  return {};
 }
 export function interrupt(state, project, session) {
   if (!session || session.interrupted) return;
@@ -145,5 +140,10 @@ export function interrupt(state, project, session) {
   session.ticket = null;
   session.interrupted = true;
   session.phase = 'unknown';
-  if (session.taskId) pendingFor(state, project.projectId, session.taskId, '业务被用户中断；仅保存，不自动继续', 'business-incomplete');
+  const task = state.tasks[taskKey(project.projectId, session.taskId)];
+  if (task?.lifecycle === 'active') {
+    task.lifecycle = 'suspended';
+    pendingFor(state, project.projectId, session.taskId, '业务被中断或会话结束；仅保存，不自动继续', 'business-incomplete');
+  }
+  refreshOwners(state, project);
 }

@@ -1,6 +1,8 @@
 import path from 'node:path';
 import { lstat, readdir } from 'node:fs/promises';
-import { atomicWrite, canonical, digest, fail, mutate, readState, readText, samePath } from './store.mjs';
+import { canonical, digest, fail, mutate, readState, readText, samePath } from './store.mjs';
+import { authorizeWrite } from './knowledge.mjs';
+import { document, safeDocument, writeDocuments } from './documents.mjs';
 
 // 对齐索引只收集路径、大小和 mtime，正文由 Lead 读取和归纳。
 // 索引本身是确定性数据，不调用模型，也不写项目文件（apply 除外）。
@@ -11,7 +13,7 @@ const BEGIN = '<!-- workflow-alignment:begin -->';
 const END = '<!-- workflow-alignment:end -->';
 const DOC_EXTENSIONS = new Set(['.md', '.txt', '.rst', '.adoc']);
 const TOOL_FILES = new Set(['package.json', 'Makefile', 'makefile', 'pyproject.toml', 'Cargo.toml', 'go.mod']);
-const SKIP_DIRS = new Set(['.git', 'node_modules', 'bin', 'obj', 'dist', 'build', 'work', 'releases', 'release-staging', 'backups', 'vendor', '.vs', '.idea', 'coverage', 'target', 'tmp']);
+const SKIP_DIRS = new Set(['.git', 'node_modules', 'bin', 'obj', 'dist', 'build', 'work', 'releases', 'release-staging', 'backups', 'vendor', '.vs', '.idea', 'coverage', 'target', 'tmp', '.workflow']);
 const DECISION_STATUS = new Set(['pending', 'accepted-project', 'accepted-workflow', 'accepted-change', 'rejected']);
 const MAX_FILES = 300;
 const MAX_DEPTH = 4;
@@ -166,7 +168,8 @@ async function inspect(project, options = {}) {
     path: alignment.docPath,
     exists: true,
     docExists: doc !== null,
-    stale: changed.length > 0 || missing.length > 0 || directoryChanged.length > 0,
+    incomplete: checked < (alignment.files || []).length,
+    stale: checked < (alignment.files || []).length || changed.length > 0 || missing.length > 0 || directoryChanged.length > 0,
     changed: changed.slice(0, CHECK_MAX_CHANGES),
     missing: missing.slice(0, CHECK_MAX_CHANGES),
     directoryChanged: directoryChanged.slice(0, CHECK_MAX_CHANGES),
@@ -220,109 +223,65 @@ async function refreshDirectory(alignment, target, relative) {
   else alignment.directories = [...(alignment.directories || []), { path: parent, mtimeMs: info.mtimeMs }];
 }
 
-export async function applyAlignment(directory, root, input = {}) {
+
+function resolvePending(text, item) {
+  return text.split('\n').map(line => {
+    if (!line.startsWith('|') || lineKey(line) !== item.id) return line;
+    const cells = line.split('|');
+    if (cells[cells.length - 2]?.trim() === 'pending') cells[cells.length - 2] = ' ' + item.status + ' ';
+    return cells.join('|');
+  }).join('\n');
+}
+async function updateAlignment(directory, root, input, action) {
   const target = await canonical(root);
-  if (typeof input.content !== 'string' || !input.content.trim()) fail('INPUT', 'apply 需要非空 content');
+  // 权限在索引和正文写入之前核对。
+  const initial = await readState(directory);
+  const auth = authorizeWrite(initial, input);
+  if (!samePath(auth.project.knowledgeRoot, target)) fail('IDENTITY', '对齐目标与身份不一致');
   await ensureIndexed(directory, target);
-  const state = await readState(directory);
-  const project = projectIn(state, target);
-  if (!project) fail('PROJECT', '项目未启用；先执行 project enable');
-  const relative = await resolveDocument(project, input.docPath);
-  const file = path.join(target, relative);
-  const original = await readText(file, '');
-  const recorded = typeof input.baseline === 'string' ? input.baseline : (project.alignment?.docFingerprint ?? null);
-  if (recorded !== null && digest(original) !== recorded) fail('CONFLICT', '对齐文档已被修改；先检查或使用 --reset-managed');
-  const block = `${BEGIN}\n${input.content.replace(/\s+$/, '')}\n${END}`;
-  let output;
-  if (original.includes(BEGIN) && original.includes(END)) output = original.slice(0, original.indexOf(BEGIN)) + block + original.slice(original.indexOf(END) + END.length);
-  else output = `${original}${original && !original.endsWith('\n') ? '\n' : ''}${block}\n`;
-  const decisions = Array.isArray(input.decisions) ? input.decisions : [];
-  for (const item of decisions) {
-    if (!item?.id || !DECISION_STATUS.has(item.status)) fail('INPUT', '裁决状态无效');
-    output = replaceSection(output, '## 已裁决记录', `${item.id} ${item.status}：${item.reason || '未填写理由'}`);
-  }
-  await atomicWrite(file, output);
-  await mutate(directory, async (current, save) => {
-    const currentProject = projectIn(current, target);
-    if (!currentProject) fail('PROJECT', '项目未启用；先执行 project enable');
-    currentProject.alignment ||= { schemaVersion: ALIGNMENT_SCHEMA, files: [], directories: [], decisions: [], findings: [] };
-    currentProject.alignment.docPath = relative;
-    currentProject.alignment.docFingerprint = digest(output);
-    await refreshDirectory(currentProject.alignment, target, relative);
-    if (decisions.length) {
-      const map = new Map((currentProject.alignment.decisions || []).map(item => [item.id, item]));
-      for (const item of decisions) map.set(item.id, { id: item.id, status: item.status, decidedAt: new Date().toISOString() });
-      currentProject.alignment.decisions = [...map.values()];
+  return mutate(directory, async (state, save) => {
+    const { project, session, task } = authorizeWrite(state, input);
+    const relative = await resolveDocument(project, input.docPath);
+    if (!task.permissions.allowedPaths.includes(relative)) fail('PERMISSION', '对齐文件不在任务范围');
+    const original = await document(await safeDocument(target, relative));
+    if (!Object.hasOwn(input, 'baseline') || input.baseline !== original.fingerprint) fail('CONFLICT', '需要最新对齐文档指纹');
+    let output = original.content;
+    const decisions = input.decisions || [], findings = input.findings || [];
+    if (!Array.isArray(decisions) || !Array.isArray(findings)) fail('INPUT', '需要数组');
+    if (action === 'apply') {
+      if (typeof input.content !== 'string' || !input.content.trim()) fail('INPUT', '需要 content');
+      const block = BEGIN + '\n' + input.content.trimEnd() + '\n' + END;
+      const a = output.indexOf(BEGIN), b = output.indexOf(END);
+      if ((a >= 0) !== (b >= 0) || (a >= 0 && b < a)) fail('CONFLICT', '对齐管理区不完整');
+      output = a >= 0 ? output.slice(0, a) + block + output.slice(b + END.length) : output + (output && !output.endsWith('\n') ? '\n' : '') + block + '\n';
     }
-    await save();
+    if (action === 'decide' && !decisions.length) fail('INPUT', '需要 decisions');
+    if (action === 'suggest' && !findings.length) fail('INPUT', '需要 findings');
+    for (const item of decisions) {
+      if (!item?.id || !DECISION_STATUS.has(item.status)) fail('INPUT', '裁决状态无效');
+      output = resolvePending(output, item);
+      output = replaceSection(output, '## 已裁决记录', item.id + ' ' + item.status + '：' + (item.reason || '未填写理由'));
+    }
+    for (const item of findings) {
+      if (!item?.id || !item.problem) fail('INPUT', '建议需要 id 和 problem');
+      output = replaceSection(output, '## 结构建议', '| ' + [item.id, item.problem, item.location || '未定位', item.recommendation || '未给出', 'pending'].join(' | ') + ' |');
+    }
+    const tx = await writeDocuments(directory, state, save, project, [{ path: relative, baseline: input.baseline, content: output, reason: '项目对齐 ' + action, responsibility: 'Lead', evidence: input.evidence || ['task:' + task.taskId] }], { taskId: task.taskId, sessionId: session.sessionId });
+    session.revision++;
+    if (tx.status !== 'applied') return { status: tx.status, transactionId: tx.transactionId, files: tx.files };
+    const alignment = project.alignment;
+    alignment.docPath = relative; alignment.docFingerprint = digest(output);
+    const dm = new Map((alignment.decisions || []).map(i => [i.id, i]));
+    for (const i of decisions) dm.set(i.id, { id: i.id, status: i.status, decidedAt: new Date().toISOString() });
+    alignment.decisions = [...dm.values()];
+    const fm = new Map((alignment.findings || []).map(i => [i.id, i]));
+    for (const i of findings) fm.set(i.id, { id: i.id, status: 'pending' });
+    for (const i of decisions) if (fm.has(i.id)) fm.set(i.id, { id: i.id, status: i.status });
+    alignment.findings = [...fm.values()];
+    await refreshDirectory(alignment, target, relative);
+    return { status: action === 'apply' ? 'applied' : 'recorded', transactionId: tx.transactionId, docPath: relative, revision: session.revision };
   });
-  return { status: 'applied', docPath: relative };
 }
-
-async function docNameFor(project, target) {
-  if (project.alignment?.docPath) return project.alignment.docPath;
-  const docs = await lstat(path.join(target, 'docs')).catch(() => null);
-  return docs?.isDirectory() ? DEFAULT_DOC : FALLBACK_DOC;
-}
-
-export async function decideAlignment(directory, root, input = {}) {
-  const target = await canonical(root);
-  if (!Array.isArray(input.decisions) || !input.decisions.length) fail('INPUT', '需要 decisions 数组');
-  await ensureIndexed(directory, target);
-  const state = await readState(directory);
-  const project = projectIn(state, target);
-  if (!project) fail('PROJECT', '项目未启用；先执行 project enable');
-  const lines = [];
-  for (const item of input.decisions) {
-    if (!item?.id || !DECISION_STATUS.has(item.status)) fail('INPUT', '裁决状态无效');
-    lines.push({ id: item.id, status: item.status, reason: item.reason || '未填写理由' });
-  }
-  const relative = await docNameFor(project, target);
-  const file = path.join(target, relative);
-  let text = await readText(file, '');
-  for (const item of lines) text = replaceSection(text, '## 已裁决记录', `${item.id} ${item.status}：${item.reason}`);
-  await atomicWrite(file, text);
-  await mutate(directory, async (current, save) => {
-    const currentProject = projectIn(current, target);
-    if (!currentProject) fail('PROJECT', '项目未启用；先执行 project enable');
-    currentProject.alignment ||= { schemaVersion: ALIGNMENT_SCHEMA, docPath: relative, files: [], directories: [], decisions: [], findings: [] };
-    const map = new Map((currentProject.alignment.decisions || []).map(item => [item.id, item]));
-    for (const item of lines) map.set(item.id, { id: item.id, status: item.status, decidedAt: new Date().toISOString() });
-    currentProject.alignment.decisions = [...map.values()];
-    currentProject.alignment.docFingerprint = digest(text);
-    await refreshDirectory(currentProject.alignment, target, relative);
-    await save();
-  });
-  return { status: 'recorded', decisions: lines.map(item => item.id) };
-}
-
-export async function suggestAlignment(directory, root, input = {}) {
-  const target = await canonical(root);
-  if (!Array.isArray(input.findings) || !input.findings.length) fail('INPUT', '需要 findings 数组');
-  await ensureIndexed(directory, target);
-  const state = await readState(directory);
-  const project = projectIn(state, target);
-  if (!project) fail('PROJECT', '项目未启用；先执行 project enable');
-  const rows = [];
-  for (const item of input.findings) {
-    if (!item?.id || !item.problem) fail('INPUT', '结构建议需要 id 和 problem');
-    rows.push({ id: item.id, problem: item.problem, location: item.location || '未定位', recommendation: item.recommendation || '未给出', status: 'pending' });
-  }
-  const relative = await docNameFor(project, target);
-  const file = path.join(target, relative);
-  let text = await readText(file, '');
-  for (const row of rows) text = replaceSection(text, '## 结构建议', `| ${row.id} | ${row.problem} | ${row.location} | ${row.recommendation} | ${row.status} |`);
-  await atomicWrite(file, text);
-  await mutate(directory, async (current, save) => {
-    const currentProject = projectIn(current, target);
-    if (!currentProject) fail('PROJECT', '项目未启用；先执行 project enable');
-    currentProject.alignment ||= { schemaVersion: ALIGNMENT_SCHEMA, docPath: relative, files: [], directories: [], decisions: [], findings: [] };
-    const map = new Map((currentProject.alignment.findings || []).map(item => [item.id, item]));
-    for (const row of rows) map.set(row.id, { id: row.id, status: row.status });
-    currentProject.alignment.findings = [...map.values()];
-    currentProject.alignment.docFingerprint = digest(text);
-    await refreshDirectory(currentProject.alignment, target, relative);
-    await save();
-  });
-  return { status: 'recorded', findings: rows.map(item => item.id) };
-}
+export const applyAlignment = (directory, root, input = {}) => updateAlignment(directory, root, input, 'apply');
+export const decideAlignment = (directory, root, input = {}) => updateAlignment(directory, root, input, 'decide');
+export const suggestAlignment = (directory, root, input = {}) => updateAlignment(directory, root, input, 'suggest');

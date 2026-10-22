@@ -41,19 +41,18 @@ test('Claude PostToolUse 从 stdout 消费 signal，完成交付和显式结束'
   assert.equal(Object.values(state.tasks)[0].lifecycle, 'complete');
 });
 
-test('Claude Stop 无 turn_id 时核对当前回合，漏处置只补一轮', async () => {
+test('Claude Stop 不因缺少经验处置阻止交付或追加模型轮次', async () => {
   const f = await fixture({ claude: true });
   await claudeStart(f);
   await claudeEmit(f, { action: 'phase', phase: 'delivering', deliveryId: 'delivery-1' });
   const stop = await claudeEvent(f, 'Stop', { stop_hook_active: false });
-  assert.equal(stop.decision, 'block');
-  assert.ok(stop.reason.includes('缺少处置'));
+  assert.deepEqual(stop, {});
   assert.deepEqual(await claudeEvent(f, 'Stop', { stop_hook_active: true }), {});
   const pending = Object.values((await readState(f.directory)).pending);
-  assert.equal(pending.filter(item => item.kind === 'knowledge-pending').length, 1);
+  assert.equal(pending.filter(item => item.kind === 'knowledge-pending').length, 0);
 });
 
-test('Claude StopFailure 保存中断，新回合沿用任务预算后可明确结束', async () => {
+test('Claude StopFailure 挂起任务，新回合显式恢复后可结束', async () => {
   const f = await fixture({ claude: true });
   await claudeStart(f);
   assert.deepEqual(await claudeEvent(f, 'StopFailure', { error: 'interrupted' }), {});
@@ -61,8 +60,10 @@ test('Claude StopFailure 保存中断，新回合沿用任务预算后可明确�
   const session = Object.values(interrupted.sessions).find(item => item.sessionId === f.sessionId);
   assert.equal(session.interrupted, true);
   assert.equal(session.ticket, null);
+  assert.equal(Object.values(interrupted.tasks)[0].lifecycle, 'suspended');
   assert.equal(Object.values(interrupted.pending).filter(item => item.kind === 'business-incomplete').length, 1);
   assert.ok((await claudeEvent(f, 'UserPromptSubmit')).hookSpecificOutput);
+  await claudeStart(f);
   const ended = await claudeEmit(f, { action: 'task-end' });
   assert.equal(ended.result.accepted, true);
 });

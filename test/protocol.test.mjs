@@ -7,14 +7,14 @@ import { taskKey } from '../src/protocol.mjs';
 import { createPending } from '../src/knowledge.mjs';
 import { deliver, emit, event, fixture, identity, start } from './helpers.mjs';
 
-test('V07 每任务一次预算，重复 Stop、重启、跨 turn、压缩和新 delivery 均不重置', async () => {
+test('交付不要求复盘，重复 Stop、重启、跨 turn 与压缩均不补偿', async () => {
   const f = await fixture();
   await start(f);
   assert.equal((await deliver(f)).result.accepted, true);
-  assert.equal((await event(f, 'Stop')).decision, 'block');
+  assert.deepEqual(await event(f, 'Stop'), {});
   assert.deepEqual(await event(f, 'Stop'), {});
   const persisted = await readState(f.directory);
-  assert.equal(persisted.tasks[taskKey(f.projectId, f.taskId)].repairIssued, true);
+  assert.equal(persisted.tasks[taskKey(f.projectId, f.taskId)].repairIssued, false);
   f.turnId = 'turn-2';
   await event(f, 'UserPromptSubmit');
   assert.deepEqual(await event(f, 'Stop'), {});
@@ -26,7 +26,8 @@ test('V07 每任务一次预算，重复 Stop、重启、跨 turn、压缩和新
   await event(f, 'SessionStart', { source: 'compact' });
   assert.deepEqual(await identity(f), beforeCompact);
   assert.deepEqual(await event(f, 'Stop'), {});
-  assert.equal((await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)].repairIssued, true);
+  assert.equal((await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)].repairIssued, false);
+  assert.equal((await emit(f, { action: 'task-end' })).result.accepted, true);
 });
 test('V03/V08 unknown、operation-only、executing、waiting-user 均不补偿', async () => {
   const f = await fixture();
@@ -83,16 +84,16 @@ test('V02 不同 session/turn 不消费当前回执或 Stop 预算', async () =>
   assert.deepEqual(await event(f, 'Stop', { session_id: 'other-session' }), {});
   assert.deepEqual(await event(f, 'Stop', { turn_id: 'other-turn' }), {});
   assert.equal((await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)].repairIssued, false);
-  assert.equal((await event(f, 'Stop')).decision, 'block');
+  assert.deepEqual(await event(f, 'Stop'), {});
 });
-test('V13 pending-only 降级保留待办，其他插件补偿不增加预算', async () => {
+test('pending-only 兼容字段不再为无经验交付制造待办', async () => {
   const f = await fixture({ coexistenceMode: 'pending-only' });
   await start(f);
   await deliver(f);
   assert.deepEqual(await event(f, 'Stop'), {});
   const state = await readState(f.directory);
   assert.equal(state.tasks[taskKey(f.projectId, f.taskId)].repairIssued, false);
-  assert.equal(Object.values(state.pending).filter(p => p.kind === 'knowledge-pending').length, 1);
+  assert.equal(Object.values(state.pending).filter(p => p.kind === 'knowledge-pending').length, 0);
 });
 test('未知 schema 和损坏状态不阻断宿主，原字节保持', async () => {
   const f = await fixture();

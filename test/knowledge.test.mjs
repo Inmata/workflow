@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { link, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
-import { applyKnowledge, inspectKnowledge, recoverTransaction, safeDocument } from '../src/knowledge.mjs';
+import { applyKnowledge, createPending, inspectKnowledge, recoverTransaction, safeDocument } from '../src/knowledge.mjs';
 import { readState } from '../src/store.mjs';
 import { setOwner } from '../src/projects.mjs';
 import { deliver, event, fixture, identity, start } from './helpers.mjs';
@@ -68,6 +68,24 @@ test('V11 崩溃后依前后指纹辨认已写，第三种内容冲突且不重�
   const conflict = await recoverTransaction(f.directory, tx.transactionId, f.project);
   assert.equal(conflict.files[0].status, 'conflict');
   assert.equal(await readFile(path.join(f.project, 'README.md'), 'utf8'), '用户的第三种内容');
+});
+
+test('同一候选的两个目标必须全部成功；独立待办不会随其他事务关闭', async () => {
+  const f = await fixture(); await start(f);
+  const independent = await createPending(f.directory, { ...await identity(f), reason: '另一项材料缺少证据' });
+  const first = await change(f);
+  const second = await change(f, 'LESSONS.md', '# 同一发现的第二个目标\n');
+  await writeFile(path.join(f.project, 'LESSONS.md'), '用户写入');
+  const partial = await applyKnowledge(f.directory, await input(f, [first, second]));
+  assert.equal(partial.status, 'partial');
+  let state = await readState(f.directory);
+  assert.equal(Object.values(state.tasks)[0].candidates['finding-1'].status, 'pending');
+  second.baseline = (await inspectKnowledge(f.directory, f.project, 'LESSONS.md')).fingerprint;
+  assert.equal((await applyKnowledge(f.directory, await input(f, [second], []))).status, 'applied');
+  state = await readState(f.directory);
+  assert.equal(Object.values(state.tasks)[0].candidates['finding-1'].status, 'applied');
+  assert.equal(state.pending[partial.pendingId].status, 'closed');
+  assert.equal(state.pending[independent.pendingId].status, 'open');
 });
 test('快照准备后外部编辑仍拒绝覆盖', async () => {
   const f = await fixture();

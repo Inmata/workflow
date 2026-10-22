@@ -131,7 +131,7 @@ node bin/workflow.mjs project align suggest --root "D:/项目" --input finding.j
 }
 ```
 
-`apply` 的 `baseline` 可选；不传时使用最近一次 `scan`/`apply` 记录的文档指纹。`decide` 和 `suggest` 使用同样的冲突检查。首次 `apply`/`decide`/`suggest` 若还没有索引，会先按默认上限补做一次只读扫描，保证之后能检测变更。
+以上只展示业务字段。三个写命令还必须带[当前身份](usage.md#任务与回执)和明确的 `baseline`：用 `knowledge inspect --path <对齐文件>` 获取编辑前指纹，不存在时传 `null`。先声明包含对齐文件路径的 write 任务，并确保当前会话是知识负责人；计划或只读任务不能写对齐文件。写入共用快照、指纹检查与事务恢复，首次没有索引时补只读扫描。
 
 扫描规则：
 
@@ -152,7 +152,7 @@ node bin/workflow.mjs project align suggest --root "D:/项目" --input finding.j
 <!-- workflow-alignment:end -->
 ```
 
-`decide` 和 `suggest` 按标题定位小节：`## 已裁决记录` 写入裁决行，`## 结构建议` 写入建议表行；同一 ID 原位替换，不重复追加。写入前核对文档指纹；用户或另一个会话改过文档时返回 `CONFLICT`，保留原文，需要重新 `scan` 后再写。
+`decide` 和 `suggest` 按标题定位小节；同一 ID 原位替换，不重复追加。`decide` 同时更新待裁决表状态，已裁决项不会继续计为 pending。写入前核对明确基线；用户或另一个会话改过文档时保留原文，重新读取后带新基线提交。
 
 ## 会话上下文
 
@@ -176,7 +176,7 @@ Lead 还会得到 `alignmentGuide` 路径。`exists=false` 表示尚未对齐；
 
 ## 边界
 
-- 不新增 phase，不改 signal schema；对齐是 operation-only 的准备工作。
+- 不新增 phase，不改 signal schema；只读扫描是准备工作，写对齐文件必须建立有相应路径权限的任务。
 - 不派 Worker，不进入实施；结构建议只有用户批准后才在后续任务执行。
 - 项目原有做法不自动服从，也不自动推翻；每条真实差异都要用户裁决并留痕。
 - 不读构建产物、缓存和历史计划正文；未读文件仍列入全量清单并标注"存在但未读"。

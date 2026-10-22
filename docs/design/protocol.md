@@ -4,7 +4,7 @@
 
 ## 存储和身份
 
-状态根为 `--state-dir`，默认 `%LOCALAPPDATA%/workflow`（非 Windows 回退到用户数据目录）。`state.json` 的 `schemaVersion=1`，保存 `revision`、`projects`、`tasks`、`sessions`、`transactions`、`pending`、`install`。未知 schema 或损坏状态拒绝修改，hook 保守放行。锁通过独占创建获得，持有文件句柄；锁竞争立即返回 pending，不根据超时抢锁。锁释放保留可回收的诊断文件，不永久删除用户文件。
+状态根为 `--state-dir`，默认 `%LOCALAPPDATA%/workflow`（非 Windows 回退到用户数据目录）。状态文件升级为 `schemaVersion=2`，信号仍为 v1。首次持久化前把 v1 原始字节备份到 `migrations/`，中断任务迁为 suspended，裁剪无效会话归属。未知 schema 或损坏状态拒绝修改，hook 保守放行。锁通过独占创建获得，不按年龄抢活锁；锁释放保留诊断文件。后台学习的数据与配置见[学习协议](../learning.md)。
 
 项目保存 `projectId`、`root`（realpath）、`identity`（目录 dev/ino/birthtime 和 Git 公共目录）、`worktrees`、`knowledgeRoot`、`ownerSessionId`、`leadSessions`、`managedBlockHash`、`enabled`、`coexistenceMode`；可选 `alignment` 见下文“项目对齐”。同名、remote 相同、拷贝入口均不建立绑定。子目录识别遇到独立 `.git` 即停止继承；worktree 必须显式关联且核对公共目录。项目重绑需要显式 enable。多个 Lead 首次冲突时清空自动推定的知识负责人，显式 `project owner` 后才可共享写入。
 
@@ -20,14 +20,14 @@
 
 | action | 附加字段 | 结果 |
 | --- | --- | --- |
-| task-start | goal；permissions；可选 parentTaskId | 建立/显式接续任务；不重置 repairIssued |
+| task-start | goal；permissions；可选 parentTaskId | 建立/显式接续任务；恢复 suspended，保留原权限 |
 | phase | phase；delivering 时 deliveryId | 更新明确阶段，可随带 disposition |
 | disposition | deliveryId；disposition | 处置当前交付 |
 | task-end | 无 | 结束任务；未完知识保留待办 |
 
 phase 为 `unknown`、`operation-only`、`executing`、`waiting-user`、`delivering`。`operation-only` 无经验回执要求。例行查看、指定提交 push、无冲突快进 pull 在文档中分流，插件不执行业务命令。
 
-disposition：
+disposition（旧接口兼容，不再是 task-end 的前置）：
 
 - `no-new-learning`：非空 reason，可附 evidence；已有资料完整承接时直接使用。
 - `updated`：非空 transactionIds；每笔必须与当前项目、任务、会话关联，全部文件成功，且候选已处置。普通编辑不产生可信事务。
@@ -41,15 +41,14 @@ disposition：
 | --- | --- |
 | 未绑定、未知、executing、waiting-user、operation-only、缺身份 | 放行 |
 | delivering，有有效处置 | 放行 |
-| delivering，首次漏处置 | 在同一状态锁内先持久化 repairIssued=true 和知识待办，再返回 decision=block |
-| delivering，预算已用、stop_hook_active=true 或 pending-only 共存模式 | 留一项知识待办并放行 |
-| Interrupt | 增 interruptEpoch、撤销票据、保存 business-incomplete；无模型续轮 |
-| SessionEnd | 保存未完成，撤销当前票据；无模型续轮 |
+| delivering，未提供处置或 stop_hook_active=true | 直接放行，不生成经验待办、不增加模型轮次 |
+| Interrupt | 增 interruptEpoch、撤销票据、挂起任务、保存 business-incomplete、释放会话归属 |
+| SessionEnd | 同中断保存；不把业务标为完成，不续跑业务 |
 | PreCompact/PostCompact/compact SessionStart | 保存/恢复既有身份；预算不变 |
 
 PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输出的 compact SessionStart 入口承载。同一回合的既有票据、修订号和任务预算保持不变，真实宿主是否触发该入口另行验收。
 
-已用预算不随 delivery、turn、session、进程、压缩变化。无法确认重复 Stop 时放行。用户后续发言只建立新的未知回合，不恢复旧业务；context 最多返回一项当前项目 `knowledge-pending`，不返回可执行业务命令。恢复知识通过显式 task-start 接续原任务，保留权限和预算。四种停止计数（指定验证修复 1 次、审查返修 2 轮、诊断无新证据 2 轮、知识补偿 1 轮）分别执行，前面三种由角色记录处理。
+`repairIssued` 只保留兼容，不再驱动 Stop 阻断。用户后续发言只建立新的未知回合，不恢复旧业务；context 最多提示一项知识待办，`pending list` 可查看全部。恢复业务通过显式 task-start，保持原权限。后台复盘另按配置计时、计批次和每日启动次数；业务返修与诊断限制独立。
 
 ## 知识事务
 
@@ -65,11 +64,11 @@ PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输�
 
 ## 项目对齐
 
-对齐是接入后的准备工作，不新增 phase、不改 signal schema，也不建立任务。`project align scan` 只读扫描项目根并写本机状态 `state.projects[projectId].alignment`，不碰项目文件；`status` 只 stat 索引路径；`apply`、`decide`、`suggest` 才写 `docs/WORKFLOW-ALIGNMENT.md` 或根目录同名文件。
+对齐不新增 phase、不改 signal schema。`scan` 只读扫描项目并写本机索引，`status` 检查索引；`apply`、`decide`、`suggest` 需要有效身份、负责人、write 任务、目标 allowedPaths 与明确 baseline，使用共享写入事务。只读/计划任务即使对齐文件缺失也不能写。
 
-索引保存 `schemaVersion`、`generatedAt`、`docPath`、`docFingerprint`、`files`（`path/size/mtimeMs/kind`）、`directories`（索引文件父目录的 `path/mtimeMs`）、`decisions` 与 `findings`（只存 ID、状态和裁决时间）。扫描收集文档文本和工具链入口，排除 `.git`、`node_modules`、`bin`、`obj`、`dist`、`build`、`work`、`release-staging`、缓存和临时目录；默认 200 个文件，`--max-files` 最大 1000。符号链接、硬链接和目录逃逸不进入索引，在 `skipped` 报告原因。每个文件只取大小和 mtime，不读正文；对齐文档自身不进入索引，避免写回后自判过期。
+索引保存 `schemaVersion`、`generatedAt`、`docPath`、`docFingerprint`、`files`（`path/size/mtimeMs/kind`）、`directories`（索引文件父目录的 `path/mtimeMs`）、`decisions` 与 `findings`（只存 ID、状态和裁决时间）。扫描收集文档文本和工具链入口，排除 `.git`、`node_modules`、`bin`、`obj`、`dist`、`build`、`work`、`release-staging`、`.workflow`、缓存和临时目录；默认 300 个文件，`--max-files` 最大 300。符号链接、硬链接和目录逃逸不进入索引，在 `skipped` 报告原因。每个文件只取大小和 mtime，不读正文；对齐文档自身不进入索引，避免写回后自判过期。
 
-`apply` 用 `workflow-alignment:begin/end` 标记区维护正文，标记外逐字保留；`decide`、`suggest` 按 `## 已裁决记录`、`## 结构建议` 标题定位小节，同一 ID 原位替换。写入前核对 `docFingerprint`（或输入 `baseline`），不一致返回 `CONFLICT` 并保留原文；写入使用同目录临时文件原子替换。首次 `apply`/`decide`/`suggest` 若索引为空，会先补一次只读扫描，保证后续变更检测有效。
+`apply` 用 `workflow-alignment:begin/end` 标记区维护正文，标记外逐字保留；`decide`、`suggest` 按 `## 已裁决记录`、`## 结构建议` 标题定位小节，同一 ID 原位替换。写入前核对输入 `baseline`，不一致返回 `CONFLICT` 并保留原文；写入使用同目录临时文件原子替换。首次 `apply`/`decide`/`suggest` 若索引为空，会先补一次只读扫描，保证后续变更检测有效。
 
 `projectContext` 注入 `alignment:{path,exists,docExists,stale,changed,missing,directoryChanged,pendingDecisions,pendingFindings}`。`stale` 只由索引文件大小/mtime 和父目录 mtime 变化得出，不读正文；`pendingDecisions`/`pendingFindings` 以对齐文档表格为准并与索引状态合并，绕过 `decide`/`suggest` 直接写表也不会漏计；`exists=false` 时按未对齐处理。hook 不自动写项目文件，只提示 Lead 增量更新或逐条确认待裁决项。
 

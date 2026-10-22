@@ -53,7 +53,7 @@ node bin/workflow.mjs context --role lead --project "D:/已接入项目" --sessi
 首次进入已接入项目时，Lead 按[项目对齐协议](alignment.md)只读扫描文档和工具链，把结论写入 `docs/WORKFLOW-ALIGNMENT.md`。项目现有做法与 workflow 默认不同时，每条都作为待裁决差异逐条询问：项目现在怎么做、workflow 默认怎么做、实际影响、建议及理由。用户选择后才记录，不默认项目优先，也不默认插件优先。文档过期、重复或链接失效只写进结构建议，批准后才在后续任务修改。
 
 ```powershell
-# 只扫描并写本机索引，不碰项目文件；默认 200 个文件
+# 只扫描并写本机索引，不碰项目文件；默认 300 个文件
 node bin/workflow.mjs project align scan --root "D:/已接入项目"
 node bin/workflow.mjs project align scan --root "D:/已接入项目" --max-files 300
 
@@ -68,7 +68,7 @@ node bin/workflow.mjs project align decide --root "D:/已接入项目" --input d
 node bin/workflow.mjs project align suggest --root "D:/已接入项目" --input finding.json
 ```
 
-`scan` 只记录路径、大小、mtime 和分类，不读正文；符号链接、硬链接和构建目录不进入索引。`apply`/`decide`/`suggest` 写入前核对文档指纹，用户或其他会话改过文档时返回 `CONFLICT` 并保留原文，重新 `scan` 后再写。会话上下文新增 `alignment` 字段：`exists=false` 表示未对齐，`stale=true` 表示索引文件或目录变化，`pendingDecisions`/`pendingFindings` 提醒还有多少项待确认。hook 只读状态，不自动写项目文件；对齐不新增 phase，也不派 Worker。
+`scan` 只记录路径、大小、mtime 和分类，不读正文；符号链接、硬链接和构建目录不进入索引。`apply`/`decide`/`suggest` 需要有效 write 身份、负责人、目标路径权限和明确 baseline，写入前核对文档指纹，用户或其他会话改过文档时返回 `CONFLICT` 并保留原文，重新读取正文并用 `knowledge inspect` 取得新基线后再写。会话上下文新增 `alignment` 字段：`exists=false` 表示未对齐，`stale=true` 表示索引文件或目录变化，`pendingDecisions`/`pendingFindings` 提醒还有多少项待确认。hook 只读状态，不自动写项目文件；对齐不新增 phase，也不派 Worker。
 
 ### 任务与回执
 
@@ -96,9 +96,9 @@ node "<本次hook提供的bin/workflow.mjs>" signal --input "<任务JSON文件>"
 
 `action=phase` 声明 executing/operation-only/waiting-user/delivering；delivering 加 deliveryId，可同时提交 disposition。普通查看、指定提交 push、明确快进 pull 用 operation-only，默认零 Worker/Reviewer；低风险单点 Lead 实施，关键行为安排必要独立审查。工具提问和普通文本反问均先 waiting-user。
 
-交付处置三种：`{status:"no-new-learning",reason:"具体理由"}`；`{status:"updated",transactionIds:["真实成功事务"]}`；`{status:"pending-recovery",pendingId:"已保存待办",reason:"失败/缺证据原因"}`。仅明确 delivering 漏处置时补一轮；连阶段都漏报则放行。正常整理不消耗预算；重复 Stop、压缩、重启或另一插件续轮均不增加本任务预算。
+旧交付处置保留兼容：`no-new-learning`、引用真实成功事务的 `updated`、引用已保存待办的 `pending-recovery`。新任务无需每次提交处置，Stop 不追加经验轮次。出现有据材料时按[经验学习](learning.md)采集，复盘由独立调度决定。
 
-处置后用新 signalId、当前 revision 发送 `action=task-end`。活动任务包含执行、等待、补偿，中断保存后仍待明确结束；升级不会靠超时结束它们。例行任务结束也发 task-end，避免阻塞后续更新。已有处置不会重复改文档。
+完成后用新 signalId、当前 revision 发送 `action=task-end`，不以经验处置为前置。中断或 SessionEnd 将未完任务标为 suspended 并撤销票据，保留业务未完成记录；显式 task-start 才恢复。挂起任务不再以 active 永久挡住升级，未辨认的写事务仍需恢复。
 
 ### 资料维护与恢复
 
@@ -110,7 +110,7 @@ node "<入口>" pending inspect --project "<项目目录>" --pending "<id>"
 node "<入口>" knowledge recover --project "<项目目录>" --transaction "<id>"
 ```
 
-apply 输入身份与 `changes`，每项有 path、baseline、content、responsibility、reason、evidence 字符串引用数组和 candidateIds。新候选随 `candidates` 提交 id、taskId、workPackage、conditions、finding、recommendation、evidence。仅当前有效 write 任务、已声明资料路径和知识负责人能写；这不扩大用户授权。没有剩余知识修改可直接 no-new-learning，并引用普通开发交付的已有资料。
+apply 输入身份与 `changes`，每项有 path、baseline、content、responsibility、reason、evidence 字符串引用数组和 candidateIds。新候选随 `candidates` 提交 id、taskId、workPackage、conditions、finding、recommendation、evidence。仅当前有效 write 任务、已声明资料路径和知识负责人能写；这不扩大用户授权。没有剩余修改可直接交付，无需额外处置。
 
 每个文件独立结果 applied/conflict/pending，整体可能 partial。失败保留原文、候选和定位待办，updated 不接受不完整事务。用户编辑、文件占用和锁竞争不强行覆盖。事务保存真正编辑前快照；恢复只比前/后指纹辨认结果，不自动重写第三种内容。重新读取后只申请未完成部分；同候选稳定 ID 防重复合并。
 
@@ -126,7 +126,7 @@ node bin/workflow.mjs uninstall --agent claude
 
 disable 先停用绑定，仅在管理区指纹一致时撤下该区；用户手改则保留并报告。uninstall 仅撤销未被修改的自有 handlers，保留其他插件/新增配置，保留发布副本、项目资料、LESSONS 和追溯记录。用户改动冲突不整文件覆盖。
 
-多个插件共存时状态、信号、个人库独立；workflow 不重跑另一插件学习。实际发生往返/重复处置或无法区分时，显式重新 enable 同一根并设置 `--coexistence-mode pending-only`，只留待办，doctor 标记降级；完整自动查漏仍未通过，不能悄悄关闭 document-learning。
+多个插件共存时状态、信号、个人库独立；workflow 不重跑另一插件学习，旧 `coexistence-mode` 参数保留兼容。停止后台学习使用 `learning disable`，撤销系统任务使用 `learning schedule remove`；撤销宿主安装前先执行这两步。不要把关闭另一插件作为排错的默认步骤。
 
 ### 常见阻塞
 

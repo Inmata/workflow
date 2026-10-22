@@ -69,6 +69,10 @@ export async function handleHook(directory, event, options = {}) {
     if (agent === 'codex' && Object.hasOwn(event, 'transcript_path') && event.transcript_path === null) return {};
     if (typeof event.cwd !== 'string' || typeof event.session_id !== 'string' || !event.session_id) return {};
     const name = event.hook_event_name;
+    if (process.env.WORKFLOW_REVIEW === '1') return {};
+    const question = ['request_user_input', 'request_user_input_async', 'mcp__codeg_mcp__ask_user_question'].includes(event.tool_name);
+    const signalInvocation = name === 'PostToolUse' && await isSignalInvocation(event, options.entry);
+    if (name === 'PostToolUse' && !question && !signalInvocation) return {};
     // Codex 每个事件都带 turn_id；Claude Code 的入口事件带 prompt_id，用宿主值建立回合，缺失时才本机生成。
     const hostTurn = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : typeof event.prompt_id === 'string' && event.prompt_id ? event.prompt_id : null;
     const turnId = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : null;
@@ -80,7 +84,6 @@ export async function handleHook(directory, event, options = {}) {
     }
     const initial = await resolveProject(existing, event.cwd);
     if (!initial) return {};
-    const signalInvocation = name === 'PostToolUse' && await isSignalInvocation(event, options.entry);
     return await mutate(directory, async (state, save) => {
       const resolved = await resolveProject(state, event.cwd);
       if (!resolved) return {};
@@ -96,14 +99,14 @@ export async function handleHook(directory, event, options = {}) {
         } else if (hostTurn) {
           session = openTurn(state, project, event.session_id, hostTurn, { compact: event.source === 'compact', eventId: event.event_id, mode: event.permission_mode });
         }
-        return contextOutput(name, `workflow 入口：${JSON.stringify(await projectContext(state, resolved, 'lead', event.session_id))}`);
+        return contextOutput(name, `workflow 入口：${JSON.stringify(await projectContext(state, resolved, 'lead', event.session_id, { directory, incremental: true }))}`);
       }
       if (!session) return {};
       // Codex 严格核对 turn_id；Claude 的 prompt_id 只在入口事件保证存在，后续事件按当前回合关联。
       if (turnId && session.turnId !== turnId) return {};
       if (event.event_id) session.observed[event.event_id] = digest(JSON.stringify({ name, turn: event.turn_id }));
       if (name === 'PostToolUse') {
-        if (['request_user_input', 'mcp__codeg_mcp__ask_user_question'].includes(event.tool_name)) {
+        if (question) {
           session.phase = 'waiting-user';
           session.revision += 1;
           return {};
@@ -132,14 +135,7 @@ export async function handleHook(directory, event, options = {}) {
       }
       if (name === 'Interrupt' || name === 'StopFailure') { interrupt(state, project, session); return {}; }
       if (name === 'SessionEnd') {
-        if (session.taskId) {
-          const task = state.tasks[taskKey(project.projectId, session.taskId)];
-          if (task?.lifecycle === 'active') pendingFor(state, project.projectId, task.taskId, '会话结束；不自动继续业务', 'business-incomplete');
-        }
-        session.ticket = null;
-        session.interrupted = true;
-        session.phase = 'unknown';
-        session.revision += 1;
+        interrupt(state, project, session);
         return {};
       }
       // PostCompact cannot emit additional context; compact SessionStart restores the existing identity.

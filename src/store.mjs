@@ -4,6 +4,7 @@ import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
 
 export const SCHEMA_VERSION = 1;
+export const STATE_VERSION = 2;
 export const digest = value => createHash('sha256').update(value).digest('hex');
 export const id = prefix => `${prefix}-${randomUUID()}`;
 export class WorkflowError extends Error {
@@ -25,7 +26,7 @@ export async function atomicWrite(file, content) {
 }
 export const writeJSON = (file, value) => atomicWrite(file, `${JSON.stringify(value, null, 2)}\n`);
 export function emptyState() {
-  return { schemaVersion: SCHEMA_VERSION, revision: 0, projects: {}, tasks: {}, sessions: {}, transactions: {}, pending: {}, install: null, installs: {} };
+  return { schemaVersion: STATE_VERSION, revision: 0, projects: {}, tasks: {}, sessions: {}, transactions: {}, pending: {}, install: null, installs: {} };
 }
 // 回调观测按宿主分开，避免一个宿主的执行证据被另一个宿主的 doctor 当成自己的。
 export function hostObservations(state, agent = 'codex') {
@@ -48,7 +49,7 @@ export function observeHost(state, agent, event, value) {
   return state.hostObservations[agent];
 }
 export function validateState(state) {
-  if (state?.schemaVersion !== SCHEMA_VERSION) fail('SCHEMA', '未知状态版本；保留原文件并停止维护');
+  if (![1, STATE_VERSION].includes(state?.schemaVersion)) fail('SCHEMA', '未知状态版本；保留原文件并停止维护');
   if (!Number.isSafeInteger(state.revision) || state.revision < 0) fail('STATE', '状态修订号损坏');
   for (const key of ['projects', 'tasks', 'sessions', 'transactions', 'pending']) {
     if (!state[key] || typeof state[key] !== 'object' || Array.isArray(state[key])) fail('STATE', `状态 ${key} 损坏`);
@@ -62,7 +63,19 @@ export async function readState(directory) {
   if (raw === null) return emptyState();
   let value;
   try { value = JSON.parse(raw); } catch { fail('STATE', '状态 JSON 损坏；保留原文件并停止维护'); }
-  return validateState(value);
+  validateState(value);
+  if (value.schemaVersion === 1) {
+    value.schemaVersion = STATE_VERSION;
+    for (const project of Object.values(value.projects)) {
+      const live = Object.values(value.sessions).filter(s => s.projectId === project.projectId && !s.interrupted && s.ticket);
+      project.leadSessions = live.map(s => s.sessionId);
+      if (!project.ownerExplicit) project.ownerSessionId = live.length === 1 ? live[0].sessionId : null;
+    }
+    for (const task of Object.values(value.tasks)) {
+      if (task.lifecycle === 'active' && !Object.values(value.sessions).some(s => s.projectId === task.projectId && s.taskId === task.taskId && !s.interrupted && s.ticket)) task.lifecycle = 'suspended';
+    }
+  }
+  return value;
 }
 export async function withLock(directory, name, operation) {
   const locks = path.join(directory, 'locks');
@@ -110,8 +123,13 @@ export async function withLock(directory, name, operation) {
 }
 export async function mutate(directory, operation) {
   return withLock(directory, 'state', async () => {
+    const original = await readText(path.join(directory, 'state.json'));
     const state = await readState(directory);
     const save = async () => {
+      if (original && JSON.parse(original).schemaVersion === 1) {
+        const backup = path.join(directory, 'migrations', `v1-${digest(original)}.json`);
+        if (await readText(backup) === null) await atomicWrite(backup, original);
+      }
       state.revision += 1;
       try { await writeJSON(path.join(directory, 'state.json'), state); }
       catch (error) { error.originalCode = error.code; error.code = 'STATE_WRITE_FAILED'; throw error; }

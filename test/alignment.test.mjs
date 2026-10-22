@@ -4,8 +4,8 @@ import path from 'node:path';
 import { link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { alignmentStatus, applyAlignment, classify, decideAlignment, scanAlignment, suggestAlignment } from '../src/alignment.mjs';
 import { getContext } from '../src/context.mjs';
-import { readState } from '../src/store.mjs';
-import { cli, event, fixture } from './helpers.mjs';
+import { readState, digest } from '../src/store.mjs';
+import { cli, event, fixture, identity, start } from './helpers.mjs';
 
 const docPath = project => path.join(project, 'docs', 'WORKFLOW-ALIGNMENT.md');
 async function documents(project, files) {
@@ -79,7 +79,7 @@ test('apply 只替换标记区，保留手写正文，指纹冲突不覆盖', as
   const original = '# 我的笔记\n手写前置内容\n\n<!-- workflow-alignment:begin -->\n旧正文\n<!-- workflow-alignment:end -->\n\n## 我的补充\n手写后置内容\n';
   await writeFile(docPath(f.project), original);
   await scanAlignment(f.directory, f.project);
-  const result = await applyAlignment(f.directory, f.project, { content: '# 项目对齐\n## 对齐依据\n新正文' });
+  const result = await apply(f, { content: '# 项目对齐\n## 对齐依据\n新正文' });
   assert.equal(result.status, 'applied');
   const updated = await readFile(docPath(f.project), 'utf8');
   assert.ok(updated.startsWith('# 我的笔记\n手写前置内容\n\n'));
@@ -87,17 +87,17 @@ test('apply 只替换标记区，保留手写正文，指纹冲突不覆盖', as
   assert.ok(updated.includes('## 对齐依据\n新正文'));
   assert.ok(!updated.includes('旧正文'));
   await writeFile(docPath(f.project), `${updated}\n用户追加内容\n`);
-  await assert.rejects(applyAlignment(f.directory, f.project, { content: '再改一次' }), { code: 'CONFLICT' });
+  await assert.rejects(apply(f, { content: '再改一次' }), { code: 'CONFLICT' });
   assert.ok((await readFile(docPath(f.project), 'utf8')).includes('用户追加内容'));
-  await assert.rejects(applyAlignment(f.directory, f.project, { content: '越界', docPath: 'docs/其他.md' }), { code: 'PATH' });
-  await assert.rejects(applyAlignment(f.directory, f.project, { content: '基线不对', baseline: 'not-a-real-digest' }), { code: 'CONFLICT' });
+  await assert.rejects(apply(f, { content: '越界', docPath: 'docs/其他.md' }), { code: 'PATH' });
+  await assert.rejects(apply(f, { content: '基线不对', baseline: 'not-a-real-digest' }), { code: 'CONFLICT' });
 });
 
 test('decide 与 suggest 更新状态和文档维护区，不重复追加', async () => {
   const f = await fixture();
   await mkdir(path.join(f.project, 'docs'), { recursive: true });
   await writeFile(docPath(f.project), '# 项目对齐\n\n## 已裁决记录\n\n手写说明\n\n## 结构建议\n\n手写建议\n\n## 其余\n保留\n');
-  await decideAlignment(f.directory, f.project, { decisions: [{ id: 'D1', status: 'accepted-project', reason: '项目已有约定' }, { id: 'D2', status: 'pending' }] });
+  await decide(f, { decisions: [{ id: 'D1', status: 'accepted-project', reason: '项目已有约定' }, { id: 'D2', status: 'pending' }] });
   const indexed = (await readState(f.directory)).projects[f.projectId].alignment;
   assert.ok(indexed.files.length > 0, '首次 decide 前应自动补做扫描，否则变更检测失效');
   let status = await alignmentStatus(f.directory, f.project);
@@ -105,27 +105,42 @@ test('decide 与 suggest 更新状态和文档维护区，不重复追加', asyn
   let text = await readFile(docPath(f.project), 'utf8');
   assert.ok(text.includes('D1 accepted-project：项目已有约定'));
   assert.ok(text.includes('## 其余\n保留'));
-  await decideAlignment(f.directory, f.project, { decisions: [{ id: 'D1', status: 'rejected', reason: '复核后改判' }] });
+  await decide(f, { decisions: [{ id: 'D1', status: 'rejected', reason: '复核后改判' }] });
   text = await readFile(docPath(f.project), 'utf8');
   assert.equal((text.match(/D1/g) || []).length, 1);
   assert.ok(text.includes('D1 rejected：复核后改判'));
   assert.ok(text.includes('D2 pending'));
   const stored = (await readState(f.directory)).projects[f.projectId].alignment.decisions.find(item => item.id === 'D1');
   assert.deepEqual(Object.keys(stored).sort(), ['decidedAt', 'id', 'status']);
-  await suggestAlignment(f.directory, f.project, { findings: [{ id: 'F1', problem: '版本号陈旧', location: 'CONTRIBUTING.md', recommendation: '改为与代码常量一致' }] });
+  await suggest(f, { findings: [{ id: 'F1', problem: '版本号陈旧', location: 'CONTRIBUTING.md', recommendation: '改为与代码常量一致' }] });
   status = await alignmentStatus(f.directory, f.project);
   assert.equal(status.pendingFindings, 1);
   text = await readFile(docPath(f.project), 'utf8');
   assert.ok(text.includes('| F1 | 版本号陈旧 | CONTRIBUTING.md | 改为与代码常量一致 | pending |'));
   const storedFinding = (await readState(f.directory)).projects[f.projectId].alignment.findings.find(item => item.id === 'F1');
   assert.deepEqual(Object.keys(storedFinding).sort(), ['id', 'status']);
-  await assert.rejects(decideAlignment(f.directory, f.project, { decisions: [{ id: 'D3', status: 'unknown' }] }), { code: 'INPUT' });
+  await assert.rejects(decide(f, { decisions: [{ id: 'D3', status: 'unknown' }] }), { code: 'INPUT' });
   // Lead 直接写表格而没经过 decide/suggest 时，待办数量仍以文档为准。
   const handwritten = await readFile(docPath(f.project), 'utf8');
   await writeFile(docPath(f.project), `${handwritten}\n## 待裁决差异\n\n| ID | 项目现行做法 | workflow 默认 | 影响 | 我的建议 | 状态 |\n| --- | --- | --- | --- | --- | --- |\n| D9 | 项目做法 | 默认做法 | 影响 | 建议 | pending |\n| D10 | 项目做法 | 默认做法 | 影响 | 建议 | accepted-project |\n`);
   status = await alignmentStatus(f.directory, f.project);
   assert.equal(status.pendingDecisions, 2);
   assert.equal(status.pendingFindings, 1);
+  await scanAlignment(f.directory, f.project);
+  await decide(f, { baseline: digest(await readFile(docPath(f.project))), decisions: [{ id: 'D9', status: 'accepted-project', reason: '已确认差异' }] });
+  status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.pendingDecisions, 1);
+  assert.ok((await readFile(docPath(f.project), 'utf8')).includes('| D9 | 项目做法 | 默认做法 | 影响 | 建议 | accepted-project |'));
+});
+
+test('对齐写入受只读/计划权限与明确基线保护', async () => {
+  for (const mode of ['read-only', 'plan']) {
+    const f = await fixture(); await start(f, { mode, allowedPaths: ['WORKFLOW-ALIGNMENT.md'] });
+    await assert.rejects(applyAlignment(f.directory, f.project, { ...await identity(f), baseline: null, content: '# 对齐' }), { code: 'PERMISSION' });
+    assert.equal((await readState(f.directory)).projects[f.projectId].alignment, undefined);
+  }
+  const f = await fixture(); await start(f, { mode: 'write', allowedPaths: ['WORKFLOW-ALIGNMENT.md'] });
+  await assert.rejects(applyAlignment(f.directory, f.project, { ...await identity(f), content: '# 对齐' }), { code: 'CONFLICT' });
 });
 
 test('context 注入 alignment，旧项目返回 exists:false，新回合标记 stale', async () => {
@@ -135,7 +150,7 @@ test('context 注入 alignment，旧项目返回 exists:false，新回合标记 
   assert.ok(context.instruction.includes('项目尚未对齐'));
   await documents(f.project, { 'docs/PRODUCT.md': '# 产品\n' });
   await scanAlignment(f.directory, f.project);
-  await applyAlignment(f.directory, f.project, { content: '# 项目对齐\n', decisions: [{ id: 'D1', status: 'pending' }] });
+  await apply(f, { content: '# 项目对齐\n', decisions: [{ id: 'D1', status: 'pending' }] });
   context = await getContext(f.directory, f.project, 'lead', f.sessionId);
   assert.equal(context.alignment.exists, true);
   assert.equal(context.alignment.stale, false);
@@ -168,3 +183,15 @@ test('CLI 接入 align scan/status，state 只保存 ID 与状态', async () => 
   assert.equal(alignment.docPath, 'docs/WORKFLOW-ALIGNMENT.md');
   assert.equal(alignment.docFingerprint, null);
 });
+
+async function authorized(f, operation, input) {
+  if (!f.alignmentTask) { await start(f, { mode: 'write', allowedPaths: ['docs/WORKFLOW-ALIGNMENT.md', 'WORKFLOW-ALIGNMENT.md'] }); f.alignmentTask = true; }
+  const p = (await readState(f.directory)).projects[f.projectId];
+  const relative = input.docPath || p.alignment?.docPath || 'docs/WORKFLOW-ALIGNMENT.md';
+  const bytes = await readFile(path.join(f.project, relative)).catch(e => { if (e.code === 'ENOENT') return null; throw e; });
+  const baseline = p.alignment?.docFingerprint ?? (bytes === null ? null : digest(bytes));
+  return operation(f.directory, f.project, { ...await identity(f), baseline, ...input });
+}
+const apply = (f, input) => authorized(f, applyAlignment, input);
+const decide = (f, input) => authorized(f, decideAlignment, input);
+const suggest = (f, input) => authorized(f, suggestAlignment, input);

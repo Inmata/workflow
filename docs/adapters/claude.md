@@ -22,7 +22,7 @@ Claude Code 事件没有 `turn_id`，用宿主 `prompt_id` 关联一次用户输
 | SessionStart | 注入 Lead 入口上下文；`source=compact` 时保留既有任务与预算 |
 | UserPromptSubmit | 开新回合（新票据），注入 Lead 入口上下文 |
 | PostToolUse | 只在命令是直接调用本插件 `signal` 时读取 stdout 中的信号并返回回执 |
-| Stop | 仅当明确 `delivering` 且缺知识处置时补一轮 |
+| Stop | 放行，不要求经验处置或追加复盘轮次 |
 | StopFailure | 按中断保存：撤销票据、保留任务待办，不自动续跑 |
 | SessionEnd | 保存未完成任务待办，票据失效 |
 | PreCompact / PostCompact | 只记录观测，不输出上下文 |

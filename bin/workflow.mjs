@@ -8,6 +8,12 @@ import { applyKnowledge, createPending, inspectKnowledge, recoverTransaction } f
 import { alignmentStatus, applyAlignment, decideAlignment, scanAlignment, suggestAlignment } from '../src/alignment.mjs';
 import { handleHook } from '../src/hooks.mjs';
 import { AGENTS, doctor, install, uninstall } from '../src/install.mjs';
+import { capture, feedback, migrateCandidates, reviseKnowledge, selectKnowledge, projectData } from '../src/learning.mjs';
+import { learningConfig, projectFor, setLearningConfig, setLearningEnabled } from '../src/learning-config.mjs';
+import { acknowledgeNotices, learningStatus, recoverReview, reviewOnce } from '../src/review.mjs';
+import { installSchedule, removeSchedule, schedulePreview, tick } from '../src/scheduler.mjs';
+import { preflight } from '../src/runner.mjs';
+import { fileURLToPath } from 'node:url';
 
 const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'max-files', 'help']);
 function argumentsFor(argv) {
@@ -17,7 +23,7 @@ function argumentsFor(argv) {
     if (!value.startsWith('--')) { commands.push(value); continue; }
     const key = value.slice(2);
     if (!allowed.has(key) || Object.hasOwn(options, key)) fail('ARGUMENT', `未知或重复参数 --${key}`);
-    if (key === 'help') { options.help = true; continue; }
+    if (['help', 'global', 'now'].includes(key)) { options[key] = true; continue; }
     if (!argv[index + 1] || argv[index + 1].startsWith('--')) fail('ARGUMENT', `参数 --${key} 缺少值`);
     options[key] = argv[++index];
   }
@@ -43,6 +49,13 @@ const help = {
     'signal --input <JSON文件> | --base64 <UTF-8 JSON>',
     'knowledge inspect --path <资料路径> [--project <目录>]',
     'knowledge apply --input <JSON文件>', 'knowledge recover --transaction <id> [--project <目录>]',
+    'knowledge capture|feedback|revise --input <JSON文件> [--root <项目>]',
+    'knowledge select|explain --query <任务描述> [--path <当前路径>] [--root <项目>]',
+    'learning config get|set [--global] [--input <JSON文件>] [--root <项目>]',
+    'learning enable|disable|status|migrate|doctor|acknowledge [--root <项目>]',
+    'learning review [--now] [--root <项目>]（真实模型调用）',
+    'learning recover --run <运行ID> [--root <项目>]（不调用模型）',
+    'learning schedule preview|install|remove [--root <项目>]',
     'pending list [--project <目录>]', 'pending inspect --pending <id> [--project <目录>]', 'pending create --input <JSON文件>',
     'hook --agent codex|claude（stdin 为宿主事件）',
   ],
@@ -50,11 +63,12 @@ const help = {
 };
 // --path is a document-only option; it is never used to construct shell commands.
 allowed.add('path');
+for (const key of ['global', 'now', 'query', 'run', 'version']) allowed.add(key);
 async function main() {
   const { options, commands } = argumentsFor(process.argv.slice(2));
   const [command, action, subaction] = commands;
   if (options.help || !command) return help;
-  const positional = command === 'project' && action === 'align' ? 3 : ['project', 'knowledge', 'pending'].includes(command) ? 2 : 1;
+  const positional = (command === 'project' && action === 'align') || (command === 'learning' && ['config', 'schedule'].includes(action)) ? 3 : ['project', 'knowledge', 'pending', 'learning'].includes(command) ? 2 : 1;
   if (commands.length > positional) fail('ARGUMENT', '命令后存在多余的位置参数');
   const agent = options.agent || 'codex';
   if (!AGENTS.includes(agent)) fail('AGENT', `未知宿主 ${agent}；支持 ${AGENTS.join('/')}`);
@@ -83,9 +97,43 @@ async function main() {
     }
   }
   if (command === 'knowledge') {
+    if (action === 'capture') return capture(directory, await inputJSON(options));
+    if (action === 'feedback') return feedback(directory, await inputJSON(options));
+    if (action === 'revise') return reviseKnowledge(directory, root, await inputJSON(options));
+    if (['select', 'explain'].includes(action)) return selectKnowledge(directory, root, { text: options.query || '', paths: options.path ? [options.path] : [], version: options.version });
     if (action === 'inspect') return inspectKnowledge(directory, root, options.path);
     if (action === 'apply') return applyKnowledge(directory, await inputJSON(options));
     if (action === 'recover') return recoverTransaction(directory, options.transaction, root);
+  }
+  if (command === 'learning') {
+    if (action === 'config') {
+      if (subaction === 'get') return learningConfig(directory, options.global ? null : await projectFor(directory, root));
+      if (subaction === 'set') {
+        const result = await setLearningConfig(directory, root, await inputJSON(options), options.global);
+        const projects = Object.values((await readState(directory)).projects).filter(p => p.enabled && p.learning?.schedule);
+        for (const p of projects) if (options.global || p.projectId === (await projectFor(directory, root)).projectId) await installSchedule(directory, p.root, p.learning.schedule.entry);
+        return result;
+      }
+    }
+    if (action === 'enable') { const result = await setLearningEnabled(directory, root, true); return { ...result, migration: await migrateCandidates(directory, root) }; }
+    if (action === 'disable') return setLearningEnabled(directory, root, false);
+    if (action === 'status') return learningStatus(directory, root);
+    if (action === 'migrate') return migrateCandidates(directory, root);
+    if (action === 'acknowledge') return acknowledgeNotices(directory, root);
+    if (action === 'review') return reviewOnce(directory, root, { nowRequested: options.now });
+    if (action === 'recover') return recoverReview(directory, root, options.run);
+    if (action === 'tick') return tick(directory, root);
+    if (action === 'doctor') {
+      const project = await projectFor(directory, root);
+      const { values } = await learningConfig(directory, project);
+      const capability = await preflight(values, path.join(projectData(directory, project), 'preflight'));
+      return { status: capability.status, modelInvocation: false, model: values.model || '继承 CLI 配置', profile: values.profile, dataDirectory: directory };
+    }
+    if (action === 'schedule') {
+      if (subaction === 'preview') return schedulePreview(directory, root, fileURLToPath(import.meta.url));
+      if (subaction === 'install') return installSchedule(directory, root, fileURLToPath(import.meta.url));
+      if (subaction === 'remove') return removeSchedule(directory, root);
+    }
   }
   if (command === 'pending') {
     if (action === 'create') return createPending(directory, await inputJSON(options));
@@ -93,7 +141,7 @@ async function main() {
     const resolved = await resolveProject(state, root);
     if (!resolved) return { pending: [] };
     const list = Object.values(state.pending).filter(item => item.projectId === resolved.project.projectId && item.kind === 'knowledge-pending' && item.status === 'open');
-    if (action === 'list') return { pending: list.slice(0, 1) };
+    if (action === 'list') return { pending: list };
     if (action === 'inspect') {
       const pending = list.find(item => item.pendingId === options.pending);
       if (!pending) fail('PENDING', '待办不存在或不属于当前项目');

@@ -7,7 +7,7 @@ import { CLAUDE_EVENTS, EVENTS, HOSTS as HOST_NAMES } from './hooks.mjs';
 
 export const RELEASE_PATHS = [
   'bin', 'src', 'hooks', '.codex-plugin', 'docs/workflow.md', 'docs/alignment.md', 'docs/roles',
-  'docs/references', 'docs/adapters', 'docs/usage.md', 'docs/design/protocol.md',
+  'docs/references', 'docs/adapters', 'docs/usage.md', 'docs/design/protocol.md', 'docs/learning.md', 'docs/acceptance.md',
   'examples', 'package.json', 'plugin.json', 'README.md',
 ];
 async function inventory(root, relative = '', selected = RELEASE_PATHS) {
