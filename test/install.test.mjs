@@ -1,0 +1,132 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { doctor, install, uninstall } from '../src/install.mjs';
+import { mutate, readState } from '../src/store.mjs';
+import { createPending } from '../src/knowledge.mjs';
+import { emit, fixture, identity, root, start, temporary } from './helpers.mjs';
+
+test('V14 临时用户目录安装/重复安装/撤销保留其他插件和新增配置', async () => {
+  const area = await temporary('install-');
+  const directory = path.join(area, 'state');
+  const userDir = path.join(area, 'user', '.codex');
+  await mkdir(userDir, { recursive: true });
+  const old = { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'other-plugin-hook' }] }] }, userAdded: { preserve: true } };
+  await writeFile(path.join(userDir, 'hooks.json'), JSON.stringify(old));
+  const installed = await install(directory, { userDir });
+  assert.equal(installed.status, 'installed');
+  const once = await readFile(path.join(userDir, 'hooks.json'), 'utf8');
+  assert.equal((await install(directory, { userDir })).status, 'already-installed');
+  assert.equal(await readFile(path.join(userDir, 'hooks.json'), 'utf8'), once);
+  const info = await doctor(directory);
+  assert.equal(info.registration, 'registered');
+  assert.equal(info.discovery, 'unknown');
+  assert.equal(info.trust, 'unknown');
+  assert.equal(info.execution, 'unknown');
+  assert.equal(info.integrity, 'verified');
+  const after = JSON.parse(once);
+  after.hooks.Stop.push({ hooks: [{ type: 'command', command: 'later-user-hook' }] });
+  await writeFile(path.join(userDir, 'hooks.json'), JSON.stringify(after));
+  assert.equal((await uninstall(directory)).status, 'uninstalled');
+  const restored = JSON.parse(await readFile(path.join(userDir, 'hooks.json'), 'utf8'));
+  assert.deepEqual(restored.userAdded, old.userAdded);
+  assert.deepEqual(restored.hooks.Stop.map(group => group.hooks[0].command), ['other-plugin-hook', 'later-user-hook']);
+  assert.equal((await uninstall(directory)).status, 'not-installed');
+});
+test('V14 自有 handler 被手改时撤销不覆盖，发布副本被改时停止维护', async () => {
+  const area = await temporary('install-conflict-');
+  const directory = path.join(area, 'state');
+  const userDir = path.join(area, '.codex');
+  const result = await install(directory, { userDir });
+  const configFile = path.join(userDir, 'hooks.json');
+  const current = JSON.parse(await readFile(configFile, 'utf8'));
+  current.hooks.Stop[0].hooks[0].timeout = 9;
+  const modified = JSON.stringify(current);
+  await writeFile(configFile, modified);
+  assert.equal((await uninstall(directory)).status, 'conflict');
+  assert.equal(await readFile(configFile, 'utf8'), modified);
+  await writeFile(path.join(result.releaseRoot, 'docs', 'workflow.md'), '用户的发布副本编辑');
+  assert.equal((await doctor(directory)).integrity, 'unavailable');
+  await assert.rejects(install(directory, { userDir }), { code: 'INTEGRITY' });
+});
+test('V14 活动任务阻止首次安装/升级，明确结束后可应用', async () => {
+  const f = await fixture();
+  await start(f);
+  const userDir = path.join(f.area, '.codex');
+  const postponed = await install(f.directory, { userDir, sourceRoot: root });
+  assert.equal(postponed.status, 'deferred');
+  await assert.rejects(readFile(path.join(userDir, 'hooks.json')), { code: 'ENOENT' });
+  await emit(f, { action: 'task-end' });
+  assert.equal((await install(f.directory, { userDir })).status, 'installed');
+  const state = await readState(f.directory);
+  assert.ok(state.install.releaseRoot);
+});
+test('V01 doctor 指定未绑定目录时不暴露其他项目待办', async () => {
+  const f = await fixture();
+  await start(f);
+  await createPending(f.directory, { ...await identity(f), reason: '只属于已绑定项目的知识待办' });
+  const unknown = path.join(f.area, 'unbound');
+  await mkdir(unknown);
+  assert.equal((await doctor(f.directory, f.project)).pending.length, 1);
+  assert.equal((await doctor(f.directory)).pending.length, 1);
+  assert.deepEqual((await doctor(f.directory, unknown)).pending, []);
+});
+test('V14 全部 hook 被外部移除时保留原配置并报告冲突', async () => {
+  const area = await temporary('install-removed-');
+  const directory = path.join(area, 'state');
+  const userDir = path.join(area, '.codex');
+  await install(directory, { userDir });
+  const file = path.join(userDir, 'hooks.json');
+  const edited = '{"userAdded":"保留"}';
+  await writeFile(file, edited);
+  assert.equal((await uninstall(directory)).status, 'conflict');
+  await assert.rejects(install(directory, { userDir }), { code: 'CONFLICT' });
+  assert.equal(await readFile(file, 'utf8'), edited);
+});
+test('V14 未确认安装事务不可被后续安装覆盖', async () => {
+  const area = await temporary('install-prepared-');
+  const directory = path.join(area, 'state');
+  const userDir = path.join(area, '.codex');
+  await install(directory, { userDir });
+  await mutate(directory, async state => { state.install.status = 'prepared'; });
+  const before = await readFile(path.join(userDir, 'hooks.json'), 'utf8');
+  await assert.rejects(install(directory, { userDir }), { code: 'RECOVERY' });
+  assert.equal(await readFile(path.join(userDir, 'hooks.json'), 'utf8'), before);
+  assert.equal((await readState(directory)).install.status, 'prepared');
+});
+
+test('V14 发布复制失败保留现场与用户配置，后续安装可直接重试', async t => {
+  const area = await temporary('install-copy-failure-');
+  const directory = path.join(area, 'state');
+  const userDir = path.join(area, '.codex');
+  await mkdir(userDir);
+  const configFile = path.join(userDir, 'hooks.json');
+  const originalConfig = '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"preserved-hook"}]}]}}';
+  await writeFile(configFile, originalConfig);
+  const originalCopy = fs.copyFile;
+  let copiedFile, copiedContent, calls = 0;
+  const injected = t.mock.method(fs, 'copyFile', async (...args) => {
+    if (++calls === 2) throw Object.assign(new Error('模拟复制中途磁盘写入失败'), { code: 'ENOSPC' });
+    await originalCopy(...args);
+    copiedFile = args[1];
+    copiedContent = await readFile(copiedFile);
+  });
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(install(directory, { userDir }), { code: 'ENOSPC' });
+  } finally {
+    injected.mock.restore();
+    syncBuiltinESMExports();
+  }
+  assert.equal(await readFile(configFile, 'utf8'), originalConfig);
+  assert.equal((await readState(directory)).install, null);
+  const retried = await install(directory, { userDir });
+  assert.equal(retried.status, 'installed');
+  assert.equal((await doctor(directory)).integrity, 'verified');
+  assert.deepEqual(await readFile(copiedFile), copiedContent);
+  const installedConfig = JSON.parse(await readFile(configFile, 'utf8'));
+  assert.equal(installedConfig.hooks.Stop[0].hooks[0].command, 'preserved-hook');
+});

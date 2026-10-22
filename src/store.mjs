@@ -1,0 +1,111 @@
+import { mkdir, open, readFile, rename, realpath, stat } from 'node:fs/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { createHash, randomUUID } from 'node:crypto';
+
+export const SCHEMA_VERSION = 1;
+export const digest = value => createHash('sha256').update(value).digest('hex');
+export const id = prefix => `${prefix}-${randomUUID()}`;
+export class WorkflowError extends Error {
+  constructor(code, message) { super(message); this.code = code; }
+}
+export const fail = (code, message) => { throw new WorkflowError(code, message); };
+export function stateDirectory(explicit) {
+  return path.resolve(explicit || path.join(process.env.LOCALAPPDATA || path.join(os.homedir(), '.local', 'share'), 'workflow'));
+}
+export async function readText(file, missing = null) {
+  try { return await readFile(file, 'utf8'); } catch (error) { if (error.code === 'ENOENT') return missing; throw error; }
+}
+export async function atomicWrite(file, content) {
+  await mkdir(path.dirname(file), { recursive: true });
+  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.workflow-${randomUUID()}.tmp`);
+  const handle = await open(temporary, 'wx');
+  try { await handle.writeFile(content, 'utf8'); await handle.sync(); } finally { await handle.close(); }
+  await rename(temporary, file);
+}
+export const writeJSON = (file, value) => atomicWrite(file, `${JSON.stringify(value, null, 2)}\n`);
+export function emptyState() {
+  return { schemaVersion: SCHEMA_VERSION, revision: 0, projects: {}, tasks: {}, sessions: {}, transactions: {}, pending: {}, install: null };
+}
+export function validateState(state) {
+  if (state?.schemaVersion !== SCHEMA_VERSION) fail('SCHEMA', '未知状态版本；保留原文件并停止维护');
+  if (!Number.isSafeInteger(state.revision) || state.revision < 0) fail('STATE', '状态修订号损坏');
+  for (const key of ['projects', 'tasks', 'sessions', 'transactions', 'pending']) {
+    if (!state[key] || typeof state[key] !== 'object' || Array.isArray(state[key])) fail('STATE', `状态 ${key} 损坏`);
+  }
+  return state;
+}
+export async function readState(directory) {
+  const raw = await readText(path.join(directory, 'state.json'));
+  if (raw === null) return emptyState();
+  let value;
+  try { value = JSON.parse(raw); } catch { fail('STATE', '状态 JSON 损坏；保留原文件并停止维护'); }
+  return validateState(value);
+}
+export async function withLock(directory, name, operation) {
+  const locks = path.join(directory, 'locks');
+  await mkdir(locks, { recursive: true });
+  const file = path.join(locks, `${digest(name)}.lock`);
+  let handle;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try { handle = await open(file, 'wx'); break; } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      let previous;
+      try { previous = JSON.parse(await readFile(file, 'utf8')); } catch { fail('LOCKED', '锁状态不可辨认，保留原文件'); }
+      let dead = false;
+      if (Number.isSafeInteger(previous.pid) && previous.pid > 0) {
+        try { process.kill(previous.pid, 0); } catch (probe) { dead = probe.code === 'ESRCH'; }
+      }
+      if (!dead || attempt > 0) fail('LOCKED', '锁正在占用；保留待办，不按超时抢锁');
+      const retired = path.join(directory, 'retired-locks');
+      await mkdir(retired, { recursive: true });
+      // Serialize stale-lock recovery; two contenders must never move a fresh owner's lock.
+      const recoveryFile = `${file}.recovery`;
+      let recovery;
+      try { recovery = await open(recoveryFile, 'wx'); }
+      catch { fail('LOCKED', '另一进程正在辨认旧锁；保留待办'); }
+      try {
+        const current = JSON.parse(await readFile(file, 'utf8'));
+        let stillDead = false;
+        try { process.kill(current.pid, 0); } catch (probe) { stillDead = probe.code === 'ESRCH'; }
+        if (!stillDead || current.pid !== previous.pid) fail('LOCKED', '锁持有者已变化，停止回收');
+        await rename(file, path.join(retired, `${randomUUID()}.dead.lock`));
+      } finally {
+        await recovery.close();
+        await rename(recoveryFile, path.join(retired, `${randomUUID()}.recovery.lock`));
+      }
+    }
+  }
+  try {
+    await handle.writeFile(JSON.stringify({ pid: process.pid, name, createdAt: new Date().toISOString() }));
+    return await operation();
+  } finally {
+    await handle.close();
+    const retired = path.join(directory, 'retired-locks');
+    await mkdir(retired, { recursive: true });
+    await rename(file, path.join(retired, `${randomUUID()}.lock`));
+  }
+}
+export async function mutate(directory, operation) {
+  return withLock(directory, 'state', async () => {
+    const state = await readState(directory);
+    const save = async () => {
+      state.revision += 1;
+      try { await writeJSON(path.join(directory, 'state.json'), state); }
+      catch (error) { error.originalCode = error.code; error.code = 'STATE_WRITE_FAILED'; throw error; }
+    };
+    const result = await operation(state, save);
+    await save();
+    return result;
+  });
+}
+export async function canonical(directory) { return path.normalize(await realpath(path.resolve(directory))); }
+export function samePath(a, b) { return process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b; }
+export function within(root, target) {
+  const relative = path.relative(root, target);
+  return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
+}
+export async function directoryIdentity(directory) {
+  const info = await stat(directory);
+  return { dev: info.dev, ino: info.ino, birthtimeMs: info.birthtimeMs };
+}

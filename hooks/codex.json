@@ -1,0 +1,13 @@
+{
+  "description": "workflow 用户级 hook 注册模板；由 install 生成实际固定路径，不另启用插件级重复注册",
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/bin/workflow.mjs\" hook --agent codex", "timeout": 10 }] }],
+    "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/bin/workflow.mjs\" hook --agent codex", "timeout": 10 }] }],
+    "PostToolUse": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/bin/workflow.mjs\" hook --agent codex", "timeout": 10 }] }],
+    "Stop": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/bin/workflow.mjs\" hook --agent codex", "timeout": 10 }] }],
+    "Interrupt": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/bin/workflow.mjs\" hook --agent codex", "timeout": 3 }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/bin/workflow.mjs\" hook --agent codex", "timeout": 3 }] }],
+    "PreCompact": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/bin/workflow.mjs\" hook --agent codex", "timeout": 10 }] }],
+    "PostCompact": [{ "hooks": [{ "type": "command", "command": "node \"${PLUGIN_ROOT}/bin/workflow.mjs\" hook --agent codex", "timeout": 10 }] }]
+  }
+}

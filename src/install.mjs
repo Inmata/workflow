@@ -1,0 +1,168 @@
+import path from 'node:path';
+import os from 'node:os';
+import { copyFile, lstat, mkdir, readdir, readFile, rename } from 'node:fs/promises';
+import { atomicWrite, digest, fail, id, mutate, readState, readText, writeJSON } from './store.mjs';
+import { PRODUCT_ROOT } from './context.mjs';
+import { EVENTS } from './hooks.mjs';
+
+export const RELEASE_PATHS = [
+  'bin', 'src', 'hooks', '.codex-plugin', 'docs/workflow.md', 'docs/roles',
+  'docs/references', 'docs/adapters', 'docs/usage.md', 'docs/design/protocol.md',
+  'examples', 'package.json', 'plugin.json', 'README.md',
+];
+async function inventory(root, relative = '', selected = RELEASE_PATHS) {
+  const files = [];
+  const entries = relative ? (await readdir(path.join(root, relative))).sort() : selected;
+  for (const name of entries) {
+    const item = path.join(relative, name);
+    const info = await lstat(path.join(root, item));
+    if (info.isSymbolicLink()) fail('LINK', '发布目录含链接，请先核对来源');
+    if (info.isDirectory()) files.push(...await inventory(root, item));
+    else files.push({ path: item.replaceAll('\\', '/'), hash: digest(await readFile(path.join(root, item))) });
+  }
+  return files.sort((a, b) => a.path.localeCompare(b.path));
+}
+export async function verifyRelease(record) {
+  if (!record?.releaseRoot || !Array.isArray(record.files)) return false;
+  try {
+    const names = [...new Set(record.files.map(file => file.path.split('/')[0]))];
+    const actual = await inventory(record.releaseRoot, '', names);
+    return JSON.stringify(actual) === JSON.stringify(record.files);
+  } catch { return false; }
+}
+const psQuote = text => `'${text.replaceAll("'", "''")}'`;
+const shQuote = text => `'${text.replaceAll("'", `'"'"'`)}'`;
+export function hookCommand(releaseRoot, directory) {
+  const quote = process.platform === 'win32' ? psQuote : shQuote;
+  const start = process.platform === 'win32' ? '& ' : '';
+  return `${start}${quote(process.execPath.replaceAll('\\', '/'))} ${quote(path.join(releaseRoot, 'bin', 'workflow.mjs').replaceAll('\\', '/'))} hook --agent codex --state-dir ${quote(directory.replaceAll('\\', '/'))}`;
+}
+async function readConfig(file) {
+  const text = await readText(file);
+  if (text === null) return { text, config: {} };
+  let config;
+  try { config = JSON.parse(text); } catch { fail('CONFIG', 'hooks.json 不是有效 JSON，保留原文件'); }
+  if (!config || typeof config !== 'object' || Array.isArray(config) || (config.hooks && (typeof config.hooks !== 'object' || Array.isArray(config.hooks)))) fail('CONFIG', '未知 hooks 配置结构');
+  for (const groups of Object.values(config.hooks || {})) {
+    if (!Array.isArray(groups) || groups.some(group => !group || !Array.isArray(group.hooks))) fail('CONFIG', '未知 hooks 分组结构，保留原文件');
+  }
+  return { text, config };
+}
+function removeOwned(config, record) {
+  const result = structuredClone(config);
+  const conflicts = [];
+  if (!record) return { config: result, conflicts };
+  result.hooks ||= {};
+  for (const event of EVENTS) {
+    let found = false;
+    const expected = record.handlers[event];
+    result.hooks[event] = (result.hooks?.[event] || []).map(group => ({ ...group, hooks: group.hooks.filter(handler => {
+      if (handler.command !== record.command) return true;
+      found = true;
+      if (JSON.stringify(handler) !== JSON.stringify(expected)) { conflicts.push(event); return true; }
+      return false;
+    }) })).filter(group => group.hooks.length);
+    if (!found) conflicts.push(event);
+    if (!result.hooks[event].length) delete result.hooks[event];
+  }
+  return { config: result, conflicts };
+}
+export async function install(directory, { userDir = path.join(os.homedir(), '.codex'), sourceRoot = PRODUCT_ROOT } = {}) {
+  userDir = path.resolve(userDir);
+  return mutate(directory, async (state, save) => {
+    if (state.install && !['installed', 'uninstalled'].includes(state.install.status)) fail('RECOVERY', '安装事务尚未确认，先核对注册差异；不覆盖追溯记录');
+    const configFile = path.join(userDir, 'hooks.json');
+    const current = await readConfig(configFile);
+    const files = await inventory(sourceRoot);
+    const packageInfo = JSON.parse(await readText(path.join(sourceRoot, 'package.json')));
+    const releaseHash = digest(JSON.stringify(files));
+    const previous = state.install?.status === 'installed' ? state.install : null;
+    if (previous && !await verifyRelease(previous)) fail('INTEGRITY', '已安装副本被修改，先核对差异；不覆盖');
+    if (previous && previous.configFile !== configFile) fail('CONFIG', '已有另一用户目录安装，先明确撤销旧注册');
+    const stripped = removeOwned(current.config, previous);
+    if (stripped.conflicts.length) fail('CONFLICT', `自有 hook 被手改/移除，保留配置：${stripped.conflicts.join(',')}`);
+    if (previous?.releaseHash === releaseHash) return { status: 'already-installed', version: previous.version, releaseRoot: previous.releaseRoot, requiresTrust: 'unknown' };
+    const activeTasks = Object.values(state.tasks).filter(task => task.lifecycle === 'active').map(task => task.taskId);
+    const activeTransactions = Object.values(state.transactions).filter(tx => tx.status === 'prepared').map(tx => tx.transactionId);
+    if (activeTasks.length || activeTransactions.length) return { status: 'deferred', reason: '仍有活动任务或未辨认的事务；保留当前发布副本和配置', activeTasks, activeTransactions };
+    const releaseRoot = path.join(directory, 'releases', `${packageInfo.version}-${releaseHash.slice(0, 16)}`);
+    try {
+      await lstat(releaseRoot);
+      if (!await verifyRelease({ releaseRoot, files })) fail('INTEGRITY', '目标发布副本已有不同内容，不覆盖');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+      // A failed or interrupted copy remains inspectable without occupying the final release path.
+      const stagingRoot = path.join(directory, 'release-staging', id('release'));
+      await mkdir(stagingRoot, { recursive: true });
+      for (const file of files) {
+        await mkdir(path.dirname(path.join(stagingRoot, file.path)), { recursive: true });
+        await copyFile(path.join(sourceRoot, file.path), path.join(stagingRoot, file.path));
+      }
+      if (!await verifyRelease({ releaseRoot: stagingRoot, files })) fail('INTEGRITY', '暂存发布副本与来源摘要不符；保留现场，不注册');
+      await mkdir(path.dirname(releaseRoot), { recursive: true });
+      await rename(stagingRoot, releaseRoot);
+    }
+    const command = hookCommand(releaseRoot, directory);
+    const next = stripped.config;
+    next.hooks ||= {};
+    const handlers = {};
+    for (const event of EVENTS) {
+      const handler = { type: 'command', command, timeout: ['Interrupt', 'SessionEnd'].includes(event) ? 3 : 10 };
+      if (['SessionStart', 'UserPromptSubmit'].includes(event)) handler.additionalContextLimit = 8000;
+      handlers[event] = handler;
+      next.hooks[event] ||= [];
+      next.hooks[event].push({ hooks: [handler] });
+    }
+    const after = JSON.stringify(next, null, 2) + '\n';
+    const changeId = id('install');
+    const record = { status: 'prepared', changeId, version: packageInfo.version, releaseHash, releaseRoot, files, configFile, command, handlers, beforeHash: current.text === null ? null : digest(current.text), afterHash: digest(after), registeredAt: new Date().toISOString(), previousOwned: previous ? { command: previous.command, handlers: previous.handlers } : null };
+    // Only owned definitions and fingerprints are backed up, never unrelated configuration or credentials.
+    await writeJSON(path.join(directory, 'installation-changes', `${changeId}.json`), record);
+    state.install = record;
+    await save();
+    if (await readText(configFile) !== current.text) fail('CONFLICT', '安装准备期间 hooks 配置已变化；保留用户配置');
+    await atomicWrite(configFile, after);
+    record.status = 'installed';
+    await save();
+    return { status: 'installed', version: record.version, releaseRoot, configFile, changeId, requiresTrust: '请用实际宿主支持的 /hooks 审核当前定义；新会话验证，不自动修改信任记录' };
+  });
+}
+export async function uninstall(directory) {
+  return mutate(directory, async state => {
+    const record = state.install;
+    if (!record || record.status === 'uninstalled') return { status: 'not-installed' };
+    if (record.status !== 'installed') fail('RECOVERY', '安装事务尚未确认，需要先核对注册差异');
+    const current = await readConfig(record.configFile);
+    const stripped = removeOwned(current.config, record);
+    if (stripped.conflicts.length) return { status: 'conflict', conflicts: stripped.conflicts, reason: '自有定义被用户修改；保留整个配置待核对' };
+    if (await readText(record.configFile) !== current.text) fail('CONFLICT', '撤销期间用户修改了配置');
+    await atomicWrite(record.configFile, JSON.stringify(stripped.config, null, 2) + '\n');
+    record.status = 'uninstalled';
+    record.uninstalledAt = new Date().toISOString();
+    return { status: 'uninstalled', releaseRetained: record.releaseRoot, reason: '发布副本和追溯记录保留，可通过系统回收站清理' };
+  });
+}
+export async function doctor(directory, root) {
+  const state = await readState(directory);
+  const record = state.install;
+  let registered = false, configuration = 'not-installed';
+  if (record) {
+    try {
+      const current = await readConfig(record.configFile);
+      registered = EVENTS.every(event => current.config.hooks?.[event]?.some(group => group.hooks.some(handler => handler.command === record.command && JSON.stringify(handler) === JSON.stringify(record.handlers[event]))));
+      configuration = registered ? 'registered' : 'missing-or-modified';
+    } catch { configuration = 'unreadable-or-unknown'; }
+  }
+  const actual = Object.entries(state.hostObservations || {}).filter(([, observation]) => observation.source === 'callback').map(([event, observation]) => ({ event, at: observation.at }));
+  const project = root ? await (await import('./projects.mjs')).resolveProject(state, root) : null;
+  return {
+    schemaVersion: 1, registration: configuration, discovery: 'unknown', trust: 'unknown',
+    execution: actual.length ? { status: 'callback-observed-host-unverified', events: actual } : 'unknown',
+    integrity: record ? await verifyRelease(record) ? 'verified' : 'unavailable' : 'not-installed',
+    version: record?.version || null,
+    activeTasks: Object.values(state.tasks).filter(task => task.lifecycle === 'active').map(task => task.taskId),
+    project: project ? { projectId: project.project.projectId, enabled: true, coexistenceMode: project.project.coexistenceMode, ownerSessionId: project.project.ownerSessionId } : null,
+    pending: Object.values(state.pending).filter(item => item.status === 'open' && (!root || (project && item.projectId === project.project.projectId))).map(item => ({ pendingId: item.pendingId, kind: item.kind, reason: item.reason })),
+    next: registered ? '使用当前 ACP 宿主核对 hooks/list 与 /hooks 信任，在新会话观察本插件回调；不要用全局 CLI 版本代替 ACP 版本' : '先核对安装/注册差异；测试始终使用临时 user-dir/state-dir',
+  };
+}

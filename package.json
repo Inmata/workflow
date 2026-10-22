@@ -1,0 +1,15 @@
+{
+  "name": "personal-workflow",
+  "version": "0.1.0",
+  "description": "项目协作方法、受限知识维护和 Codex 收尾查漏",
+  "type": "module",
+  "private": true,
+  "engines": { "node": ">=24" },
+  "bin": { "workflow": "bin/workflow.mjs" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/check-package.mjs",
+    "demo": "node examples/demo.mjs"
+  },
+  "files": ["bin", "src", "hooks", ".codex-plugin", "docs/workflow.md", "docs/roles", "docs/references", "docs/adapters", "docs/usage.md", "docs/design/protocol.md", "examples", "package.json", "plugin.json", "README.md"]
+}

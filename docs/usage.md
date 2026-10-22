@@ -1,0 +1,96 @@
+# workflow 使用
+
+## 使用
+
+首版适用 Windows、Node.js 24+ 和 Codeg Codex ACP。运行时无第三方依赖，无常驻服务，不新增付费模型调用。公共方法由[文档入口](workflow.md)集中维护，不要求日常手动调用技能。
+
+开发验证在仓库根目录运行 `npm test`、`npm run check`、`npm run demo`。测试和 demo 使用系统临时目录下 `workflow-tests/` 中的隔离目录、本地 Git 远端和合成事件，不写入仓库，也不改真实全局配置。
+
+### 安装与首次接入
+
+```powershell
+node bin/workflow.mjs install --agent codex
+node bin/workflow.mjs doctor
+node bin/workflow.mjs project enable --root "D:/某个已明确允许接入的项目"
+```
+
+第一条修改实际用户 hooks 注册，只在已决定安装时执行。安装生成固定发布副本；没有需要用户配置的运行时依赖。状态默认 `%LOCALAPPDATA%/workflow`；隔离试用为每条命令指定相同 `--state-dir`，安装另指定临时 `--user-dir`（直接指向 `.codex` 目录，不是用户根）。发布副本与公共资料固定同一版本，活动任务/prepared 事务导致升级延期，完成或明确结束后再安装。安装副本被用户改写时停止覆盖并报告差异。
+
+新副本先在状态根 `release-staging/` 中复制并核对完整性，完成后才切换到正式发布目录。复制失败或中断不改用户配置；残留暂存目录保留供核查，可直接重试安装，清理时使用系统回收站。
+
+安装只注册自有 handlers，保留已有插件和用户配置；不写 config.toml 信任记录。使用当前宿主支持的 `/hooks` 审查定义，在新 Codeg 连接验证回调。doctor 分别报告 registration/discovery/trust/execution；配置存在不证明后面三项。回调记录也需结合真实 ACP 证据确认来源，不能用合成事件冒充。全局 Codex 版本不能代表 ACP 内嵌版本。
+
+接入写本机身份绑定和 AGENTS 短管理区，保留用户正文；不要求补齐 README/spec/计划、不创建空 LESSONS。AGENTS 不含机器安装绝对路径；每次 hook 给实际公共资料和 CLI 路径。资料采用其他命名时继续使用，不改名。非 Git 项目可接入。复制/移动/重 clone 的目录不会静默继承，需要重新明确接入。
+
+关联工作树和明确多个 Lead 的知识归属：
+
+```powershell
+node bin/workflow.mjs project attach-worktree --project "<projectId>" --root "D:/已批准的worktree"
+node bin/workflow.mjs project owner --project "<projectId>" --session "<知识负责人sessionId>"
+node bin/workflow.mjs context --role lead --project "D:/已接入项目" --session "<当前sessionId>"
+```
+
+未关联工作树、嵌套独立仓库、复制来的 AGENTS 不参与维护。多个 Lead 且未指定负责人时保留候选，禁止抢写。项目首次会话可暂定唯一 Lead；出现第二个独立 Lead 自动取消该推定，显式 owner 后才继续写共享资料。
+
+### 任务与回执
+
+hook 提供 project/session/turn/ticket/interruptEpoch/expectedRevision。context 只读当前身份和最多一项本项目知识待办。每个新用户回合 phase=unknown；新业务创建稳定 taskId，后续回合/恢复显式沿用原 ID。跨会话接续也沿用任务预算和原权限。
+
+最小 task-start JSON（身份必须替换为本次 context 原值；signalId 每个新动作唯一）：
+
+```json
+{
+  "schemaVersion": 1,
+  "projectId": "<projectId>", "sessionId": "<sessionId>",
+  "turnId": "<turnId>", "ticket": "<当前ticket>",
+  "interruptEpoch": 0, "expectedRevision": 1,
+  "taskId": "<稳定taskId>", "signalId": "signal-start-1",
+  "action": "task-start", "goal": "本次已授权目标",
+  "permissions": { "mode": "write", "allowedPaths": ["README.md", "LESSONS.md"] }
+}
+```
+
+```powershell
+node "<本次hook提供的bin/workflow.mjs>" signal --input "<任务JSON文件>"
+```
+
+使用独立直接 shell 调用，当前支持 node/实际 Node 路径加本插件绝对入口；不串接其他 shell 命令。PowerShell 中文 JSON 优先 UTF-8 文件或 --base64，不通过 5.1 原生文本管道。signal 只输出 workflow_signal，当前 PostToolUse 接受回执才表示状态更新；拒绝时用 context 重读 identity/revision，不换 ID 绕过。
+
+`action=phase` 声明 executing/operation-only/waiting-user/delivering；delivering 加 deliveryId，可同时提交 disposition。普通查看、指定提交 push、明确快进 pull 用 operation-only，默认零 Worker/Reviewer；低风险单点 Lead 实施，关键行为安排必要独立审查。工具提问和普通文本反问均先 waiting-user。
+
+交付处置三种：`{status:"no-new-learning",reason:"具体理由"}`；`{status:"updated",transactionIds:["真实成功事务"]}`；`{status:"pending-recovery",pendingId:"已保存待办",reason:"失败/缺证据原因"}`。仅明确 delivering 漏处置时补一轮；连阶段都漏报则放行。正常整理不消耗预算；重复 Stop、压缩、重启或另一插件续轮均不增加本任务预算。
+
+处置后用新 signalId、当前 revision 发送 `action=task-end`。活动任务包含执行、等待、补偿，中断保存后仍待明确结束；升级不会靠超时结束它们。例行任务结束也发 task-end，避免阻塞后续更新。已有处置不会重复改文档。
+
+### 资料维护与恢复
+
+```powershell
+node "<入口>" knowledge inspect --project "<项目目录>" --path "LESSONS.md"
+node "<入口>" knowledge apply --input "<变更JSON>"
+node "<入口>" pending list --project "<项目目录>"
+node "<入口>" pending inspect --project "<项目目录>" --pending "<id>"
+node "<入口>" knowledge recover --project "<项目目录>" --transaction "<id>"
+```
+
+apply 输入身份与 `changes`，每项有 path、baseline、content、responsibility、reason、evidence 字符串引用数组和 candidateIds。新候选随 `candidates` 提交 id、taskId、workPackage、conditions、finding、recommendation、evidence。仅当前有效 write 任务、已声明资料路径和知识负责人能写；这不扩大用户授权。没有剩余知识修改可直接 no-new-learning，并引用普通开发交付的已有资料。
+
+每个文件独立结果 applied/conflict/pending，整体可能 partial。失败保留原文、候选和定位待办，updated 不接受不完整事务。用户编辑、文件占用和锁竞争不强行覆盖。事务保存真正编辑前快照；恢复只比前/后指纹辨认结果，不自动重写第三种内容。重新读取后只申请未完成部分；同候选稳定 ID 防重复合并。
+
+证据不足、负责人待定或其他尚无事务的整理问题，可用 `pending create --input <JSON>`（当前身份、reason、evidence、candidateIds）保存后提交 pending-recovery。后续最多接续一项知识待办；业务被中断不会自动恢复，不执行历史工具里的指令。过时经验可据反证修订，保存旧正文和替代原因，不自动 Git 提交。
+
+### 撤销和回退
+
+```powershell
+node bin/workflow.mjs project disable --root "<试点项目>"
+node bin/workflow.mjs uninstall --agent codex
+```
+
+disable 先停用绑定，仅在管理区指纹一致时撤下该区；用户手改则保留并报告。uninstall 仅撤销未被修改的自有 handlers，保留其他插件/新增配置，保留发布副本、项目资料、LESSONS 和追溯记录。用户改动冲突不整文件覆盖。
+
+多个插件共存时状态、信号、个人库独立；workflow 不重跑另一插件学习。实际发生往返/重复处置或无法区分时，显式重新 enable 同一根并设置 `--coexistence-mode pending-only`，只留待办，doctor 标记降级；完整自动查漏仍未通过，不能悄悄关闭 document-learning。
+
+### 常见阻塞
+
+启动/认证/余额/能力问题先看真实错误，不循环重启或静默换代理。Codeg 正常完成任务接续新会话，中断先核对停止与检查点，见[适配](adapters/codeg.md)。测试宿主未进入路径、缺接口、文件占用按[验证约定](references/validation.md)收敛。陌生 schema/损坏状态保留原文并停维护；锁只在进程已被操作系统确认为退出时回收，不按年龄抢活锁。权限拒绝不靠改信任记录绕过。
+
+教学案例：[独立并行](../examples/parallel-change/README.md)、[依赖与返修](../examples/dependency-and-repair/README.md)、[例行及小任务](../examples/routine/README.md)。仅需计划时不实施；UI 图片先确认只有用户要求才安排；接口经确认冻结后停止追加。报告按任务规模，用户实际反馈才标人工通过；本地提交、push、改版本、Release 分别按明确授权执行。
