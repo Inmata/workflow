@@ -222,3 +222,15 @@ test('有包在途时新用户回合提示中途纠正流程，无在途包时�
   await packages(f, [{ packageId: 'w1', status: 'consumed', deliveredRef: 'abc123' }]);
   assert.doesNotMatch((await context()).instruction, /在途/);
 });
+
+test('会话结束挂起的分工任务，新会话入口仍附账本并标出 suspended，不附在途提示', async () => {
+  const f = await fixture();
+  await delegated(f);
+  await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched', handle: 'deleg-w1' }]);
+  await event(f, 'SessionEnd');
+  const output = await event(f, 'SessionStart', { source: 'resume', turn_id: 'turn-resume' });
+  const context = JSON.parse(output.hookSpecificOutput.additionalContext.slice('workflow 入口：'.length));
+  assert.equal(context.ledger.lifecycle, 'suspended');
+  assert.deepEqual(context.ledger.packages, ['w1 worker dispatched - - 0']);
+  assert.doesNotMatch(context.instruction, /在途/);
+});

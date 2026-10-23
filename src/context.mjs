@@ -27,6 +27,7 @@ export function compactLedger(task) {
   const packages = Object.values(task?.packages || {});
   if (!task || (!packages.length && !task.route)) return null;
   return {
+    lifecycle: task.lifecycle,
     route: task.route || null,
     packages: packages.map(p => [p.packageId, p.role, p.status, p.deliveredRef || '-', p.role === 'reviewer' ? `${p.verdict || '-'}@${p.reviews || '-'}:${p.reviewedRef || '-'}` : '-', p.attempts || 0].join(' ')),
     validation: task.validation ? task.validation.ref : null,
@@ -55,9 +56,10 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
     if (options.incremental && session.contextKey === key) knowledge = { unchanged: true, version: knowledge.version };
     else if (options.incremental) session.contextKey = key;
   }
-  const ledger = role === 'lead' && task?.lifecycle === 'active' ? compactLedger(task) : null;
+  // 挂起任务（会话结束或中断后续接）也给账本，Lead 据此 task-start 续接而不重复派工。
+  const ledger = role === 'lead' && ['active', 'suspended'].includes(task?.lifecycle) ? compactLedger(task) : null;
   // 有包在途时提醒：用户新消息若改变需求，走中途纠正流程，而不是只在 Lead 侧记下。
-  const inflight = ledger ? Object.values(task.packages || {}).filter(p => p.status === 'dispatched').map(p => p.packageId) : [];
+  const inflight = ledger && task.lifecycle === 'active' ? Object.values(task.packages || {}).filter(p => p.status === 'dispatched').map(p => p.packageId) : [];
   const correction = inflight.length ? `有 ${inflight.length} 个工作包在途（${inflight.join('、')}）：若本条用户消息改变需求或范围，按中途纠正流程先核对已有成果、取消并确认停止，再以新基准和用户原话重新派发。` : '';
   const instruction = [instructions[role], note, correction].filter(Boolean).join(' ');
   return {
