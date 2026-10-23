@@ -103,3 +103,32 @@ node bin/workflow.mjs learning schedule remove --root $pilotRoot --state-dir $wo
 2026-10-23 Codex CLI 0.163.0 隔离探针已完成（真实宿主验证）：spawn_agent 子代理事件带 `agent_id`，装入本插件后状态只留父会话；原生提问 `tool_name=request_user_input`，Codeg 同名 MCP 为 `mcp__codeg_mcp__ask_user_question`，两者 PostToolUse 均触发；`permission_mode` 只反映审批策略，Plan 协作模式也报 `default`。详见 [Codeg 能力表](adapters/codeg.md#宿主能力表)。Codeg 委派探针（2026-10-23，临时项目）：Claude 子会话收到 Lead 入口上下文并被计入 Lead 列表，发 `role-claim` 后移出（真实宿主验证）；Codeg Claude ACP 下 Lead 没有 `AskUserQuestion`，只能用 Codeg MCP 提问；Codex 子会话同样收到 Lead 上下文，`role-claim`（`--base64`）回执 accepted，状态中 role=reviewer、leadSessions 为空（真实宿主验证）；该子会话需自行查文档拼出 signal 命令，Lead 上下文已补充命令格式。Claude auto 模式分类器（2026-10-23，真实宿主验证）：CLI 与 Codeg Claude ACP 下 signal（base64/文件两种）、knowledge capture、align scan/apply 均未被拦；发现模型自发写成 `cd … && node … signal` 时信号被静默丢弃，已改为回执提示单独直接调用。门禁与账本提示（2026-10-23，Claude Code 2.1.293 `claude -p` auto，真实宿主验证）：delegated 任务缺审查与验证时 task-end 返回 `GATE`，missing 为 `review:w1`、`validation`，被拒后 revision 不前进；补 validation 与 waiver 后接受。替身 `codeg-mcp` 返回 Codeg 同构的 `{tasks:[…]}` 文本时，PostToolUse 给出“已终态移出”和“已结束未记账”两类提示。压缩与续接：`/compact` 后 compact SessionStart 正常触发；`claude -p` 每次结束都发 SessionEnd，任务被挂起，旧版入口只给 active 任务附账本，续接会话看不到 ledger。已改为挂起任务也附账本（标 lifecycle）；重装后复测通过：真实 `/compact` 加续接后入口含 `{"lifecycle":"suspended","route":"delegated","packages":["w1 worker consumed ref1 - 0","w2 worker dispatched - - 0"]}`，Lead 判断沿用原 taskId 续接、只等 w2，不重读 w1。同一交互会话内不经 SessionEnd 的压缩未实测。收益对照仍须实跑。
 
 收益对照：小修改、可拆分功能、强依赖修改三类任务，各在“Lead 直做”和“分工流程”下跑一次，记录交付是否通过、返工次数、Lead 重复读取的结果数和端到端耗时；token 只记可获取数据，不当账单。结果决定下一轮是否值得扩展账本字段，本节不预设。
+
+### 剩余验收（2026-10-23 交接）
+
+代码与上述记录已在 main（a4905d1）。另一台电脑按第 1、2 节拉取并 `install --agent claude`、`install --agent codex` 后继续以下几项，三项都要求 Lead 是顶层会话，Codeg 委派出的会话不能再委派：
+
+1. Codeg 顶层会话的真实委派：确认 hook 收到的 `get_delegation_status` 原文结构和两类账本提示。
+2. Codex 作为 Lead：走一次门禁（GATE 与 waivers）和一次提问。
+3. Codex Default 模式（`default_mode_request_user_input` 关闭）下完成一次首次对齐，含跨回合 decide。
+4. 同一交互会话内、不经 SessionEnd 的压缩。
+5. 收益对照（日常任务中积累）。
+
+1、2 可在 Codeg 里用 Codex 开顶层会话、选一个已接入的临时仓库，粘贴：
+
+```text
+你是这个仓库的 Lead（已启用 workflow 插件）。这是一次插件验收，请按协议真实走一遍分工流程。规则：每条插件命令都单独直接执行，不加 cd、&&、; 或管道；JSON 先写到 .local/ 下，再用 `signal --input <文件>` 发送；每次发送都用上一条回执里的 revision。
+
+业务：在 README.md 末尾加一行 "Codex lead probe."
+1. task-start：route=delegated，allowedPaths ["README.md"]，taskId 自己定。
+2. 用 delegate_to_agent 派一个 Worker（packageId=w1），让它加这一行、不提交，并让它先发 role-claim。
+3. 立刻发 packages：w1 role=worker status=dispatched handle=<返回的 task_id>。
+4. 用 get_delegation_status 等 w1 完成，把每次调用后的 "workflow 提示" 原文记下来。
+5. 核对 git diff，然后发 packages：w1 status=consumed，deliveredRef 取 `git hash-object README.md` 的结果。
+6. 再查一次 get_delegation_status（task_ids 里仍包含 w1），记下提示。
+7. 先用提问工具问我一个问题：“是否跳过审查？”，等我回答。
+8. 不派审查，直接发 task-end，记下 GATE 回执；再加上 validation 和 waivers 重发一次 task-end。
+最后列一张表：步骤 | 命令 | 回执或提示原文（ticket 只保留前 4 个字符）。
+```
+
+0.3.0 版本号与发布未授权，仍为 0.2.0。`docs/research/` 的调研报告按约定不入库，需要时手动拷贝。
