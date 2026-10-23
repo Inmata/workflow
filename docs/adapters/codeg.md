@@ -48,11 +48,11 @@ Codex 0.160.1 的 PostCompact 不支持 additionalContext，安装不为它设�
 
 | 提问路径 | Codex Plan | Codex Default（flag 关） | Codex Default（flag 开） | Claude CLI | Claude 经 Codeg ACP |
 | --- | --- | --- | --- | --- | --- |
-| 原生结构化提问 | 可用 | 不可用 | 可用 | 可用 | unknown |
+| 原生结构化提问 | 可用 | 不可用 | 可用 | 可用 | 不可用 |
 | Codeg MCP `ask_user_question` | 可用 | 可用 | 可用 | 可用 | 可用 |
 | 文本编号问题 | 可用 | 可用 | 可用 | 可用 | 可用 |
 
-Codex 的计划模式不进入 hook 的 `permission_mode`，插件的计划会话提示和写入保护在 Codex 上只依赖任务声明的 `permissions.mode=plan|read-only`；Lead 在 Plan 模式下开任务须如实声明。Claude 经 Codeg ACP 一列仍待 [验收](../acceptance.md#6-030-真实宿主验收)。
+Codex 的计划模式不进入 hook 的 `permission_mode`，插件的计划会话提示和写入保护在 Codex 上只依赖任务声明的 `permissions.mode=plan|read-only`；Lead 在 Plan 模式下开任务须如实声明。Claude 经 Codeg ACP 的会话工具列表没有 `AskUserQuestion`（2026-10-23 实测，见 [Claude 能力表](claude.md#宿主能力表)）；Codex Default 且 flag 关闭时以文本编号问题完成首次对齐（2026-10-23 实测，见[验收记录](../acceptance.md#6-030-真实宿主验收)）。
 
 ## 旧入口
 

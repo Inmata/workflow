@@ -112,7 +112,7 @@ node bin/workflow.mjs learning schedule remove --root $pilotRoot --state-dir $wo
 2. Codex 作为 Lead：走一次门禁（GATE 与 waivers）和一次提问。
 3. Codex Default 模式（`default_mode_request_user_input` 关闭）下完成一次首次对齐，含跨回合 decide。
 4. 同一交互会话内、不经 SessionEnd 的压缩。
-5. 收益对照（日常任务中积累）。
+5. 收益对照（已取消，见本节末）。
 
 2026-10-23 复测（Codeg 顶层 Codex 会话，Codex CLI 0.164.0，临时仓库 workflow-probe，真实宿主验证）：第 1、2 项通过。Lead 发 task-start（rev 2）后用 `delegate_to_agent` 派 Codex Worker，Worker `role-claim` 被接受，状态中 role=worker，owner 与 leadSessions 仍只有 Lead。`get_delegation_status` 的两类提示原文：w1 完成时为“包 w1 的委派已结束：读取结果后在下一次 packages 中记为 delivered/consumed。”；记为 consumed 后再查为“等待集合含账本已终态的包（w1）：下次查询移出这些 task_id，不重读结果。”。原生 `request_user_input` 提问两次；不派审查直接 task-end 返回 GATE，missing 为 `review:w1`、`validation`，revision 不前进；补 validation 与 review waiver 后接受（rev 9，lifecycle=complete）。会话 `permission_mode=default`，但本机 `default_mode_request_user_input=true`，不算第 3 项。发现：Lead 第一次提问未说明审查是 delegated 路线的固定要求，用户需追问一次；Lead 还在提问前手动发了 `phase=waiting-user`，PostToolUse 也会置该状态，二者重复但无害。
 
@@ -141,4 +141,4 @@ node bin/workflow.mjs learning schedule remove --root $pilotRoot --state-dir $wo
 最后列一张表：步骤 | 命令 | 回执或提示原文（ticket 只保留前 4 个字符）。
 ```
 
-0.3.0 版本号与发布未授权，仍为 0.2.0。`docs/research/` 的调研报告按约定不入库，需要时手动拷贝。
+2026-10-23 结论：第 1~4 项通过；第 5 项收益对照经用户决定取消，不作为发布条件。据此发布 0.3.0。`docs/research/` 的调研报告按约定不入库，需要时手动拷贝。
