@@ -133,6 +133,16 @@ test('decide 与 suggest 更新状态和文档维护区，不重复追加', asyn
   assert.ok((await readFile(docPath(f.project), 'utf8')).includes('| D9 | 项目做法 | 默认做法 | 影响 | 建议 | accepted-project |'));
 });
 
+test('decide 写入末节时停在管理区结束标记前，并清理占位行', async () => {
+  const f = await fixture();
+  await mkdir(path.join(f.project, 'docs'), { recursive: true });
+  await writeFile(docPath(f.project), '<!-- workflow-alignment:begin -->\n# 项目对齐\n\n## 已裁决记录\n\n- 暂无\n<!-- workflow-alignment:end -->\n\n手写尾注\n');
+  await decide(f, { decisions: [{ id: 'D1', status: 'accepted-workflow', reason: '用户选 1A' }] });
+  await decide(f, { decisions: [{ id: 'D2', status: 'accepted-workflow', reason: '用户选 2A' }] });
+  const text = await readFile(docPath(f.project), 'utf8');
+  assert.equal(text, '<!-- workflow-alignment:begin -->\n# 项目对齐\n\n## 已裁决记录\n\nD1 accepted-workflow：用户选 1A\nD2 accepted-workflow：用户选 2A\n<!-- workflow-alignment:end -->\n\n手写尾注\n');
+});
+
 test('对齐写入受只读/计划权限与明确基线保护', async () => {
   for (const mode of ['read-only', 'plan']) {
     const f = await fixture(); await start(f, { mode, allowedPaths: ['WORKFLOW-ALIGNMENT.md'] });

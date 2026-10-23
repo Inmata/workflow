@@ -11,6 +11,8 @@ export const DEFAULT_DOC = 'docs/WORKFLOW-ALIGNMENT.md';
 const FALLBACK_DOC = 'WORKFLOW-ALIGNMENT.md';
 const BEGIN = '<!-- workflow-alignment:begin -->';
 const END = '<!-- workflow-alignment:end -->';
+// Lead 生成空小节时常写的占位行；写入首条记录时移除。
+const PLACEHOLDER = /^\s*[-*]\s*(暂无|无|none|n\/a)\s*[。.]?\s*$/i;
 const DOC_EXTENSIONS = new Set(['.md', '.txt', '.rst', '.adoc']);
 const TOOL_FILES = new Set(['package.json', 'Makefile', 'makefile', 'pyproject.toml', 'Cargo.toml', 'go.mod']);
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'bin', 'obj', 'dist', 'build', 'work', 'releases', 'release-staging', 'backups', 'vendor', '.vs', '.idea', 'coverage', 'target', 'tmp', '.workflow']);
@@ -199,15 +201,19 @@ function replaceSection(text, heading, line) {
   const start = text.indexOf(heading);
   if (start < 0) return `${text}${text.endsWith('\n') ? '' : '\n'}\n${heading}\n\n${line}\n`;
   const bodyStart = start + heading.length;
-  const next = text.indexOf('\n## ', bodyStart);
-  const end = next < 0 ? text.length : next;
-  const body = text.slice(bodyStart, end).split('\n');
+  // 小节在下一个标题或管理区结束标记处截止，取较早者；末节不能越过 END。
+  const ends = [text.indexOf('\n## ', bodyStart), text.indexOf('\n' + END, bodyStart)].filter(index => index >= 0);
+  const end = ends.length ? Math.min(...ends) : text.length;
+  let body = text.slice(bodyStart, end).split('\n');
   const key = lineKey(line);
   const index = body.findIndex(item => item.trim() && lineKey(item) === key);
   if (index >= 0) body[index] = line;
   else {
+    body = body.filter(item => !PLACEHOLDER.test(item));
     let insert = body.length;
     while (insert > 0 && body[insert - 1].trim() === '') insert--;
+    // 空小节：body[0] 是标题行剩余部分，记录放在标题后空一行。
+    if (insert === 0) { while (body.length < 2) body.push(''); insert = 2; }
     body.splice(insert, 0, line);
   }
   return text.slice(0, bodyStart) + body.join('\n') + text.slice(end);

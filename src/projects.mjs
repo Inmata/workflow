@@ -71,12 +71,18 @@ function blockFrom(text) {
   if (start < 0 || end < start || text.indexOf(BEGIN, start + BEGIN.length) >= 0 || text.indexOf(END, end + END.length) >= 0) fail('CONFLICT', 'AGENTS 管理区标记不完整或重复');
   return { content: text.slice(start, end + END.length), start, end: end + END.length };
 }
-async function portableBlock(root) {
+// 对齐文件位置与 scan 同一规则：已登记的优先，否则有 docs/ 目录放 docs 下，没有放根目录。
+async function alignmentPath(root, previous) {
+  if (previous?.alignment?.docPath) return previous.alignment.docPath;
+  const docs = await lstat(path.join(root, 'docs')).catch(() => null);
+  return docs?.isDirectory() ? 'docs/WORKFLOW-ALIGNMENT.md' : 'WORKFLOW-ALIGNMENT.md';
+}
+async function portableBlock(root, previous) {
   const links = [];
   for (const relative of ['README.md', 'spec.md', 'SPEC.md', 'PLAN.md', 'LESSONS.md']) {
     if (await readText(path.join(root, relative)) !== null) links.push(`[${relative}](${relative})`);
   }
-  return `${BEGIN}\nworkflow 已在本机明确接入；以当前会话 hook 提供的入口读取公共方法和对应角色指引。\n无 hook 入口时遵循项目已有约定，不由复制来的管理区推定接入。\n首次会话先做项目对齐：结论写入 docs/WORKFLOW-ALIGNMENT.md，差异逐条询问用户，不擅自按任何一方执行。\n${links.length ? `已有资料：${links.join('、')}。\n` : ''}${END}`;
+  return `${BEGIN}\nworkflow 已在本机明确接入；以当前会话 hook 提供的入口读取公共方法和对应角色指引。\n无 hook 入口时遵循项目已有约定，不由复制来的管理区推定接入。\n首次会话先做项目对齐：结论写入 ${await alignmentPath(root, previous)}，差异逐条询问用户，不擅自按任何一方执行。\n${links.length ? `已有资料：${links.join('、')}。\n` : ''}${END}`;
 }
 export async function enableProject(directory, root, options = {}) {
   root = await canonical(root);
@@ -88,7 +94,7 @@ export async function enableProject(directory, root, options = {}) {
     const oldBlock = blockFrom(original);
     if (oldBlock && (!previous || digest(oldBlock.content) !== previous.managedBlockHash)) fail('CONFLICT', '发现手改或复制来的管理区；显式核对后再绑定');
     if (previous?.enabled && !identityEqual(previous.identity, currentIdentity)) fail('IDENTITY', '目录或 Git 身份变化；先停用旧绑定再明确接入');
-    const block = await portableBlock(root);
+    const block = await portableBlock(root, previous);
     const output = oldBlock ? original.slice(0, oldBlock.start) + block + original.slice(oldBlock.end) : `${original}${original && !original.endsWith('\n') ? '\n' : ''}${block}\n`;
     const projectId = previous?.projectId || id('project');
     const project = {

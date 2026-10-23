@@ -114,10 +114,20 @@ node bin/workflow.mjs learning schedule remove --root $pilotRoot --state-dir $wo
 4. 同一交互会话内、不经 SessionEnd 的压缩。
 5. 收益对照（日常任务中积累）。
 
+2026-10-23 复测（Codeg 顶层 Codex 会话，Codex CLI 0.164.0，临时仓库 workflow-probe，真实宿主验证）：第 1、2 项通过。Lead 发 task-start（rev 2）后用 `delegate_to_agent` 派 Codex Worker，Worker `role-claim` 被接受，状态中 role=worker，owner 与 leadSessions 仍只有 Lead。`get_delegation_status` 的两类提示原文：w1 完成时为“包 w1 的委派已结束：读取结果后在下一次 packages 中记为 delivered/consumed。”；记为 consumed 后再查为“等待集合含账本已终态的包（w1）：下次查询移出这些 task_id，不重读结果。”。原生 `request_user_input` 提问两次；不派审查直接 task-end 返回 GATE，missing 为 `review:w1`、`validation`，revision 不前进；补 validation 与 review waiver 后接受（rev 9，lifecycle=complete）。会话 `permission_mode=default`，但本机 `default_mode_request_user_input=true`，不算第 3 项。发现：Lead 第一次提问未说明审查是 delegated 路线的固定要求，用户需追问一次；Lead 还在提问前手动发了 `phase=waiting-user`，PostToolUse 也会置该状态，二者重复但无害。
+
+同日后台复盘隔离适配 Codex 0.164：`features list` 不再接受 `--profile`；`unified_exec` 只能由托管 requirements 关闭，用户 `-c` 后仍报 true，但抓取实际请求确认 `shell_tool=false` 时已无 `exec_command`/`write_stdin`，不再以该开关判定；`multi_agent=false` 不再移除 `spawn_agent` 等工具，需加 `agents.enabled=false`。修正后 `learning doctor` 为 `capabilities-verified`，实际请求只剩 `request_user_input`。
+
+同日第 4 项通过（Codeg Claude ACP 顶层会话，permission_mode=auto，真实宿主验证）：task-start 与 packages 后在同一会话 `/compact`，全程无 SessionEnd 观测；`SessionStart:compact` 入口含 `{"lifecycle":"active","route":"delegated","packages":["w1 worker consumed ref1 - 0","w2 worker dispatched - - 0"]}`，Lead 判断不重派、不重读 w1。入口与每次 UserPromptSubmit 都会推进 revision（回执 3，压缩后入口 4、5、6），Lead 应以最新入口的 `expectedRevision` 为准。收尾时 delegated 任务因 w2 未交付，以 `terminal:w2`、`review`、`validation` 三条 waiver 结束（rev 8，lifecycle=complete）。
+
+第 3 项首次尝试未完成（Codeg Codex ACP 0.160.1，flag 已关）：该会话首回合 SessionStart、UserPromptSubmit 均未进入任何 hook（workflow、文档学习都没有注入，状态无该会话），同会话后续 Stop 被记录。根因（经 ACP 版 `codex app-server` 的 `hooks/list` 核实）：Codex 的 hook 信任键按“事件:分组序号”编号，重装时 install 先删除自有分组再追加到末尾，与文档学习插件对调了序号，两边的 SessionStart、UserPromptSubmit、PostToolUse、SessionEnd 都变成 `trust=modified` 而不执行。在 `/hooks` 重新信任后恢复；install 已改为重装时把自有分组放回原序号。Lead 发现 identity 为 null 后停下报告，没有绕过插件手写文件，行为符合预期。另：仓库无 `docs/` 时 scan 按设计登记根目录 `WORKFLOW-ALIGNMENT.md`。
+
+同日第 3 项通过（重新信任后的新会话，Codeg Codex ACP 0.160.1，`permission_mode=default`，flag 关闭，真实宿主验证）：入口 identity 非空；scan 后发 waiting-user，用文本编号问题提问 3 条，没有调用提问工具；用户在下一回合答“1A 2A 3A”，Lead 依次 `project owner`、`apply`、D1/D2 `decide`（均 recorded），status 为 `pendingDecisions: 0`，随后 task-end 被接受，任务 complete。发现：① `decide` 写“## 已裁决记录”这类末节时越过管理区结束标记、把记录追加到文件末尾，且不清理“- 暂无”占位，已修复并补测试；② 旧 Lead 会话留在 leadSessions 中时 owner 为空，首次 apply 返回 `OWNER`，需先 `project owner`，属设计行为但增加首次对齐的步骤；③ Lead 在 `.local/` 写输入 JSON 会让 status 报 `stale`（`directoryChanged: [".local"]`），不影响对齐结论。验收结束后已把 flag 恢复为 true。
+
 1、2 可在 Codeg 里用 Codex 开顶层会话、选一个已接入的临时仓库，粘贴：
 
 ```text
-你是这个仓库的 Lead（已启用 workflow 插件）。这是一次插件验收，请按协议真实走一遍分工流程。规则：每条插件命令都单独直接执行，不加 cd、&&、; 或管道；JSON 先写到 .local/ 下，再用 `signal --input <文件>` 发送；每次发送都用上一条回执里的 revision。
+你是这个仓库的 Lead（已启用 workflow 插件）。这是一次插件验收，请按协议真实走一遍分工流程。规则：每条插件命令都单独直接执行，不加 cd、&&、; 或管道；JSON 先写到 .local/ 下，再用 `signal --input <文件>` 发送；每次发送都用最新入口里的 expectedRevision（每次用户发言都会推进 revision，不要沿用上一条回执的值）。
 
 业务：在 README.md 末尾加一行 "Codex lead probe."
 1. task-start：route=delegated，allowedPaths ["README.md"]，taskId 自己定。

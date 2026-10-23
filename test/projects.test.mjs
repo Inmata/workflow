@@ -80,6 +80,19 @@ test('V05/V14 资料不完整可接入，已有 AGENTS 原文保留，重复接�
   await disableProject(directory, project);
   assert.equal(await readFile(path.join(project, 'AGENTS.md'), 'utf8'), original);
 });
+test('V05 管理区写的对齐文件路径与 scan 一致：无 docs/ 用根目录，有 docs/ 用 docs 下', async () => {
+  const area = await temporary();
+  const directory = path.join(area, 'state');
+  const bare = path.join(area, 'bare');
+  await mkdir(bare);
+  await enableProject(directory, bare);
+  const bareText = await readFile(path.join(bare, 'AGENTS.md'), 'utf8');
+  assert.ok(bareText.includes('结论写入 WORKFLOW-ALIGNMENT.md'), bareText);
+  const withDocs = path.join(area, 'with-docs');
+  await mkdir(path.join(withDocs, 'docs'), { recursive: true });
+  await enableProject(directory, withDocs);
+  assert.ok((await readFile(path.join(withDocs, 'AGENTS.md'), 'utf8')).includes('结论写入 docs/WORKFLOW-ALIGNMENT.md'));
+});
 test('V14 手改管理区后停用保留原文，知识正文不删', async () => {
   const f = await fixture();
   const file = path.join(f.project, 'AGENTS.md');

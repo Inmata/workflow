@@ -127,24 +127,32 @@ async function readConfig(file) {
 }
 // 自有 handler 必须 command 与 args 同时一致，避免只凭相同的 Node 路径误删其他插件的定义。
 const sameTarget = (handler, record) => handler.command === record.command && JSON.stringify(handler.args ?? null) === JSON.stringify(record.args ?? null);
+// slots 记下每个事件里自有分组的原位置；Codex 的信任键按分组序号编号，重装须放回原处，否则自己和其他插件的信任都会失效。
 function removeOwned(config, record) {
   const result = structuredClone(config);
   const conflicts = [];
-  if (!record) return { config: result, conflicts };
+  const slots = {};
+  if (!record) return { config: result, conflicts, slots };
   result.hooks ||= {};
   for (const event of record.events || EVENTS) {
     let found = false;
     const expected = record.handlers[event];
-    result.hooks[event] = (result.hooks?.[event] || []).map(group => ({ ...group, hooks: group.hooks.filter(handler => {
-      if (!sameTarget(handler, record)) return true;
-      found = true;
-      if (JSON.stringify(handler) !== JSON.stringify(expected)) { conflicts.push(event); return true; }
-      return false;
-    }) })).filter(group => group.hooks.length);
+    const kept = [];
+    for (const group of result.hooks?.[event] || []) {
+      const hooks = group.hooks.filter(handler => {
+        if (!sameTarget(handler, record)) return true;
+        found = true;
+        if (JSON.stringify(handler) !== JSON.stringify(expected)) { conflicts.push(event); return true; }
+        slots[event] ??= kept.length;
+        return false;
+      });
+      if (hooks.length) kept.push({ ...group, hooks });
+    }
+    result.hooks[event] = kept;
     if (!found) conflicts.push(event);
     if (!result.hooks[event].length) delete result.hooks[event];
   }
-  return { config: result, conflicts };
+  return { config: result, conflicts, slots };
 }
 export async function install(directory, { userDir, sourceRoot = PRODUCT_ROOT, agent = 'codex' } = {}) {
   const host = hostFor(agent);
@@ -192,7 +200,9 @@ export async function install(directory, { userDir, sourceRoot = PRODUCT_ROOT, a
       const handler = host.handler(link, directory, event);
       handlers[event] = handler;
       next.hooks[event] ||= [];
-      next.hooks[event].push({ hooks: [handler] });
+      const slot = stripped.slots[event];
+      if (slot === undefined) next.hooks[event].push({ hooks: [handler] });
+      else next.hooks[event].splice(slot, 0, { hooks: [handler] });
     }
     const after = JSON.stringify(next, null, 2) + '\n';
     const changeId = id('install');

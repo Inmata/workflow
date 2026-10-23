@@ -64,6 +64,27 @@ test('V14 hook 指向固定入口 current，升级只替换链接目标', async 
   await fs.mkdir(link);
   assert.equal((await doctor(directory)).integrity, 'unavailable');
 });
+test('V14 升级重装保持自有分组原位置，不打乱其他插件的信任序号', async () => {
+  const area = await temporary('install-order-');
+  const directory = path.join(area, 'state');
+  const userDir = path.join(area, '.codex');
+  const configFile = path.join(userDir, 'hooks.json');
+  await install(directory, { userDir });
+  // 其他插件后装：一个排在本插件之前，一个排在之后。
+  const config = JSON.parse(await readFile(configFile, 'utf8'));
+  config.hooks.SessionStart.unshift({ hooks: [{ type: 'command', command: 'plugin-before' }] });
+  config.hooks.SessionStart.push({ hooks: [{ type: 'command', command: 'plugin-after' }] });
+  await writeFile(configFile, JSON.stringify(config));
+  const source = path.join(area, 'source');
+  await fs.cp(root, source, { recursive: true, filter: item => !item.includes('.git') && !item.includes('node_modules') });
+  await fs.appendFile(path.join(source, 'README.md'), '\n升级标记\n');
+  assert.equal((await install(directory, { userDir, sourceRoot: source })).status, 'installed');
+  const commands = JSON.parse(await readFile(configFile, 'utf8')).hooks.SessionStart.map(group => group.hooks[0].command);
+  assert.equal(commands.length, 3);
+  assert.equal(commands[0], 'plugin-before');
+  assert.ok(commands[1].includes('workflow.mjs'), commands[1]);
+  assert.equal(commands[2], 'plugin-after');
+});
 test('V14 自有 handler 被手改时撤销不覆盖，发布副本被改时停止维护', async () => {
   const area = await temporary('install-conflict-');
   const directory = path.join(area, 'state');
