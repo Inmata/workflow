@@ -192,3 +192,33 @@ test('doctor --agent codex 只读报告 Default 模式提问开关', async () =>
   assert.equal((await doctor(path.join(area, 'state'), undefined, { agent: 'claude' })).questionInDefaultMode, undefined);
 });
 
+
+test('委派状态查询：等待集合含已终态包时提示移出，已结束但未记账时提示记账，状态不写入', async () => {
+  const f = await fixture();
+  await delegated(f);
+  await packages(f, [
+    { packageId: 'w1', role: 'worker', status: 'consumed', handle: 'task-a', deliveredRef: 'abc123' },
+    { packageId: 'w2', role: 'worker', status: 'dispatched', handle: 'task-b' },
+  ]);
+  const before = (await readState(f.directory)).revision;
+  const response = { content: [{ type: 'text', text: JSON.stringify({ tasks: [{ task_id: 'task-a', status: 'completed', text: '结果正文' }, { task_id: 'task-b', status: 'completed', text: '结果正文' }] }) }] };
+  for (const [name, call] of [['mcp__codeg_mcp__get_delegation_status', event], ['mcp__codeg-mcp__get_delegation_status', event]]) {
+    const output = await call(f, 'PostToolUse', { tool_name: name, tool_response: response });
+    assert.match(output.hookSpecificOutput.additionalContext, /w1.*移出/);
+    assert.match(output.hookSpecificOutput.additionalContext, /w2.*已结束/);
+    assert.ok(!output.hookSpecificOutput.additionalContext.includes('结果正文'));
+  }
+  assert.equal((await readState(f.directory)).revision, before);
+  const quiet = await event(f, 'PostToolUse', { tool_name: 'mcp__codeg_mcp__get_delegation_status', tool_response: { tasks: [{ task_id: 'task-b', status: 'running' }] } });
+  assert.equal(quiet.hookSpecificOutput, undefined);
+});
+
+test('有包在途时新用户回合提示中途纠正流程，无在途包时不提示', async () => {
+  const f = await fixture();
+  await delegated(f);
+  await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched' }]);
+  const context = async () => JSON.parse((await event(f, 'SessionStart', { source: 'compact' })).hookSpecificOutput.additionalContext.slice('workflow 入口：'.length));
+  assert.match((await context()).instruction, /1 个工作包在途（w1）.*中途纠正/);
+  await packages(f, [{ packageId: 'w1', status: 'consumed', deliveredRef: 'abc123' }]);
+  assert.doesNotMatch((await context()).instruction, /在途/);
+});

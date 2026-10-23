@@ -22,8 +22,8 @@ Codex 0.160.1 的 PostCompact 不支持 additionalContext，安装不为它设�
 
 ## 等待与纠正
 
-- 等待集合：一次调用批量传入所有在途 task_id，用有界 `wait_ms`；终态 ID 首次消费后移出集合，并在账本把该包记为 consumed。可能阻塞于用户的任务不用 `wait_ms=0` 无限等待。压缩后按 context `ledger` 判断哪些结果已消费，不重读。
-- 中途纠正：能力表没有“运行中追加消息”时，先核对磁盘上已有成果，再取消该任务并确认已停止，然后以新基准、用户原话和已完成工作重新派发；同包返修沿用 packageId（插件自动 attempts+1），范围变化用新 packageId。
+- 等待集合：一次调用批量传入所有在途 task_id，用有界 `wait_ms`；终态 ID 首次消费后移出集合，并在账本把该包记为 consumed。可能阻塞于用户的任务不用 `wait_ms=0` 无限等待。压缩后按 context `ledger` 判断哪些结果已消费，不重读。插件在 `get_delegation_status` 的 PostToolUse 里按 `handle` 比对账本：等待集合含已终态包时提示移出，委派已结束但包仍是 dispatched 时提示记账。只追加提示，不改宿主输出，也不写状态。
+- 中途纠正：能力表没有“运行中追加消息”时，先核对磁盘上已有成果，再取消该任务并确认已停止，然后以新基准、用户原话和已完成工作重新派发；同包返修沿用 packageId（插件自动 attempts+1），范围变化用新 packageId。delegated 任务有 dispatched 包时，新用户回合的入口指令会列出在途包并提示这一流程；是否需要纠正仍由 Lead 判断。
 - 委派工作包写明 packageId，并要求子会话有 workflow 身份时先发 `role-claim`。未声明的子会话仍按 Lead 计入，会让知识负责人推定失效。
 
 ## 宿主能力表

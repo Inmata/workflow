@@ -39,7 +39,7 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   const pending = Object.values(state.pending).filter(p => p.projectId === project.projectId && p.kind === 'knowledge-pending' && p.status === 'open').slice(0, 1);
   const identity = session && !session.interrupted ? { schemaVersion: 1, projectId: project.projectId, sessionId, taskId: session.taskId, turnId: session.turnId, ticket: session.ticket, interruptEpoch: session.interruptEpoch, expectedRevision: session.revision } : null;
   const instructions = {
-    lead: '首次或范围变化时读公共方法和 Lead 指引。新业务 task-start 并声明 route（identity.taskId 为空时由 Lead 自拟 taskId，如 task-<简短英文>；续接已有任务沿用原 ID），提问前 waiting-user，派发/消费/审查结论用 packages 批量记录，交付后 task-end。明确纠正、失败原因或已验证方法出现时，按 learningGuide 用 knowledge capture 保存短材料；没有新材料直接交付。任务开始或范围变化用 knowledge select 检索适用经验，详细条目按需读取。当前用户要求优先于历史经验。若当前会话是受委派的工作包（任务给出 packageId 与 worker/reviewer 角色），不按 Lead 行事：先用 `node <cli> signal --base64 <identity 加 action=role-claim、role、packageId、signalId 的 JSON>` 声明角色，再读对应角色指引。',
+    lead: '首次或范围变化时读公共方法和 Lead 指引。新业务 task-start 并声明 route（identity.taskId 为空时由 Lead 自拟 taskId，如 task-<简短英文>；续接已有任务沿用原 ID），提问前 waiting-user，派发/消费/审查结论用 packages 批量记录（派发时 handle 填委派 ID），交付后 task-end。明确纠正、失败原因或已验证方法出现时，按 learningGuide 用 knowledge capture 保存短材料；没有新材料直接交付。任务开始或范围变化用 knowledge select 检索适用经验，详细条目按需读取。当前用户要求优先于历史经验。若当前会话是受委派的工作包（任务给出 packageId 与 worker/reviewer 角色），不按 Lead 行事：先用 `node <cli> signal --base64 <identity 加 action=role-claim、role、packageId、signalId 的 JSON>` 声明角色，再读对应角色指引。',
     worker: '先读公共方法和 Worker 指引。只读工作包直接资料，必要的直接依赖可读；按阶段或范围变化说明【目标】和最小读取范围。不加载 Lead 调度，不递归创建代理，不发 task-start/packages。协作需要 workflow 身份而当前没有时，停止寻找并报告 Lead。复用有效证据；补测先说明具体缺口、最小测试和判定标准，由 Lead 裁定。发现随正常交付回报。',
     reviewer: '先读公共方法、Reviewer 指引和工作包指定范围。只读审查，不改源码、测试或配置，不递归创建代理，不发 task-start/packages。没有 workflow 身份时，停止寻找并报告 Lead。复用与待审版本匹配的证据；必要补测先说明具体缺口、最小测试和判定标准，由 Lead 裁定。完成即交回。',
   };
@@ -56,6 +56,10 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
     else if (options.incremental) session.contextKey = key;
   }
   const ledger = role === 'lead' && task?.lifecycle === 'active' ? compactLedger(task) : null;
+  // 有包在途时提醒：用户新消息若改变需求，走中途纠正流程，而不是只在 Lead 侧记下。
+  const inflight = ledger ? Object.values(task.packages || {}).filter(p => p.status === 'dispatched').map(p => p.packageId) : [];
+  const correction = inflight.length ? `有 ${inflight.length} 个工作包在途（${inflight.join('、')}）：若本条用户消息改变需求或范围，按中途纠正流程先核对已有成果、取消并确认停止，再以新基准和用户原话重新派发。` : '';
+  const instruction = [instructions[role], note, correction].filter(Boolean).join(' ');
   return {
     enabled: true, projectId: project.projectId, root: project.root, worktree: resolved.worktree,
     role, documents: [path.join(PRODUCT_ROOT, 'docs', 'workflow.md'), path.join(PRODUCT_ROOT, 'docs', 'roles', `${role}.md`)],
@@ -65,7 +69,7 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
     ...(ledger ? { ledger } : {}),
     learningGuide: path.join(PRODUCT_ROOT, 'docs', 'learning.md'),
     ...(role === 'lead' ? { alignmentGuide: path.join(PRODUCT_ROOT, 'docs', 'alignment.md') } : {}),
-    instruction: note ? `${instructions[role]} ${note}` : instructions[role],
+    instruction,
   };
 }
 export async function getContext(directory, cwd, role, sessionId) {

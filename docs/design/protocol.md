@@ -41,6 +41,8 @@ disposition（旧接口兼容，不再是 task-end 的前置）：
 - `updated`：非空 transactionIds；每笔必须与当前项目、任务、会话关联，全部文件成功，且候选已处置。普通编辑不产生可信事务。
 - `pending-recovery`：pendingId 与 reason；待办必须已由知识事务或 `pending create` 为本任务创建，可定位候选和失败原因。
 
+packages 的 `handle` 填宿主委派 ID（Codeg task_id）时，委派状态查询的 PostToolUse 会据此给出只读提示：等待集合中账本已终态的包、已结束但未记账的包。Lead 入口在有 dispatched 包时附在途提示。两者都不改变状态。
+
 接受返回 `{accepted:true, revision, taskId, phase}`，可附 `warning`、`gate`、`repairLimit`；拒绝返回 `{accepted:false, reason, message, missing?}`，不改变当前状态。hook 用 additionalContext 回传，命令退出成功不等于接受。
 
 ## Stop、中断和恢复

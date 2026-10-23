@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { canonical, digest, id, mutate, observeHost, readState, samePath } from './store.mjs';
-import { acceptSignal, interrupt, openTurn, pendingFor, sessionKey, stop, taskKey } from './protocol.mjs';
+import { acceptSignal, interrupt, openTurn, pendingFor, sessionKey, stop, taskKey, TERMINAL_PACKAGE } from './protocol.mjs';
 import { resolveProject } from './projects.mjs';
 import { PRODUCT_ROOT, projectContext } from './context.mjs';
 
@@ -18,6 +18,39 @@ export const QUESTION_TOOLS = {
 // 宿主内置子代理（Claude Agent 工具、Codex spawn_agent）的事件带 agent_id 并共享父 session_id；
 // 这些事件不属于 Lead 回合，直接放行。`--agent` 启动的主会话只有 agent_type，不在此列。
 export const isSubagentEvent = event => typeof event.agent_id === 'string' && event.agent_id.length > 0;
+// Codeg 委派状态工具；两种写法对应 Claude（保留连字符）与 Codex（规范为下划线）。
+export const DELEGATION_STATUS_TOOLS = ['mcp__codeg-mcp__get_delegation_status', 'mcp__codeg_mcp__get_delegation_status'];
+const TERMINAL_DELEGATION = ['completed', 'failed', 'canceled'];
+// 只取宿主返回的 {tasks:[{task_id,status}]} 结构，不扫描结果正文。
+function delegationTasks(response, depth = 0) {
+  if (depth > 5 || response === null || response === undefined) return [];
+  if (typeof response === 'string') { const parsed = parseText(response); return parsed ? delegationTasks(parsed, depth + 1) : []; }
+  if (Array.isArray(response)) return response.flatMap(item => delegationTasks(item, depth + 1));
+  if (typeof response !== 'object') return [];
+  if (Array.isArray(response.tasks)) return response.tasks.filter(t => typeof t?.task_id === 'string').map(t => ({ taskId: t.task_id, status: t.status }));
+  if (typeof response.text === 'string') return delegationTasks(response.text, depth + 1);
+  if (Array.isArray(response.content)) return delegationTasks(response.content, depth + 1);
+  if (Object.hasOwn(response, 'output')) return delegationTasks(response.output, depth + 1);
+  return [];
+}
+// 等待集合里仍有账本已记为终态的 handle 时提醒移出，避免重复带回已消费结果；只追加提示，不改宿主输出。
+function delegationHint(state, project, event, turnId) {
+  const session = state.sessions[sessionKey(project.projectId, event.session_id)];
+  if (!session || session.role || (turnId && session.turnId !== turnId) || !session.taskId) return {};
+  const task = state.tasks[taskKey(project.projectId, session.taskId)];
+  if (task?.lifecycle !== 'active' || !task.packages) return {};
+  const byHandle = new Map(Object.values(task.packages).filter(p => p.handle).map(p => [p.handle, p]));
+  const settled = [], unrecorded = [];
+  for (const item of delegationTasks(event.tool_response)) {
+    const pkg = byHandle.get(item.taskId);
+    if (pkg && TERMINAL_PACKAGE.includes(pkg.status)) settled.push(pkg.packageId);
+    else if (pkg && TERMINAL_DELEGATION.includes(item.status) && pkg.status === 'dispatched') unrecorded.push(pkg.packageId);
+  }
+  const notes = [];
+  if (settled.length) notes.push(`等待集合含账本已终态的包（${settled.join('、')}）：下次查询移出这些 task_id，不重读结果。`);
+  if (unrecorded.length) notes.push(`包 ${unrecorded.join('、')} 的委派已结束：读取结果后在下一次 packages 中记为 delivered/consumed。`);
+  return notes.length ? contextOutput('PostToolUse', `workflow 提示：${notes.join(' ')}`) : {};
+}
 const contextOutput = (event, text) => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
 function parseText(value) {
   if (typeof value !== 'string') return null;
@@ -89,7 +122,8 @@ export async function handleHook(directory, event, options = {}) {
     const signalInvocation = name === 'PostToolUse' && await isSignalInvocation(event, options.entry);
     // 组合命令里的本插件 signal 不接受，但要回执说明，否则模型只能从 revision 反推信号丢失。
     const nearMiss = name === 'PostToolUse' && !signalInvocation && isComposedSignal(event);
-    if (name === 'PostToolUse' && !question && !signalInvocation && !nearMiss) return {};
+    const delegationStatus = name === 'PostToolUse' && DELEGATION_STATUS_TOOLS.includes(event.tool_name);
+    if (name === 'PostToolUse' && !question && !signalInvocation && !nearMiss && !delegationStatus) return {};
     // Codex 每个事件都带 turn_id；Claude Code 的入口事件带 prompt_id，用宿主值建立回合，缺失时才本机生成。
     const hostTurn = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : typeof event.prompt_id === 'string' && event.prompt_id ? event.prompt_id : null;
     const turnId = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : null;
@@ -101,6 +135,8 @@ export async function handleHook(directory, event, options = {}) {
     }
     const initial = await resolveProject(existing, event.cwd);
     if (!initial) return {};
+    // 委派状态查询只读核对账本，不写状态：每次等待都落盘会放大锁竞争。
+    if (name === 'PostToolUse' && delegationStatus) return delegationHint(existing, initial.project, event, turnId);
     return await mutate(directory, async (state, save) => {
       const resolved = await resolveProject(state, event.cwd);
       if (!resolved) return {};
