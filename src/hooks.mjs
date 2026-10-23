@@ -9,6 +9,15 @@ export const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop'
 export const CLAUDE_EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'StopFailure', 'SessionEnd', 'PreCompact', 'PostCompact'];
 export const HOST_EVENTS = { codex: EVENTS, claude: CLAUDE_EVENTS };
 export const HOSTS = ['codex', 'claude'];
+// 提问工具名按宿主分表。Claude 依据本机 transcript 与 hooks 文档（MCP 名保留服务器连字符）；
+// Codex 原生名来自本机 rollout，hook 中 MCP 名按源码为原始服务器名，下划线形式是模型可见名，保留兼容。
+export const QUESTION_TOOLS = {
+  codex: ['request_user_input', 'request_user_input_async', 'mcp__codeg-mcp__ask_user_question', 'mcp__codeg_mcp__ask_user_question'],
+  claude: ['AskUserQuestion', 'mcp__codeg-mcp__ask_user_question'],
+};
+// 宿主内置子代理（Claude Agent 工具、Codex spawn_agent）的事件带 agent_id 并共享父 session_id；
+// 这些事件不属于 Lead 回合，直接放行。`--agent` 启动的主会话只有 agent_type，不在此列。
+export const isSubagentEvent = event => typeof event.agent_id === 'string' && event.agent_id.length > 0;
 const contextOutput = (event, text) => ({ hookSpecificOutput: { hookEventName: event, additionalContext: text } });
 function parseText(value) {
   if (typeof value !== 'string') return null;
@@ -62,6 +71,11 @@ export async function isSignalInvocation(event, entry = path.join(PRODUCT_ROOT, 
   while (tokens[index] === '--state-dir') index += 2;
   return tokens[index] === 'signal';
 }
+function isComposedSignal(event) {
+  if (!['Bash', 'exec_command', 'PowerShell', 'powershell', 'pwsh'].includes(event.tool_name)) return false;
+  const raw = signalCommand(event);
+  return typeof raw === 'string' && /workflow\.mjs["']?\s+(?:--state-dir\s+\S+\s+)*signal\b/.test(raw) && shellTokens(raw) === null;
+}
 export async function handleHook(directory, event, options = {}) {
   try {
     const agent = HOSTS.includes(options.agent) ? options.agent : 'codex';
@@ -70,9 +84,12 @@ export async function handleHook(directory, event, options = {}) {
     if (typeof event.cwd !== 'string' || typeof event.session_id !== 'string' || !event.session_id) return {};
     const name = event.hook_event_name;
     if (process.env.WORKFLOW_REVIEW === '1') return {};
-    const question = ['request_user_input', 'request_user_input_async', 'mcp__codeg_mcp__ask_user_question'].includes(event.tool_name);
+    if (isSubagentEvent(event)) return {};
+    const question = QUESTION_TOOLS[agent].includes(event.tool_name);
     const signalInvocation = name === 'PostToolUse' && await isSignalInvocation(event, options.entry);
-    if (name === 'PostToolUse' && !question && !signalInvocation) return {};
+    // 组合命令里的本插件 signal 不接受，但要回执说明，否则模型只能从 revision 反推信号丢失。
+    const nearMiss = name === 'PostToolUse' && !signalInvocation && isComposedSignal(event);
+    if (name === 'PostToolUse' && !question && !signalInvocation && !nearMiss) return {};
     // Codex 每个事件都带 turn_id；Claude Code 的入口事件带 prompt_id，用宿主值建立回合，缺失时才本机生成。
     const hostTurn = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : typeof event.prompt_id === 'string' && event.prompt_id ? event.prompt_id : null;
     const turnId = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : null;
@@ -99,7 +116,8 @@ export async function handleHook(directory, event, options = {}) {
         } else if (hostTurn) {
           session = openTurn(state, project, event.session_id, hostTurn, { compact: event.source === 'compact', eventId: event.event_id, mode: event.permission_mode });
         }
-        return contextOutput(name, `workflow 入口：${JSON.stringify(await projectContext(state, resolved, 'lead', event.session_id, { directory, incremental: true }))}`);
+        // 已 role-claim 的委派会话注入对应角色的最小上下文，不再给 Lead 指引。
+        return contextOutput(name, `workflow 入口：${JSON.stringify(await projectContext(state, resolved, session?.role || 'lead', event.session_id, { directory, incremental: true }))}`);
       }
       if (!session) return {};
       // Codex 严格核对 turn_id；Claude 的 prompt_id 只在入口事件保证存在，后续事件按当前回合关联。
@@ -111,6 +129,7 @@ export async function handleHook(directory, event, options = {}) {
           session.revision += 1;
           return {};
         }
+        if (nearMiss) return contextOutput(name, 'workflow 未接受：signal 须单独直接调用（不加 cd、&&、;、管道或重定向），请用当前 identity 重发');
         if (!signalInvocation) return {};
         const signals = extractSignals(event.tool_response);
         if (signals.length !== 1) return contextOutput(name, 'workflow 未接受：输出未包含唯一的本插件信号');
@@ -123,7 +142,7 @@ export async function handleHook(directory, event, options = {}) {
           // A rejected signal must not persist a partially changed phase or candidate disposition.
           for (const key of Object.keys(state)) delete state[key];
           Object.assign(state, before);
-          result = { accepted: false, reason: error.code || 'INPUT', message: error.message };
+          result = { accepted: false, reason: error.code || 'INPUT', message: error.message, ...(error.missing ? { missing: error.missing } : {}) };
         }
         return contextOutput(name, `workflow 回执：${JSON.stringify(result)}`);
       }

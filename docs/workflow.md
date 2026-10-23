@@ -46,6 +46,16 @@ Worker 随正常交付回报稳定 ID、事件 ID、适用条件、发现和证�
 
 当前业务所需的共享资料写入使用 knowledge inspect/apply。只写当前任务 allowedPaths、真实项目、明确知识负责人和有效 write 身份；旧指纹、用户编辑、链接、锁竞争返回冲突/待办。多文件可部分成功，同一候选全部目标完成才算完成。后台只获 `.workflow/knowledge/` 的独立维护权限，活动、只读或计划任务期间延后。旧 disposition 保留兼容，但不再是交付条件。
 
+## 提问路径
+
+需要用户裁决时按以下顺序选可用入口，不要求用户切换模式，插件也不切换模式：
+
+1. 宿主原生结构化提问（Codex `request_user_input`，Claude Code `AskUserQuestion`），当前模式可用时；
+2. Codeg MCP `ask_user_question`，与宿主模式无关；
+3. 普通文本编号问题。
+
+三种都先声明 waiting-user。插件能识别前两种工具调用；文本提问由 Lead 显式发 phase 信号，插件不读问号或关键词猜测。每次最多 4 个问题，对应工具上限。可持久保存的待决项（如对齐表格）允许跨回合回答。各宿主各模式下的可用工具见[Codeg 适配](adapters/codeg.md#宿主能力表)。
+
 ## 收尾
 
-按[协议](design/protocol.md)声明 task-start 和明确阶段；提问先 waiting-user，完成后 task-end。Stop 不阻断知识处置、不追加复盘轮次。用户中断时撤销票据、挂起业务任务并释放会话归属，下次显式 task-start 才恢复。待办按事务独立保存，其他事务成功不能将它清除。复盘的时间、批次与每日限额见[经验学习](learning.md)，业务停止限制见[验证约定](references/validation.md#停止限制)。
+按[协议](design/protocol.md)声明 task-start（附 `route`：`operation-only`、`lead-direct` 或 `delegated`）和明确阶段；提问先 waiting-user，完成后 task-end。分工任务只在三个节点用一次批量 `packages` 信号记账：派发、消费结果、审查结论；不记录等待过程。`delegated` 任务的 task-end 核对：全部包为终态，每个 worker 包有 `verdict=PASS` 且 `reviewedRef` 等于其最终 `deliveredRef` 的 reviewer 包，验证记录 `validation.ref` 等于集成后版本；父任务还不能有活动子任务。缺项返回 `GATE` 与 `missing`，状态不变；确不适用的步骤用 `waivers:[{step, reason}]` 显式豁免并留记录。门禁核对的是 Lead 声明记录的一致性，不证明审查或测试真实发生；`lead-direct`、`operation-only` 不设门禁，关键行为一行也要审仍由 Lead 判断。Stop 不阻断知识处置、不追加复盘轮次。用户中断时撤销票据、挂起业务任务并释放会话归属，下次显式 task-start 才恢复。待办按事务独立保存，其他事务成功不能将它清除。复盘的时间、批次与每日限额见[经验学习](learning.md)，业务停止限制见[验证约定](references/validation.md#停止限制)。

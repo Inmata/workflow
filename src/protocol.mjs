@@ -1,6 +1,12 @@
-import { digest, fail, id, SCHEMA_VERSION } from './store.mjs';
+import { digest, fail, id, SCHEMA_VERSION, WorkflowError } from './store.mjs';
 
 export const PHASES = ['unknown', 'operation-only', 'executing', 'waiting-user', 'delivering'];
+export const ROUTES = ['operation-only', 'lead-direct', 'delegated'];
+export const PACKAGE_STATUSES = ['dispatched', 'delivered', 'consumed', 'canceled', 'failed', 'waived'];
+export const TERMINAL_PACKAGE = ['consumed', 'canceled', 'failed', 'waived'];
+export const VERDICTS = ['PASS', 'FIX', 'BLOCKED'];
+const REPAIR_LIMIT = 2;
+const MAX_PACKAGES = 200;
 export const sessionKey = (projectId, sessionId) => digest(`${projectId}\0${sessionId}`);
 export const taskKey = (projectId, taskId) => digest(`${projectId}\0${taskId}`);
 export function textField(value, label) {
@@ -25,13 +31,16 @@ export function openTurn(state, project, sessionId, turnId, { compact = false, e
     revision: (session?.revision || 0) + 1, phase: 'unknown', interrupted: false,
     permissionMode: mode || 'unknown', eventId: eventId || null,
     receipts: session?.receipts || {}, observed: session?.observed || {}, contextKey: session?.contextKey,
+    // role-claim 声明的子角色跨回合保留；未声明的会话按 Lead 处理。
+    ...(session?.role ? { role: session.role, packageId: session.packageId || null } : {}),
   };
   state.sessions[key] = session;
   refreshOwners(state, project);
   return session;
 }
 export function refreshOwners(state, project) {
-  project.leadSessions = Object.values(state.sessions).filter(s => s.projectId === project.projectId && !s.interrupted && s.ticket).map(s => s.sessionId);
+  // 只有 Lead 会话参与知识负责人推定；已声明 Worker/Reviewer 的委派会话不能清空负责人。
+  project.leadSessions = Object.values(state.sessions).filter(s => s.projectId === project.projectId && !s.interrupted && s.ticket && !s.role).map(s => s.sessionId);
   const owner = Object.values(state.sessions).find(s => s.projectId === project.projectId && s.sessionId === project.ownerSessionId);
   if (project.ownerExplicit && owner?.interrupted) { project.ownerExplicit = false; project.ownerSessionId = null; }
   if (!project.ownerExplicit) project.ownerSessionId = project.leadSessions.length === 1 ? project.leadSessions[0] : null;
@@ -71,6 +80,74 @@ export function validDisposition(state, payload, disposition) {
   }
   return false;
 }
+const optionalText = (value, label) => value === undefined || value === null ? null : textField(value, label);
+const optionalRef = (value, label) => value === undefined || value === null ? null : identifier(value, label);
+function packageInput(item) {
+  if (!item || typeof item !== 'object' || Array.isArray(item)) fail('PACKAGE', '工作包记录必须是对象');
+  identifier(item.packageId, 'packageId');
+  if (item.role !== undefined && !['worker', 'reviewer'].includes(item.role)) fail('PACKAGE', '工作包 role 只能是 worker 或 reviewer');
+  if (item.status !== undefined && !PACKAGE_STATUSES.includes(item.status)) fail('PACKAGE', '未知工作包状态');
+  if (item.verdict !== undefined && item.verdict !== null && !VERDICTS.includes(item.verdict)) fail('PACKAGE', '未知审查结论');
+  if (item.dependsOn !== undefined && (!Array.isArray(item.dependsOn) || item.dependsOn.length > 50)) fail('PACKAGE', 'dependsOn 必须是数组');
+  for (const dependency of item.dependsOn || []) identifier(dependency, 'dependsOn');
+  for (const key of ['handle', 'worktree', 'note']) optionalText(item[key], key);
+  for (const key of ['baseRef', 'deliveredRef', 'reviewedRef', 'reviews']) optionalRef(item[key], key);
+  return item;
+}
+function validationInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('VALIDATION', 'validation 需为 {ref, evidence[]}');
+  identifier(value.ref, 'validation.ref');
+  if (!Array.isArray(value.evidence) || !value.evidence.length || value.evidence.length > 50) fail('VALIDATION', 'validation.evidence 需非空数组');
+  value.evidence.forEach((item, index) => textField(item, `validation.evidence[${index}]`));
+  return { ref: value.ref, evidence: value.evidence };
+}
+function waiverInput(value) {
+  if (!Array.isArray(value) || value.length > 50) fail('WAIVER', 'waivers 需为数组');
+  return value.map(item => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) fail('WAIVER', '豁免需为 {step, reason}');
+    return { step: textField(item.step, 'waiver.step'), reason: textField(item.reason, 'waiver.reason') };
+  });
+}
+// 账本只在派发、消费结果、审查结论三个节点记录；批量 upsert，未给出的字段保持原值。
+export function upsertPackages(task, items) {
+  if (!Array.isArray(items) || !items.length || items.length > 50) fail('PACKAGE', 'packages 需为 1-50 项数组');
+  task.packages ||= {};
+  const repairLimit = [];
+  for (const item of items.map(packageInput)) {
+    const previous = task.packages[item.packageId];
+    if (!previous && (!item.role || !item.status)) fail('PACKAGE', '新工作包需给出 role 与 status');
+    if (!previous && Object.keys(task.packages).length >= MAX_PACKAGES) fail('PACKAGE', '工作包数量超过上限');
+    const next = { attempts: 0, dependsOn: [], ...previous, packageId: item.packageId };
+    for (const key of ['role', 'status', 'handle', 'worktree', 'baseRef', 'deliveredRef', 'reviewedRef', 'reviews', 'verdict', 'dependsOn', 'note']) {
+      if (item[key] !== undefined) next[key] = item[key];
+    }
+    if (next.role !== 'reviewer' && (next.verdict || next.reviews || next.reviewedRef)) fail('PACKAGE', '只有 reviewer 包可带 verdict/reviews/reviewedRef');
+    // 已交付或已消费的包重新派发即一轮返修；attempts 由插件计数，不采信输入。
+    if (previous && previous.status !== 'dispatched' && next.status === 'dispatched') next.attempts = (previous.attempts || 0) + 1;
+    task.packages[item.packageId] = next;
+    if (next.attempts > REPAIR_LIMIT) repairLimit.push(item.packageId);
+  }
+  return repairLimit;
+}
+// 门禁只核对 Lead 声明记录的一致性；插件看不到 Worker 真实产出，不证明审查或测试真实发生。
+export function gateMissing(state, task, finalRef) {
+  const missing = [];
+  for (const child of Object.values(state.tasks)) {
+    if (child.projectId === task.projectId && child.parentTaskId === task.taskId && child.lifecycle === 'active') missing.push(`child:${child.taskId}`);
+  }
+  if (task.route !== 'delegated') return missing;
+  const packages = Object.values(task.packages || {});
+  for (const item of packages) if (!TERMINAL_PACKAGE.includes(item.status)) missing.push(`terminal:${item.packageId}`);
+  for (const worker of packages.filter(item => item.role === 'worker' && !['canceled', 'waived'].includes(item.status))) {
+    const passed = packages.some(item => item.role === 'reviewer' && item.reviews === worker.packageId && item.verdict === 'PASS' && !!item.reviewedRef && item.reviewedRef === worker.deliveredRef);
+    if (!passed) missing.push(`review:${worker.packageId}`);
+  }
+  // 验证证据必须绑定集成后的最终版本；finalRef 缺省时以 validation.ref 为准。
+  if (!task.validation || (finalRef && task.validation.ref !== finalRef)) missing.push('validation');
+  return missing;
+}
+// 豁免可写完整条目（review:pkg-1）或整类步骤（review）。
+const waived = (entry, waivers) => waivers.some(w => w.step === entry || w.step === entry.split(':')[0]);
 export function acceptSignal(state, payload) {
   identifier(payload?.signalId, 'signalId');
   const initial = currentIdentity(state, payload, { replay: true, requireTask: false });
@@ -82,7 +159,21 @@ export function acceptSignal(state, payload) {
   const { project, session } = currentIdentity(state, payload, { requireTask: false });
   const key = taskKey(project.projectId, payload.taskId);
   let task = state.tasks[key];
-  if (payload.action === 'task-start') {
+  let extra = {};
+  if (payload.action === 'role-claim') {
+    // Codeg 等委派会话与 Lead 同样触发入口事件且没有区分字段；子会话按工作包显式声明角色。
+    if (!['worker', 'reviewer'].includes(payload.role)) fail('ROLE', 'role-claim 只接受 worker 或 reviewer');
+    if (session.role && session.role !== payload.role) fail('ROLE', '会话已声明其他角色');
+    const own = session.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
+    if (own?.lifecycle === 'active') fail('ROLE', '会话有自己的活动任务，不能改为子角色');
+    if (payload.packageId !== undefined) identifier(payload.packageId, 'packageId');
+    session.role = payload.role;
+    session.packageId = payload.packageId || null;
+    refreshOwners(state, project);
+  } else if (session.role) {
+    fail('ROLE', `当前会话已声明为 ${session.role}；业务任务和账本由 Lead 维护`);
+  } else if (payload.action === 'task-start') {
+    if (payload.route !== undefined && !ROUTES.includes(payload.route)) fail('ROUTE', '未知任务分流');
     if (session.taskId && session.taskId !== payload.taskId) {
       const previous = state.tasks[taskKey(project.projectId, session.taskId)];
       if (previous?.lifecycle === 'active') fail('TASK', '先明确结束当前任务，不能更换 ID 重置预算');
@@ -91,10 +182,13 @@ export function acceptSignal(state, payload) {
       textField(payload.goal, 'goal');
       const permissions = payload.permissions;
       if (!permissions || !['write', 'read-only', 'plan'].includes(permissions.mode) || !Array.isArray(permissions.allowedPaths) || permissions.allowedPaths.some(p => typeof p !== 'string')) fail('PERMISSION', '任务需明确 mode 与 allowedPaths');
-      task = { projectId: project.projectId, taskId: payload.taskId, goal: payload.goal, parentTaskId: payload.parentTaskId || null, lifecycle: 'active', repairIssued: false, deliveries: {}, candidates: {}, permissions, createdAt: new Date().toISOString() };
+      task = { projectId: project.projectId, taskId: payload.taskId, goal: payload.goal, parentTaskId: payload.parentTaskId || null, route: payload.route || null, lifecycle: 'active', repairIssued: false, deliveries: {}, candidates: {}, packages: {}, permissions, createdAt: new Date().toISOString() };
       state.tasks[key] = task;
     } else {
       if (!['active', 'suspended'].includes(task.lifecycle) && !Object.values(state.pending).some(p => p.projectId === project.projectId && p.taskId === payload.taskId && p.kind === 'knowledge-pending' && p.status === 'open')) fail('TASK', '已完成任务无待接续知识');
+      // 接续时可补声明分流；已声明的分流不可更改，避免中途绕过门禁。
+      if (payload.route && task.route && task.route !== payload.route) fail('ROUTE', '任务已声明其他分流');
+      if (payload.route) task.route = payload.route;
       task.lifecycle = 'active';
     }
     session.taskId = payload.taskId;
@@ -109,9 +203,26 @@ export function acceptSignal(state, payload) {
         session.deliveryId = payload.deliveryId;
         task.deliveries[payload.deliveryId] ||= { deliveryId: payload.deliveryId, disposition: null };
       }
+    } else if (payload.action === 'packages') {
+      const repairLimit = upsertPackages(task, payload.packages);
+      if (payload.validation !== undefined) task.validation = validationInput(payload.validation);
+      if (repairLimit.length) extra = { repairLimit: true, repairLimitPackages: repairLimit };
     } else if (payload.action === 'task-end') {
+      if (payload.validation !== undefined) task.validation = validationInput(payload.validation);
+      if (payload.finalRef !== undefined) identifier(payload.finalRef, 'finalRef');
+      const waivers = [...(task.waivers || []), ...(payload.waivers === undefined ? [] : waiverInput(payload.waivers))];
+      const missing = gateMissing(state, task, payload.finalRef).filter(entry => !waived(entry, waivers));
+      if (missing.length) {
+        const error = new WorkflowError('GATE', `完成门禁未满足：${missing.join(', ')}`);
+        error.missing = missing;
+        throw error;
+      }
+      if (waivers.length) task.waivers = waivers;
+      if (payload.finalRef) task.finalRef = payload.finalRef;
       task.lifecycle = 'complete';
       session.phase = 'unknown';
+      if (!task.route) extra = { warning: 'route-missing' };
+      else if (task.route === 'delegated') extra = { gate: 'declared-records-consistent' };
     } else if (payload.action !== 'disposition') fail('ACTION', '未知信号动作');
     if (payload.action === 'disposition' || payload.disposition) {
       if (payload.deliveryId !== session.deliveryId || !task.deliveries[payload.deliveryId]) fail('DELIVERY', '交付身份不匹配');
@@ -125,7 +236,7 @@ export function acceptSignal(state, payload) {
     }
   }
   session.revision += 1;
-  const result = { accepted: true, revision: session.revision, taskId: session.taskId, phase: session.phase };
+  const result = { accepted: true, revision: session.revision, taskId: session.taskId, phase: session.phase, ...extra };
   session.receipts[payload.signalId] = { hash: digest(JSON.stringify(payload)), result };
   return result;
 }

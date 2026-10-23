@@ -83,3 +83,23 @@ node bin/workflow.mjs learning schedule remove --root $pilotRoot --state-dir $wo
 有完整提案的中断运行可用 `learning recover --run <ID>` 恢复，不再调用模型。外部编辑冲突需先核对文件与保存提案。不要删除 inbox、state 或快照来“修好”状态。
 
 验收后再决定是否扩大项目范围、调整默认参数或发布新版本。当前本机材料不自动跨电脑同步，换电脑仍需各自建立绑定；Git 只携带项目配置与正式知识。
+
+## 6. 0.3.0 真实宿主验收
+
+本节验证分流、账本、门禁、角色声明和提问路径。合成测试已覆盖机械行为，以下每项结论分别标注“自动验证 / 真实宿主验证 / 未知”。Claude Code 与 Codex 各作一次 Lead。
+
+先补齐[Codeg 能力表](adapters/codeg.md#宿主能力表)与[Claude 能力表](adapters/claude.md#宿主能力表)中的 unknown 格：用临时 hook 落盘脚本（仅本机、事后删除）记录 `hook_event_name`、`agent_id`、`agent_type`、`tool_name`、`permission_mode`。
+
+| 场景 | 通过条件 |
+| --- | --- |
+| Codex spawn_agent 子代理 | 子线程事件带 `agent_id`；插件不开回合，`ownerSessionId` 不变 |
+| Codeg 委派子会话 | 子会话发 `role-claim` 后 `doctor --project` 的 owner 不被清空；之后入口注入 Worker/Reviewer 上下文 |
+| 提问置 waiting-user | Codex 原生、Codex 经 Codeg MCP、Claude `AskUserQuestion`、Claude 经 Codeg MCP 四种组合分别记录 PostToolUse 原文 `tool_name`，确认 phase=waiting-user |
+| Codex Plan / Default | 分别记录 hook 上报的 `permission_mode`；Default 且 flag 关闭时通过 Codeg MCP 或文本提问完成一次首次对齐，含跨回合 decide |
+| Claude ACP | 在 Codeg 的 Claude ACP 中确认 default 模式能否调用 `AskUserQuestion` |
+| 压缩 | 压缩后 compact SessionStart 上下文含 `ledger`，Lead 不重复派工、不重读 consumed 结果 |
+| 门禁 | delegated 任务缺审查或验证时 task-end 返回 GATE 与 missing；显式 waivers 后接受 |
+
+2026-10-23 Codex CLI 0.163.0 隔离探针已完成（真实宿主验证）：spawn_agent 子代理事件带 `agent_id`，装入本插件后状态只留父会话；原生提问 `tool_name=request_user_input`，Codeg 同名 MCP 为 `mcp__codeg_mcp__ask_user_question`，两者 PostToolUse 均触发；`permission_mode` 只反映审批策略，Plan 协作模式也报 `default`。详见 [Codeg 能力表](adapters/codeg.md#宿主能力表)。Codeg 委派探针（2026-10-23，临时项目）：Claude 子会话收到 Lead 入口上下文并被计入 Lead 列表，发 `role-claim` 后移出（真实宿主验证）；Codeg Claude ACP 下 Lead 没有 `AskUserQuestion`，只能用 Codeg MCP 提问；Codex 子会话同样收到 Lead 上下文，`role-claim`（`--base64`）回执 accepted，状态中 role=reviewer、leadSessions 为空（真实宿主验证）；该子会话需自行查文档拼出 signal 命令，Lead 上下文已补充命令格式。Claude auto 模式分类器（2026-10-23，真实宿主验证）：CLI 与 Codeg Claude ACP 下 signal（base64/文件两种）、knowledge capture、align scan/apply 均未被拦；发现模型自发写成 `cd … && node … signal` 时信号被静默丢弃，已改为回执提示单独直接调用。压缩、门禁和收益对照仍须实跑。
+
+收益对照：小修改、可拆分功能、强依赖修改三类任务，各在“Lead 直做”和“分工流程”下跑一次，记录交付是否通过、返工次数、Lead 重复读取的结果数和端到端耗时；token 只记可获取数据，不当账单。结果决定下一轮是否值得扩展账本字段，本节不预设。

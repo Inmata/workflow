@@ -92,7 +92,7 @@ hook 提供 project/session/turn/ticket/interruptEpoch/expectedRevision。contex
 node "<本次hook提供的bin/workflow.mjs>" signal --input "<任务JSON文件>"
 ```
 
-使用独立直接 shell 调用，当前支持 node/实际 Node 路径加本插件绝对入口；不串接其他 shell 命令。PowerShell 中文 JSON 优先 UTF-8 文件或 --base64，不通过 5.1 原生文本管道。signal 只输出 workflow_signal，当前 PostToolUse 接受回执才表示状态更新；拒绝时用 context 重读 identity/revision，不换 ID 绕过。
+使用独立直接 shell 调用，当前支持 node/实际 Node 路径加本插件绝对入口；不串接其他 shell 命令（包括前置 `cd`；组合命令只得到“须单独直接调用”的提示，不更新状态）。PowerShell 中文 JSON 优先 UTF-8 文件或 --base64，不通过 5.1 原生文本管道。signal 只输出 workflow_signal，当前 PostToolUse 接受回执才表示状态更新；拒绝时用 context 重读 identity/revision，不换 ID 绕过。权限系统或分类器拒绝命令时同样不换写法重试，向用户说明未记录的步骤。
 
 `action=phase` 声明 executing/operation-only/waiting-user/delivering；delivering 加 deliveryId，可同时提交 disposition。普通查看、指定提交 push、明确快进 pull 用 operation-only，默认零 Worker/Reviewer；低风险单点 Lead 实施，关键行为安排必要独立审查。工具提问和普通文本反问均先 waiting-user。
 

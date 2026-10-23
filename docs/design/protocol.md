@@ -6,7 +6,7 @@
 
 状态根为 `--state-dir`，默认 `%LOCALAPPDATA%/workflow`（非 Windows 回退到用户数据目录）。状态文件升级为 `schemaVersion=2`，信号仍为 v1。首次持久化前把 v1 原始字节备份到 `migrations/`，中断任务迁为 suspended，裁剪无效会话归属。未知 schema 或损坏状态拒绝修改，hook 保守放行。锁通过独占创建获得，不按年龄抢活锁；锁释放保留诊断文件。后台学习的数据与配置见[学习协议](../learning.md)。
 
-项目保存 `projectId`、`root`（realpath）、`identity`（目录 dev/ino/birthtime 和 Git 公共目录）、`worktrees`、`knowledgeRoot`、`ownerSessionId`、`leadSessions`、`managedBlockHash`、`enabled`、`coexistenceMode`；可选 `alignment` 见下文“项目对齐”。同名、remote 相同、拷贝入口均不建立绑定。子目录识别遇到独立 `.git` 即停止继承；worktree 必须显式关联且核对公共目录。项目重绑需要显式 enable。多个 Lead 首次冲突时清空自动推定的知识负责人，显式 `project owner` 后才可共享写入。
+项目保存 `projectId`、`root`（realpath）、`identity`（目录 dev/ino/birthtime 和 Git 公共目录）、`worktrees`、`knowledgeRoot`、`ownerSessionId`、`leadSessions`、`managedBlockHash`、`enabled`、`coexistenceMode`；可选 `alignment` 见下文“项目对齐”。同名、remote 相同、拷贝入口均不建立绑定。子目录识别遇到独立 `.git` 即停止继承；worktree 必须显式关联且核对公共目录。项目重绑需要显式 enable。`leadSessions` 只计未声明子角色的会话；多个 Lead 首次冲突时清空自动推定的知识负责人，显式 `project owner` 后才可共享写入。
 
 任务为项目级稳定 ID，记录 `goal`、`parentTaskId`、`lifecycle`、`repairIssued`、`deliveries`、`candidates`、`permissions`。任务 ID 只可经 signal 显式绑定；hook 不根据提示词猜任务，不把新用户回合自动视为新任务。任务由 `task-start` 建立，`task-end` 明确结束；完成可有知识待办。权限包含 `mode=write|read-only|plan` 和本任务资料相对路径 `allowedPaths`，不允许任意源代码或配置写入。
 
@@ -16,14 +16,22 @@
 
 `signal --input <JSON> | --base64 <UTF-8 JSON>` 只输出 `{workflow_signal: payload}`。仅 PostToolUse 在当前 shell 调用确实执行本安装副本的 `signal` 子命令后接受。解析限定 `tool_response` 的已知结构（直接 JSON、文本行、`output`、MCP `content[].text`），最多三层包装；不扫描文档、聊天、transcript 或任意嵌套键。其他插件命名空间不接受。混入多个不同信号拒绝。
 
-所有信号字段：`schemaVersion:1`、`projectId`、`sessionId`、`turnId`、`taskId`、`ticket`、`interruptEpoch`、`expectedRevision`、`signalId`、`action`。身份/票据/epoch/revision 必须匹配。重复 signalId 仅在同一 session、turn、task 下重放已接受回执；不重放 Stop 的阻断决定。signalId 相同而正文不同拒绝。
+所有信号字段：`schemaVersion:1`、`projectId`、`sessionId`、`turnId`、`taskId`、`ticket`、`interruptEpoch`、`expectedRevision`、`signalId`、`action`。新任务的 `taskId` 由 Lead 自拟（入口 identity 中为 null），不能为空。身份/票据/epoch/revision 必须匹配。重复 signalId 仅在同一 session、turn、task 下重放已接受回执；不重放 Stop 的阻断决定。signalId 相同而正文不同拒绝。
 
 | action | 附加字段 | 结果 |
 | --- | --- | --- |
-| task-start | goal；permissions；可选 parentTaskId | 建立/显式接续任务；恢复 suspended，保留原权限 |
+| task-start | goal；permissions；可选 parentTaskId、route | 建立/显式接续任务；恢复 suspended，保留原权限；route 只能首次声明或补声明，不可改 |
 | phase | phase；delivering 时 deliveryId | 更新明确阶段，可随带 disposition |
 | disposition | deliveryId；disposition | 处置当前交付 |
-| task-end | 无 | 结束任务；未完知识保留待办 |
+| packages | packages[1-50]；可选 validation | 批量 upsert 工作包账本；回执可带 `repairLimit` |
+| role-claim | role=worker\|reviewer；可选 packageId | 委派子会话声明角色；不再计入 Lead，入口改注入对应角色上下文 |
+| task-end | 可选 finalRef、validation、waivers | 通过门禁后结束任务；未完知识保留待办 |
+
+`route` 为 `operation-only`、`lead-direct`、`delegated`。工作包字段：`packageId`、`role`（worker/reviewer）、`status`（dispatched/delivered/consumed/canceled/failed/waived）、`handle`（宿主 task_id）、`worktree`、`baseRef`、`deliveredRef`、`dependsOn[]`、`note`；reviewer 包另有 `reviews`（被审 packageId）、`reviewedRef`、`verdict`（PASS/FIX/BLOCKED）。新包必须给 role 与 status，已有包只更新给出的字段。`attempts` 由插件计：已交付或已消费的包重新 dispatched 加一，超过 2 时回执带 `repairLimit:true` 和 `repairLimitPackages`，只提示 Lead 裁决，不拒绝。`consumed` 表示 Lead 已读过结果。`validation` 为 `{ref, evidence[]}`。账本存于 `task.packages`，旧任务没有该字段视为空，状态文件仍为 `schemaVersion=2`。
+
+task-end 门禁：父任务有 active 子任务（`parentTaskId`）时列 `child:<id>`。仅 `route=delegated` 再核对：每包终态（`terminal:<id>`）；每个未取消/未豁免的 worker 包，存在 `reviews` 指向它、`verdict=PASS` 且 `reviewedRef` 等于其 `deliveredRef` 的 reviewer 包（`review:<id>`）；存在 validation，给了 finalRef 时 `validation.ref` 必须相同（`validation`）。`waivers:[{step, reason}]` 的 step 可写完整条目或类别（`review`、`validation`、`terminal`、`child`），累计记入任务。缺项返回 `{accepted:false, reason:'GATE', missing:[...]}`，状态整体回滚。未声明 route 的旧任务接受并附 `warning:'route-missing'`；delegated 通过时附 `gate:'declared-records-consistent'`。门禁只核对声明记录的一致性，不证明审查或测试真实发生。`task show --task <id>` 只读查看账本和当前缺项。
+
+role-claim 的 taskId 填工作包所属的 Lead 任务 ID（仅作标识，不绑定任务）；只能在会话没有自己的活动任务时发出，同一会话不能改声明其他角色；声明后该会话的 task-start、packages、task-end 等业务信号返回 `ROLE`。宿主内置子代理的事件带 `agent_id`（Claude Agent 工具、Codex spawn_agent 均实测，`session_id` 与父会话相同），整体放行，不开回合。
 
 phase 为 `unknown`、`operation-only`、`executing`、`waiting-user`、`delivering`。`operation-only` 无经验回执要求。例行查看、指定提交 push、无冲突快进 pull 在文档中分流，插件不执行业务命令。
 
@@ -33,7 +41,7 @@ disposition（旧接口兼容，不再是 task-end 的前置）：
 - `updated`：非空 transactionIds；每笔必须与当前项目、任务、会话关联，全部文件成功，且候选已处置。普通编辑不产生可信事务。
 - `pending-recovery`：pendingId 与 reason；待办必须已由知识事务或 `pending create` 为本任务创建，可定位候选和失败原因。
 
-接受返回 `{accepted:true, revision, taskId, phase}`；拒绝返回 `{accepted:false, reason, revision?}`，不改变当前状态。hook 用 additionalContext 回传，命令退出成功不等于接受。
+接受返回 `{accepted:true, revision, taskId, phase}`，可附 `warning`、`gate`、`repairLimit`；拒绝返回 `{accepted:false, reason, message, missing?}`，不改变当前状态。hook 用 additionalContext 回传，命令退出成功不等于接受。
 
 ## Stop、中断和恢复
 

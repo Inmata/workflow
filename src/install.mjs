@@ -227,7 +227,24 @@ export async function uninstall(directory, { agent = 'codex' } = {}) {
     return { status: 'uninstalled', releaseRetained: record.releaseRoot, reason: '发布副本和追溯记录保留，可通过系统回收站清理' };
   });
 }
-export async function doctor(directory, root, { agent = 'codex' } = {}) {
+// 只读核对 Codex 的 Default 模式提问开关；不写用户配置。只认 [features] 段内的布尔赋值，其余写法报告 unknown。
+export async function codexQuestionFeature(userDir = HOSTS.codex.defaultUserDir()) {
+  const text = await readText(path.join(userDir, 'config.toml')).catch(() => undefined);
+  const note = '未开启时也可通过 Codeg MCP ask_user_question 或文本编号问题提问；是否开启由用户决定。';
+  if (text === null) return { setting: 'default_mode_request_user_input', status: 'config-missing', note };
+  if (text === undefined) return { setting: 'default_mode_request_user_input', status: 'unknown', note };
+  let section = '', value;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/#.*$/, '').trim();
+    const header = /^\[([^\]]+)\]$/.exec(line);
+    if (header) { section = header[1].trim(); continue; }
+    const match = /^default_mode_request_user_input\s*=\s*(\S+)$/.exec(line);
+    if (match && section === 'features') value = match[1];
+  }
+  const status = value === 'true' ? 'enabled' : value === 'false' || value === undefined ? 'disabled' : 'unknown';
+  return { setting: 'default_mode_request_user_input', status, ...(status === 'enabled' ? {} : { note }) };
+}
+export async function doctor(directory, root, { agent = 'codex', userDir } = {}) {
   const host = hostFor(agent);
   const state = await readState(directory);
   const record = installRecord(state, agent);
@@ -246,6 +263,7 @@ export async function doctor(directory, root, { agent = 'codex' } = {}) {
     execution: actual.length ? { status: 'callback-observed-host-unverified', events: actual } : 'unknown',
     integrity: record ? await releaseIntegrity(directory, record) : 'not-installed',
     version: record?.version || null,
+    ...(agent === 'codex' ? { questionInDefaultMode: await codexQuestionFeature(userDir || (record?.configFile ? path.dirname(record.configFile) : undefined)) } : {}),
     activeTasks: Object.values(state.tasks).filter(task => task.lifecycle === 'active').map(task => task.taskId),
     project: project ? { projectId: project.project.projectId, enabled: true, coexistenceMode: project.project.coexistenceMode, ownerSessionId: project.project.ownerSessionId } : null,
     pending: Object.values(state.pending).filter(item => item.status === 'open' && (!root || (project && item.projectId === project.project.projectId))).map(item => ({ pendingId: item.pendingId, kind: item.kind, reason: item.reason })),

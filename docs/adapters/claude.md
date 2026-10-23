@@ -42,4 +42,25 @@ Claude Code 的 Bash `tool_response` 把命令输出放在 `stdout`。只认 std
 - 与 Codex 的 `Interrupt` 对应：Claude 用 `StopFailure` 保存中断。
 - doctor 只核对本机注册与副本完整性；`discovery`、`trust`、`execution` 需要真实会话证据。
 
+## 宿主能力表
+
+证据标注：实测 = 2026-10-23 本机 Claude Code 2.1.293 `claude -p` 隔离 hook 落盘探针，或同日 Codeg 委派探针（临时项目、只读任务）；文档 = [hooks 参考](https://code.claude.com/docs/en/hooks)、[工具参考](https://code.claude.com/docs/en/tools-reference)；记录 = 本机历史 transcript；unknown = 未取得证据。
+
+| 能力 | 结论 | 证据 |
+| --- | --- | --- |
+| Agent 工具子代理触发 SessionStart/UserPromptSubmit | 不触发；只有 SubagentStart/SubagentStop 和子代理内工具事件 | 实测 |
+| 子代理事件区分字段 | `agent_id`、`agent_type`；`session_id` 与父会话相同 | 实测 |
+| `--agent` 启动的主会话 | 只带 `agent_type`，不带 `agent_id`，按 Lead 处理 | 文档 |
+| Codeg 委派的 Claude 子会话 | 独立会话，触发 SessionStart/UserPromptSubmit 并收到 Lead 入口上下文；事件与环境变量名都与 Lead 无区分；`role-claim` 后移出 Lead 列表 | 实测（Codeg 委派探针） |
+| 原生提问工具名 | `AskUserQuestion` | 文档；`-p` 下模型未调用，PostToolUse 未实测 |
+| Codeg MCP 提问工具名 | `mcp__codeg-mcp__ask_user_question`（保留连字符） | 记录 + 文档 |
+| default 模式能否用 AskUserQuestion | CLI 可用，不限 plan | 文档 |
+| 经 Codeg Claude ACP 能否用 AskUserQuestion | 不可用：该会话工具列表没有 `AskUserQuestion`，只有 Codeg MCP `ask_user_question`；以后 Codeg 声明 elicitation 能力时可能变化 | 实测（2026-10-23 Codeg Claude ACP Lead 会话工具列表） |
+| auto 模式分类器与插件命令 | 2026-10-23 auto 下 `signal --base64`、`signal --input`、`context`、`knowledge capture`、`project align scan/apply` 均放行（CLI 两轮、Codeg Claude ACP 一轮，hook 记录 permission_mode=auto）；分类器只审模型发起的工具调用，hook 本身照常执行。历史记录中 `install`（改宿主配置）被拒 1 次；同形式的 document-learning `signal` 曾被拒，故放行不是保证 | 实测 + 记录 |
+| auto 模式下 Codeg MCP 提问 | 可能被分类器拒绝；设置了禁用 `AskUserQuestion` 的规则时，会被判为绕过规则。此时改用普通文本编号提问，并先发 waiting-user | 记录 |
+| 命令被分类器拒绝时 | 不重试、不换写法绕过；向用户说明哪条记录没写入，下一回合用当前 identity 补发 | 约定 |
+| 运行中追加消息 / 暂停 / 取消 / 中断恢复 / 批量 wait（Codeg 委派） | 见 [Codeg 能力表](codeg.md#宿主能力表) | — |
+
+插件据此：带 `agent_id` 的事件整体放行；Codeg 委派子会话按工作包 `role-claim`；`AskUserQuestion` 与 Codeg MCP 名称都置 waiting-user。若某路径 PostToolUse 实际不触发，Lead 显式发 waiting-user。
+
 Codeg/ACP 侧的角色分工与委派约定见[Codeg 适配](codeg.md)。

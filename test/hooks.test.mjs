@@ -55,3 +55,27 @@ test('未知会话与未知事件保守放行，不建立业务任务', async ()
   }
   assert.equal(Object.keys((await readState(f.directory)).tasks).length, 0);
 });
+test('提问工具按宿主分表：原生与 Codeg MCP 名称置 waiting-user，跨宿主名称不误认', async () => {
+  const { claudeEvent, claudeStart } = await import('./helpers.mjs');
+  const phase = async f => Object.values((await readState(f.directory)).sessions).find(s => s.sessionId === f.sessionId).phase;
+  for (const tool of ['request_user_input', 'request_user_input_async', 'mcp__codeg-mcp__ask_user_question', 'mcp__codeg_mcp__ask_user_question']) {
+    const f = await fixture();
+    await start(f);
+    await event(f, 'PostToolUse', { tool_name: tool, tool_input: {}, tool_response: {} });
+    assert.equal(await phase(f), 'waiting-user', tool);
+  }
+  for (const tool of ['AskUserQuestion', 'mcp__codeg-mcp__ask_user_question']) {
+    const f = await fixture({ claude: true });
+    await claudeStart(f);
+    await claudeEvent(f, 'PostToolUse', { tool_name: tool, tool_input: {}, tool_response: {} });
+    assert.equal(await phase(f), 'waiting-user', tool);
+  }
+  const codex = await fixture();
+  await start(codex);
+  await event(codex, 'PostToolUse', { tool_name: 'AskUserQuestion', tool_input: {}, tool_response: {} });
+  assert.equal(await phase(codex), 'executing');
+  const claude = await fixture({ claude: true });
+  await claudeStart(claude);
+  await claudeEvent(claude, 'PostToolUse', { tool_name: 'request_user_input', tool_input: {}, tool_response: {} });
+  assert.equal(await phase(claude), 'executing');
+});

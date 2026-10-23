@@ -7,6 +7,7 @@ import { getContext } from '../src/context.mjs';
 import { applyKnowledge, createPending, inspectKnowledge, recoverTransaction } from '../src/knowledge.mjs';
 import { alignmentStatus, applyAlignment, decideAlignment, scanAlignment, suggestAlignment } from '../src/alignment.mjs';
 import { handleHook } from '../src/hooks.mjs';
+import { gateMissing, taskKey } from '../src/protocol.mjs';
 import { AGENTS, doctor, install, uninstall } from '../src/install.mjs';
 import { capture, feedback, migrateCandidates, reviseKnowledge, selectKnowledge, projectData } from '../src/learning.mjs';
 import { learningConfig, projectFor, setLearningConfig, setLearningEnabled } from '../src/learning-config.mjs';
@@ -46,6 +47,7 @@ const help = {
     'project align scan|status --root <目录> [--max-files N]',
     'project align apply|decide|suggest --root <目录> --input <JSON文件>',
     'context --role lead|worker|reviewer [--project <目录>] [--session <sessionId>]',
+    'task show --task <taskId> [--project <目录>]（只读查看分流、工作包账本与门禁缺项）',
     'signal --input <JSON文件> | --base64 <UTF-8 JSON>',
     'knowledge inspect --path <资料路径> [--project <目录>]',
     'knowledge apply --input <JSON文件>', 'knowledge recover --transaction <id> [--project <目录>]',
@@ -63,12 +65,21 @@ const help = {
 };
 // --path is a document-only option; it is never used to construct shell commands.
 allowed.add('path');
-for (const key of ['global', 'now', 'query', 'run', 'version']) allowed.add(key);
+for (const key of ['global', 'now', 'query', 'run', 'version', 'task']) allowed.add(key);
+// 只读：返回任务账本与当前门禁缺项，不改变状态。
+async function showTask(state, root, taskId) {
+  const resolved = await resolveProject(state, root);
+  if (!resolved) fail('PROJECT', '当前目录没有有效项目绑定');
+  const task = state.tasks[taskKey(resolved.project.projectId, taskId)];
+  if (!task) fail('TASK', '任务不存在或不属于当前项目');
+  const { taskId: id, goal, parentTaskId, route = null, lifecycle, packages = {}, validation = null, waivers = [], finalRef = null } = task;
+  return { taskId: id, goal, parentTaskId, route, lifecycle, packages: Object.values(packages), validation, waivers, finalRef, gateMissing: lifecycle === 'active' ? gateMissing(state, task, finalRef) : [], note: '门禁核对声明记录一致性，不证明审查或测试真实发生' };
+}
 async function main() {
   const { options, commands } = argumentsFor(process.argv.slice(2));
   const [command, action, subaction] = commands;
   if (options.help || !command) return help;
-  const positional = (command === 'project' && action === 'align') || (command === 'learning' && ['config', 'schedule'].includes(action)) ? 3 : ['project', 'knowledge', 'pending', 'learning'].includes(command) ? 2 : 1;
+  const positional = (command === 'project' && action === 'align') || (command === 'learning' && ['config', 'schedule'].includes(action)) ? 3 : ['project', 'knowledge', 'pending', 'learning', 'task'].includes(command) ? 2 : 1;
   if (commands.length > positional) fail('ARGUMENT', '命令后存在多余的位置参数');
   const agent = options.agent || 'codex';
   if (!AGENTS.includes(agent)) fail('AGENT', `未知宿主 ${agent}；支持 ${AGENTS.join('/')}`);
@@ -81,8 +92,12 @@ async function main() {
   }
   if (command === 'install') return install(directory, { userDir: options['user-dir'], agent });
   if (command === 'uninstall') return uninstall(directory, { agent });
-  if (command === 'doctor') return doctor(directory, options.project, { agent });
+  if (command === 'doctor') return doctor(directory, options.project, { agent, userDir: options['user-dir'] });
   if (command === 'context') return getContext(directory, root, options.role || 'lead', options.session);
+  if (command === 'task' && action === 'show') {
+    if (!options.task) fail('ARGUMENT', 'task show 需要 --task');
+    return showTask(await readState(directory), root, options.task);
+  }
   if (command === 'project') {
     if (action === 'enable') { if (!options.root) fail('ARGUMENT', 'enable 需要明确 --root'); return enableProject(directory, options.root, { owner: options.owner, coexistenceMode: options['coexistence-mode'] }); }
     if (action === 'disable') { if (!options.root) fail('ARGUMENT', 'disable 需要明确 --root'); return disableProject(directory, options.root); }
