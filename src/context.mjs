@@ -18,6 +18,12 @@ function learningNote(root, stateDir) {
   const run = args => command([...args, '--root', root], { stateDir });
   return `后台学习尚未启用、计划任务未注册：这是接入的一部分。对齐完成后向用户说明会按 learning 配置真实调用模型并消耗额度（执行器与专用配置见 backgroundReviewGuide），先运行 \`${run(['learning', 'doctor'])}\` 核对执行器；用户同意后请用户在自己的终端执行 \`${command(['project', 'onboard', '--root', root, '--enable-learning'], { stateDir })}\`（一次完成启用和计划任务注册；代理执行会被宿主自动审批拦截），原样给出这条完整命令，不改写、不只给选项。用户不需要时执行 \`${run(['learning', 'disable'])}\` 记下决定，此提示不再出现。`;
 }
+// 学习已启用时入口不再提学习，代理交付对齐时容易漏报或被追问时误判为未启用；给一句现状，核对以 learning status 为准。
+function learningState(learning, root, stateDir) {
+  const task = learning.schedule?.taskName;
+  return task ? `后台复盘已启用，计划任务 ${task} 已登记：对齐交付时在总结里写明这一点；用户问起先用 learning status 和系统任务核对，不重复注册。`
+    : `后台复盘已启用但计划任务未登记：请用户在自己的终端执行 \`${command(['learning', 'schedule', 'install', '--root', root], { stateDir })}\`，代理执行会被宿主自动审批拦截。`;
+}
 function alignmentNote(role, alignment, session, task) {
   if (role !== 'lead') return '';
   const note = alignmentAction(alignment);
@@ -62,7 +68,8 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   const task = session?.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
   const note = alignmentNote(role, alignment, session, task);
   // 接入不自动授权后台维护（会真实调用模型）；Lead 在接入阶段补问一次，避免漏做。
-  const learning = role === 'lead' && !project.learning?.enabled && !project.learning?.changedAt ? learningNote(project.root, options.directory) : '';
+  const learning = role !== 'lead' ? '' : project.learning?.enabled ? learningState(project.learning, project.root, options.directory)
+    : !project.learning?.changedAt ? learningNote(project.root, options.directory) : '';
   let knowledge;
   if (options.directory && task?.lifecycle === 'active') {
     knowledge = await selectKnowledge(options.directory, project.root, { text: task.goal, paths: task.permissions.allowedPaths });

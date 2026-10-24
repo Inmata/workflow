@@ -120,6 +120,9 @@ test('onboard --enable-learning 一次启用学习并注册计划任务；注册
   const project = Object.values((await readState(f.directory)).projects)[0];
   assert.equal(project.learning.enabled, true);
   assert.equal(project.learning.schedule.taskName, done.learning.schedule);
+  // 学习已启用时入口仍报告现状，避免对齐交付漏报或被追问时重复注册。
+  const lead = await getContext(f.directory, f.project, 'lead');
+  assert.ok(lead.instruction.includes(`计划任务 ${done.learning.schedule} 已登记`) && !lead.instruction.includes('尚未启用'));
 
   const g = await environment();
   const failing = async (file, args) => file === 'schtasks.exe' && args[0] === '/Create' ? { code: 1, stdout: '', stderr: '拒绝访问' } : fresh(fakeExecute())(file, args);
@@ -130,6 +133,7 @@ test('onboard --enable-learning 一次启用学习并注册计划任务；注册
   assert.ok(partial.next[0].step.includes('计划任务注册失败'));
   assert.ok(partial.next[0].commands.some(c => c.includes('learning schedule install') && c.includes('--root')));
   assert.equal(Object.values((await readState(g.directory)).projects)[0].learning.enabled, true, '学习已启用，只缺计划任务');
+  assert.ok((await getContext(g.directory, g.project, 'lead')).instruction.includes('计划任务未登记'));
 });
 
 test('learning doctor 缺专用配置时警告并给出完整命令；--global 无需绑定', async () => {
