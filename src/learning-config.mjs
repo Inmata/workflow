@@ -7,15 +7,19 @@ export const DEFAULT_CONFIG = Object.freeze({
   pendingThreshold: 10, maxPendingAgeHours: 24, checkIntervalMinutes: 15,
   maxRunMinutes: 30, maxBatchItems: 10, maxRunsPerDay: 1, maxInputChars: 24000,
   retrievalLimit: 5, retrievalChars: 2500, model: null, reasoningEffort: null, profile: null,
-  executorPath: 'codex', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  executor: 'codex', executorPath: 'codex', claudePath: 'claude', claudeSettings: null, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
 });
+export const EXECUTOR_NAMES = ['codex', 'claude'];
 const ranges = { pendingThreshold: [1, 10000], maxPendingAgeHours: [1, 8760], checkIntervalMinutes: [1, 10080], maxRunMinutes: [1, 1440], maxBatchItems: [1, 500], maxRunsPerDay: [1, 1000], maxInputChars: [2000, 1000000], retrievalLimit: [1, 100], retrievalChars: [200, 50000] };
 export function validateConfig(input, partial = false) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('CONFIG', '配置必须是对象');
   for (const [key, value] of Object.entries(input)) {
     if (!Object.hasOwn(DEFAULT_CONFIG, key)) fail('CONFIG', '未知配置项 ' + key);
     if (ranges[key]) { const [min, max] = ranges[key]; if (!Number.isSafeInteger(value) || value < min || value > max) fail('CONFIG', key + ' 必须在 ' + min + ' 到 ' + max + ' 之间'); }
-    else if (['model', 'profile', 'reasoningEffort'].includes(key)) {
+    else if (key === 'executor') { if (!EXECUTOR_NAMES.includes(value)) fail('CONFIG', 'executor 只能是 ' + EXECUTOR_NAMES.join(' 或 ')); }
+    else if (key === 'claudeSettings') {
+      if (value !== null && (typeof value !== 'string' || !path.isAbsolute(value) || /[\r\n\0]/.test(value))) fail('CONFIG', 'claudeSettings 必须是设置文件的绝对路径或 null');
+    } else if (['model', 'profile', 'reasoningEffort'].includes(key)) {
       if (value !== null && (typeof value !== 'string' || !value.trim() || value.length > 200 || /[\r\n\0]/.test(value))) fail('CONFIG', '无效配置 ' + key);
       if (key === 'profile' && value !== null && !/^[A-Za-z0-9_-]+$/.test(value)) fail('CONFIG', 'profile 只能包含字母、数字、下划线和连字符');
     } else if (typeof value !== 'string' || !value.trim() || /[\r\n\0]/.test(value)) fail('CONFIG', '无效配置 ' + key);

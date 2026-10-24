@@ -49,6 +49,8 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   if (options.incremental) for (const notice of notices) notice.deliveredAt = new Date().toISOString();
   const task = session?.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
   const note = alignmentNote(role, alignment, session, task);
+  // 接入不自动授权后台维护（会真实调用模型）；Lead 在接入阶段补问一次，避免漏做。
+  const learning = role === 'lead' && !project.learning?.enabled && !project.learning?.changedAt ? '后台学习尚未启用、计划任务未注册：这是接入的一部分。对齐完成后向用户说明会按 learning 配置真实调用模型并消耗额度，用户同意即依次执行 `learning enable` 与 `learning schedule install`（同一 --root、--state-dir），并以 `learning status` 核对。用户不需要时执行 `learning disable` 记下决定，此提示不再出现。' : '';
   let knowledge;
   if (options.directory && task?.lifecycle === 'active') {
     knowledge = await selectKnowledge(options.directory, project.root, { text: task.goal, paths: task.permissions.allowedPaths });
@@ -61,7 +63,7 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   // 有包在途时提醒：用户新消息若改变需求，走中途纠正流程，而不是只在 Lead 侧记下。
   const inflight = ledger && task.lifecycle === 'active' ? Object.values(task.packages || {}).filter(p => p.status === 'dispatched').map(p => p.packageId) : [];
   const correction = inflight.length ? `有 ${inflight.length} 个工作包在途（${inflight.join('、')}）：若本条用户消息改变需求或范围，按中途纠正流程先核对已有成果、取消并确认停止，再以新基准和用户原话重新派发。` : '';
-  const instruction = [instructions[role], note, correction].filter(Boolean).join(' ');
+  const instruction = [instructions[role], note, learning, correction].filter(Boolean).join(' ');
   return {
     enabled: true, projectId: project.projectId, root: project.root, worktree: resolved.worktree,
     role, documents: [path.join(PRODUCT_ROOT, 'docs', 'workflow.md'), path.join(PRODUCT_ROOT, 'docs', 'roles', `${role}.md`)],

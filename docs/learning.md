@@ -1,6 +1,6 @@
 # 项目经验学习
 
-出现明确纠正、可定位的失败原因或已验证方法时，保存一份短材料；任务开始或范围变化时检索经验。后台复盘独立运行，普通交付不等待复盘，也不要求每轮产生经验。
+出现明确纠正、可定位的失败原因或已验证方法时，保存一份短材料；任务开始或范围变化时检索经验。后台复盘独立运行，普通交付不等待复盘，也不要求每轮产生经验。启用、切换执行器、排错等操作步骤见[后台复盘操作手册](background-review.md)。
 
 ## 配置
 
@@ -16,8 +16,11 @@
 | `maxRunsPerDay` | 1 | 单项目每天最多启动多少次模型，失败也计入 |
 | `maxInputChars` | 24000 | 本批材料与相关旧知识的 JSON 字符预算 |
 | `retrievalLimit` / `retrievalChars` | 5 / 2500 | 默认召回条数和摘要字符预算 |
-| `model` / `reasoningEffort` / `profile` | `null` | 继承现有 Codex CLI 配置；可以分别覆盖 |
+| `executor` | `codex` | 后台复盘用的 CLI：`codex` 或 `claude`；可按项目分别设置 |
+| `model` / `reasoningEffort` / `profile` | `null` | 继承所选 CLI 的现有配置；可分别覆盖。Claude 的 `reasoningEffort` 对应 `--effort`；`profile` 只对 Codex 生效 |
 | `executorPath` | `codex` | Codex CLI 命令名或绝对路径 |
+| `claudePath` | `claude` | Claude Code CLI 命令名或绝对路径；建议填 `claude.exe` 绝对路径 |
+| `claudeSettings` | `null` | 后台复盘专用的 Claude 设置文件绝对路径；`null` 继承 `~/.claude/settings.json` |
 | `timeZone` | 当前系统时区 | 每日额度采用的时区 |
 
 数量与年龄条件满足任一项即可；明确用户纠正或已验证反例可以提前触发，但仍受每日额度、权限与并发限制。当天只有 9 份就结束工作，材料仍在磁盘；第二天新会话和下次检查都能找到。电脑关机或用户未登录时不会运行，恢复后再检查，不承诺固定时刻完成。
@@ -46,6 +49,26 @@ node bin/workflow.mjs learning config set --global --input learning-config.json
 ```
 
 `get` 同时返回每项来源。无效值会拒绝，旧配置保留。CLI 修改后同步已登记调度；直接改 JSON 时下次旧间隔检查才同步。运行中的作业沿用启动配置。`model` 填你当前账户或自定义路由支持的模型 ID，`reasoningEffort` 填该模型支持的值；插件不猜测模型可用性。`null` 恢复继承，不复制登录凭据、不新增 API Key。真实调用仍消耗现有账户额度。
+
+### 切换执行器
+
+执行器在每次复盘启动时读取，切换无需重新注册计划任务；正在运行的那次沿用启动时的执行器。两种 CLI 的路径各自保存，来回切换只改 `executor`：
+
+```json
+{ "executor": "claude", "claudePath": "C:/Users/<你>/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe", "model": "group/hardworker", "profile": null }
+```
+
+两种 CLI 的模型名、effort 取值不一定通用，切换时一并核对。Claude Code 以 `-p --bare --setting-sources user --strict-mcp-config --tools "" --no-session-persistence` 运行：只读用户设置以继承 `env` 里的认证与路由（如 `ANTHROPIC_BASE_URL`、`ANTHROPIC_API_KEY`），跳过 hooks、插件、MCP 与 CLAUDE.md，不提供任何工具，结果经 `--json-schema` 结构化返回。`--bare` 只认 API Key 或 `apiKeyHelper`，不读 OAuth 登录；用订阅登录的账户需改用 API Key 或本地网关。预检不调用模型，运行时再核对初始化事件和 hook 事件，出现工具、MCP 或 hook 回调即不采用结果。
+
+#### Claude 专用模型配置
+
+不想沿用前台 Claude Code 的网关、密钥和模型时，另建一个设置文件，例如 `%LOCALAPPDATA%/workflow/claude-learning.json`：
+
+```json
+{ "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:3425", "ANTHROPIC_API_KEY": "<密钥>" }, "model": "group/hardworker" }
+```
+
+再在个人配置里设 `"claudeSettings": "C:/Users/<你>/AppData/Local/workflow/claude-learning.json"`。设置后执行器改用 `--setting-sources "" --settings <文件>`，不再读 `~/.claude/settings.json`，并去掉宿主进程中 `ANTHROPIC_*`、`CLAUDE_CODE_*` 环境变量，认证、网关、模型只由该文件决定；配置里的 `model` 仍优先于文件中的 `model`。文件含 `hooks`、`enabledPlugins` 或 `mcpServers` 时预检拒绝。密钥只放在这个文件里，不要放进项目 `.workflow/config.json`，也不要提交到 Git。
 
 `maxInputChars` 是材料预算，不是精确 token 或费用上限；提示词、schema、模型输出另有开销。每次运行保存可获取的 `usage`，拿不到记 `null`。没有真实运行证据时不估称节省了多少 token。
 
@@ -142,7 +165,7 @@ node bin/workflow.mjs knowledge revise --root "D:/项目" --input revision.json
 
 ## 启用与运行
 
-首次试点按照[另一台电脑验收清单](acceptance.md)进行。安装和项目接入不会自动授权后台维护。显式启用后才授予 `.workflow/knowledge/` 写入权限：
+首次试点按照[另一台电脑验收清单](acceptance.md)进行。安装和项目接入不会自动授权后台维护。显式启用后才授予 `.workflow/knowledge/` 写入权限。项目接入后 Lead 会在会话入口收到提示，经用户同意后执行下面的启用与注册；用户不需要时执行 `learning disable` 记下决定，提示不再出现：
 
 ```powershell
 node bin/workflow.mjs learning doctor --root "D:/项目"
@@ -154,9 +177,9 @@ node bin/workflow.mjs learning schedule install --root "D:/项目"
 
 Windows 计划任务只在当前用户登录时运行，无常驻插件服务。定时检查本身不调用模型；达到条件、没有活动业务任务或只读/计划会话、没有未恢复作业且额度足够才启动。所有项目共用一个复盘锁，单项目每日限额分别计算。
 
-任务经 `conhost.exe --headless` 直接启动 Node（需 Windows 10 1809+），运行时不弹终端窗口、不抢焦点，也不受 PowerShell 执行策略限制。0.3.0 及更早版本登记的任务经 PowerShell 脚本启动，在执行策略为 `Restricted` 的电脑上根本不会运行；升级后请重新执行一次 `learning schedule install`。旧任务若能正常运行，也会在下一次定时检查时自动按新定义重新注册。
+任务经 `conhost.exe --headless` 直接启动 Node（需 Windows 10 1809+），运行时不弹终端窗口、不抢焦点，也不受 PowerShell 执行策略限制。登录触发器限定为当前用户；不限定时 Windows 视为“任意用户登录”，普通权限注册会报拒绝访问。0.3.0 及更早版本登记的任务经 PowerShell 脚本启动，在执行策略为 `Restricted` 的电脑上根本不会运行；0.3.0 的登录触发器也未限定用户，注册会失败。升级后请重新执行一次 `learning schedule install`。旧任务若能正常运行，也会在下一次定时检查时自动按新定义重新注册。
 
-首版执行器为 Codex CLI，前台宿主可以是 Claude Code。执行器继承原有认证、路由和 profile，前置检查禁用 hooks、MCP、工具、联网搜索与递归代理；无法核实隔离时停止。分析在项目外临时目录、只读沙箱中进行，只收结构化提案。正式文件由程序核对指纹、保存快照后写入；模型没有直接改项目的职责。`doctor` 只检查能力，不能证明真实模型、额度或认证可用。
+执行器为 Codex CLI 或 Claude Code（见[切换执行器](#切换执行器)），前台宿主可以是任一种。执行器继承原有认证与路由，前置检查禁用 hooks、MCP、工具、联网搜索与递归代理；无法核实隔离时停止。分析在项目外临时目录中进行，只收结构化提案。正式文件由程序核对指纹、保存快照后写入；模型没有直接改项目的职责。`doctor` 只检查能力，不能证明真实模型、额度或认证可用。
 
 ```powershell
 # 这条会真实调用模型；--now 仅跳过数量/年龄门槛，不绕过每日限额

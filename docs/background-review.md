@@ -1,0 +1,173 @@
+# 后台复盘操作手册
+
+后台复盘把会话里采集的经验材料批量整理成项目知识，由 Windows 计划任务定时检查、按条件调用模型。本手册只讲怎么操作；配置项含义、数据结构和分级规则见[项目经验学习](learning.md)。
+
+下文命令以 `node bin/workflow.mjs` 表示，在会话中改用 hook 给出的入口。每条命令都要带同一个 `--root "<项目>"`；安装时用过 `--state-dir` 的，这里也要一样带上。
+
+## 1. 首次启用
+
+1. 选执行器并写好模型配置，见[第 2 节](#2-执行器与模型配置)。
+2. 只做检查，不调用模型：
+
+   ```powershell
+   node bin/workflow.mjs learning doctor --root "D:/项目"
+   node bin/workflow.mjs learning schedule preview --root "D:/项目"
+   ```
+
+   `doctor` 应返回 `capabilities-verified`，并显示实际使用的 `executor`、`model`、`profile` 或 `claudeSettings`。
+3. 启用并注册计划任务：
+
+   ```powershell
+   node bin/workflow.mjs learning enable --root "D:/项目"
+   node bin/workflow.mjs learning schedule install --root "D:/项目"
+   node bin/workflow.mjs learning status --root "D:/项目"
+   ```
+
+   `install` 返回 `registered` 和任务名 `workflow-learning-<编号>`，可在“任务计划程序”里找到。
+4. 可选：材料落盘后立即真实跑一次，确认模型能调通：
+
+   ```powershell
+   node bin/workflow.mjs learning review --root "D:/项目" --now
+   ```
+
+项目接入后，Lead 会在会话入口提示你做第 3 步。不需要后台复盘时执行 `learning disable`，提示不再出现。
+
+## 2. 执行器与模型配置
+
+配置分两层：个人默认在 `<状态根>/config.json`，项目覆盖在项目的 `.workflow/config.json`，项目层优先。写一个只含要改字段的 JSON 文件，再用命令写入：
+
+```powershell
+# 个人默认（所有项目）
+node bin/workflow.mjs learning config set --global --input learning-config.json
+# 只改当前项目
+node bin/workflow.mjs learning config set --root "D:/项目" --input learning-config.json
+# 查看最终值和每项来源
+node bin/workflow.mjs learning config get --root "D:/项目"
+```
+
+密钥和网关地址只放在个人配置或 CLI 自己的配置文件里，不要写进项目 `.workflow/config.json`，后者会随 Git 提交。
+
+### Codex CLI
+
+```json
+{ "executor": "codex", "executorPath": "C:/.../codex.exe", "profile": "workflow-learning", "model": "group/hardworker" }
+```
+
+`profile` 指向 `~/.codex/<名称>.config.toml`，用来给复盘单独指定 provider 和模型，例如：
+
+```toml
+# ~/.codex/workflow-learning.config.toml
+model_provider = "magpie"
+model = "group/hardworker"
+```
+
+profile 叠加在 `~/.codex/config.toml` 之上：provider 的地址和认证在主配置的 `[model_providers.<名称>]` 中定义，profile 里没写的项沿用主配置。主配置中的 MCP、插件和 hooks 由预检逐项关闭，不会进入复盘。如果希望后台和前台完全独立，在主配置中另定义一个专用 provider，让 profile 引用它。
+
+### Claude Code
+
+```json
+{ "executor": "claude", "claudePath": "C:/Users/<你>/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe", "claudeSettings": "C:/Users/<你>/AppData/Local/workflow/claude-learning.json", "model": "group/hardworker" }
+```
+
+`claudePath` 建议填 `claude.exe` 的绝对路径；填命令名时会经 PowerShell 转启动。
+
+`claudeSettings` 指向复盘专用的设置文件：
+
+```json
+{ "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:3425", "ANTHROPIC_API_KEY": "<密钥>" }, "model": "group/hardworker" }
+```
+
+- 设了 `claudeSettings`：不读 `~/.claude/settings.json`，也不继承宿主进程的 `ANTHROPIC_*`、`CLAUDE_CODE_*` 变量，网关、密钥和模型只由这个文件决定。文件里不能有 `hooks`、`enabledPlugins`、`mcpServers`。
+- 设为 `null`：继承 `~/.claude/settings.json` 的 `env`，和前台 Claude Code 用同一套认证与路由。
+- Claude 执行器以 `--bare` 运行，只认 API Key 或 `apiKeyHelper`，不读订阅登录（OAuth）。订阅账户需改用 API Key 或本地网关。
+
+学习配置里的 `model` 和 `reasoningEffort` 优先于 CLI 配置；设为 `null` 时沿用 profile 或设置文件里的值。Claude 的 `reasoningEffort` 对应 `--effort`，`profile` 只对 Codex 生效。
+
+### 切换执行器
+
+执行器在每次复盘启动时读取，切换只需改 `executor` 并写入配置，不用重新注册计划任务。两种 CLI 的路径和专用配置各自保存，可以来回切换。切换后：
+
+1. 执行 `learning doctor`，确认返回的 `executor` 和模型是你要的。
+2. 核对模型名和 effort 取值，两种 CLI 不一定通用。
+3. 正在运行的那次复盘沿用启动时的执行器。
+
+## 3. 日常查看
+
+```powershell
+node bin/workflow.mjs learning status --root "D:/项目"
+```
+
+关注这些字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| `enabled` | 是否已启用 |
+| `pending` / `waiting` | 待处理材料数 / 等待更多证据的材料数 |
+| `due` | 当前是否满足触发条件：`count`（数量）、`age`（年龄）、`counterevidence`（明确纠正或已验证失败），不满足为 `null` |
+| `todayStarted` | 今天已启动的模型调用次数，对照 `maxRunsPerDay` |
+| `runs` | 最近 10 次运行的状态、时间、`usage` 和失败原因 |
+| `notices` | 给 Lead 的通知，例如有知识被降级 |
+
+确认通知：`learning acknowledge --root "D:/项目"`。
+
+每次运行的完整记录在 `<状态根>/projects/<projectId>/runs/<运行ID>.json`，包含启动时的配置、提案和结果。
+
+## 4. 手动运行与恢复
+
+```powershell
+# 真实调用模型；--now 只跳过数量和年龄门槛，不绕过每日限额和并发锁
+node bin/workflow.mjs learning review --root "D:/项目" --now
+# 有完整提案的中断运行，按保存的提案恢复，不再调用模型
+node bin/workflow.mjs learning recover --root "D:/项目" --run "<运行ID>"
+```
+
+`review` 可能返回的状态：
+
+| 状态 | 含义与处理 |
+| --- | --- |
+| `completed` | 已写入知识，材料标为已处理 |
+| `not-due` | 未达到触发条件；需要立即跑就加 `--now` |
+| `daily-limit` | 今天的额度已用完，第二天自动继续；也可调大 `maxRunsPerDay` |
+| `no-fit` | 没有材料，或单份材料超出 `maxInputChars` |
+| `timeout` | 超过 `maxRunMinutes` 被终止；材料保留，占用当日额度 |
+| `failed` | 模型失败、结果无效或隔离未生效，`reason` 说明原因；材料保留 |
+| `recovery` / `recovery-required` | 有未完成的运行，先用 `learning recover` 处理 |
+
+错误码 `BUSY` 表示项目还有活动的业务任务，等业务结束后再跑。`LOCKED` 表示另一个复盘正在运行，所有项目共用一个复盘锁。
+
+## 5. 计划任务管理
+
+```powershell
+node bin/workflow.mjs learning schedule preview --root "D:/项目"   # 查看将注册的 XML 和命令，不注册
+node bin/workflow.mjs learning schedule install --root "D:/项目"   # 注册或按新定义覆盖
+node bin/workflow.mjs learning schedule remove --root "D:/项目"    # 只删除本插件登记的任务
+```
+
+- 任务只在当前用户登录时运行，经 `conhost.exe --headless` 启动 Node，不弹窗口。电脑关机或未登录时不运行，恢复后再检查。
+- 定时检查本身不调用模型，只有达到条件、没有活动业务任务、额度足够时才启动复盘。
+- 用 `learning config set` 修改 `checkIntervalMinutes` 等配置时，会同步更新已注册的任务。直接手改 JSON 的，要等下一次检查才同步，或手动再执行一次 `install`。
+- 升级插件后，旧定义的任务会在下一次检查时自动按新定义重新注册。0.3.0 及更早版本注册的任务可能根本不会运行，升级后请手动执行一次 `install`。
+
+## 6. 常见问题
+
+| 现象 | 原因与处理 |
+| --- | --- |
+| `schedule install` 报“拒绝访问” | 旧版本的登录触发器没有限定当前用户，升级后重新 `install` |
+| 计划任务从不运行 | 0.3.0 及更早版本经 PowerShell 脚本启动，执行策略为 `Restricted` 时不会运行；升级后重新 `install` |
+| `doctor` 报 `EXECUTOR` | `executorPath` 或 `claudePath` 指错了程序，例如把 codex 路径填给了 Claude |
+| `doctor` 报 `ISOLATION` | CLI 版本缺少隔离所需能力，或 `claudeSettings` 文件里有 hooks、插件、MCP |
+| `doctor` 报 `CONFIG` | `claudeSettings` 不是绝对路径、文件不存在或不是有效 JSON |
+| `doctor` 通过但复盘 `failed` | `doctor` 不调用模型，不能证明认证和额度可用；看 `runs` 里的 `reason`，并单独验证网关和密钥 |
+| 复盘一直 `timeout` | 网关不可达或模型太慢；先检查网关地址，再考虑调大 `maxRunMinutes` |
+| Claude 复盘报认证失败 | `--bare` 不读 OAuth 登录，在设置文件里改用 `ANTHROPIC_API_KEY` |
+
+不要删除 inbox、state 或快照来“修好”状态，也不要手动改运行记录。
+
+## 7. 停用与撤销
+
+```powershell
+node bin/workflow.mjs learning disable --root "D:/项目"           # 停止后台维护
+node bin/workflow.mjs learning schedule remove --root "D:/项目"   # 删除计划任务
+```
+
+撤销宿主安装前先做这两步。本机材料、正式知识、旧安装副本和迁移备份都会保留，重新 `enable` 和 `install` 即可恢复。

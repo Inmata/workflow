@@ -207,12 +207,20 @@ test('无效结果保留整批材料；正在运行时全局锁阻止第二次�
 });
 
 test('Windows 调度预览和模拟注册使用固定路径，禁用后检查不调用模型', async () => {
-  const f = await fixture(); await setLearningEnabled(f.directory, f.project, true);
+  const f = await fixture();
+  // 接入时 Lead 应被提示补做后台学习启用与调度注册；用户作出决定后不再提示。
+  const { getContext } = await import('../src/context.mjs');
+  assert.match((await getContext(f.directory, f.project, 'lead', f.sessionId)).instruction, /learning schedule install/);
+  assert.doesNotMatch((await getContext(f.directory, f.project, 'worker', f.sessionId)).instruction, /learning schedule install/);
+  await setLearningEnabled(f.directory, f.project, true);
+  assert.doesNotMatch((await getContext(f.directory, f.project, 'lead', f.sessionId)).instruction, /learning schedule install/);
   const preview = await schedulePreview(f.directory, f.project, entry);
   assert.match(preview.xml, /<StartBoundary>[^<]+Z<\/StartBoundary>/);
   // 计划任务若直接起控制台程序，默认终端会先弹出窗口并抢焦点。
   assert.match(preview.xml, /<Command>conhost\.exe<\/Command><Arguments>--headless &quot;[^<]*node[^<]*&quot; /i);
   assert.ok(!preview.xml.includes('powershell'));
+  // 不带 UserId 的登录触发器需要管理员权限才能注册。
+  if (process.env.USERNAME) assert.match(preview.xml, /<LogonTrigger><Enabled>true<\/Enabled><UserId>[^<]+<\/UserId><\/LogonTrigger>/);
   assert.ok(preview.command.includes('--state-dir'));
   const calls = [];
   const execute = async (file, args) => { calls.push(args); return { code: args.includes('/Query') ? 1 : 0 }; };
@@ -222,6 +230,7 @@ test('Windows 调度预览和模拟注册使用固定路径，禁用后检查不
     assert.equal(calls.length, 3);
   }
   await setLearningEnabled(f.directory, f.project, false);
+  assert.doesNotMatch((await getContext(f.directory, f.project, 'lead', f.sessionId)).instruction, /learning schedule install/);
   assert.equal((await tick(f.directory, f.project, { runner: () => assert.fail('不应调用') })).status, 'disabled');
 });
 

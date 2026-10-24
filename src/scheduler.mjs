@@ -9,7 +9,9 @@ const xml = s => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').repl
 // Windows 路径不含引号，只需处理结尾反斜杠，否则 `"D:\"` 会把引号转义掉。
 const winArg = s => '"' + String(s).replace(/(\\+)$/, '$1$1') + '"';
 // 任务定义变化时递增，旧任务在下次运行时自动重新注册。
-const TASK_FORMAT = 2;
+const TASK_FORMAT = 3;
+// 不带 UserId 的登录触发器等于“任意用户登录”，普通权限注册会被拒绝访问。
+const currentUser = () => process.env.USERNAME ? (process.env.USERDOMAIN ? process.env.USERDOMAIN + '\\' : '') + process.env.USERNAME : '';
 export async function schedulePreview(directory, root, entry) {
   const project = await projectFor(directory, root);
   const state = await readState(directory);
@@ -19,7 +21,7 @@ export async function schedulePreview(directory, root, entry) {
   const taskName = 'workflow-learning-' + digest(path.resolve(directory) + ':' + project.projectId).slice(0, 24);
   // 直接起 node 会弹出控制台窗口；经 PowerShell 脚本又受执行策略限制。conhost --headless 两者都避开。
   const command = '--headless ' + [process.execPath, entry, 'learning', 'tick', '--state-dir', path.resolve(directory), '--root', project.root].map(winArg).join(' ');
-  const xmlText = '<?xml version="1.0" encoding="UTF-16"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Description>workflow 项目知识维护</Description></RegistrationInfo><Triggers><TimeTrigger><Repetition><Interval>PT' + config.checkIntervalMinutes + 'M</Interval></Repetition><StartBoundary>' + new Date().toISOString().replace(/\.\d+Z$/, 'Z') + '</StartBoundary><Enabled>true</Enabled></TimeTrigger><LogonTrigger><Enabled>true</Enabled></LogonTrigger></Triggers><Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT' + (config.maxRunMinutes + 5) + 'M</ExecutionTimeLimit><Hidden>true</Hidden></Settings><Actions Context="Author"><Exec><Command>conhost.exe</Command><Arguments>' + xml(command) + '</Arguments></Exec></Actions></Task>';
+  const xmlText = '<?xml version="1.0" encoding="UTF-16"?>\n<Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task"><RegistrationInfo><Description>workflow 项目知识维护</Description></RegistrationInfo><Triggers><TimeTrigger><Repetition><Interval>PT' + config.checkIntervalMinutes + 'M</Interval></Repetition><StartBoundary>' + new Date().toISOString().replace(/\.\d+Z$/, 'Z') + '</StartBoundary><Enabled>true</Enabled></TimeTrigger><LogonTrigger><Enabled>true</Enabled>' + (currentUser() ? '<UserId>' + xml(currentUser()) + '</UserId>' : '') + '</LogonTrigger></Triggers><Principals><Principal id="Author"><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals><Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>true</StartWhenAvailable><ExecutionTimeLimit>PT' + (config.maxRunMinutes + 5) + 'M</ExecutionTimeLimit><Hidden>true</Hidden></Settings><Actions Context="Author"><Exec><Command>conhost.exe</Command><Arguments>' + xml(command) + '</Arguments></Exec></Actions></Task>';
   return { taskName, projectId: project.projectId, entry, file: path.join(projectData(directory, project), 'scheduler.xml'), command, xml: xmlText, checkIntervalMinutes: config.checkIntervalMinutes, maxRunMinutes: config.maxRunMinutes };
 }
 export async function installSchedule(directory, root, entry, execute = runProcess) {

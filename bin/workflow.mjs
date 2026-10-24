@@ -13,7 +13,7 @@ import { capture, feedback, migrateCandidates, reviseKnowledge, selectKnowledge,
 import { learningConfig, projectFor, setLearningConfig, setLearningEnabled } from '../src/learning-config.mjs';
 import { acknowledgeNotices, learningStatus, recoverReview, reviewOnce } from '../src/review.mjs';
 import { installSchedule, removeSchedule, schedulePreview, tick } from '../src/scheduler.mjs';
-import { preflight } from '../src/runner.mjs';
+import { EXECUTORS } from '../src/runner.mjs';
 import { fileURLToPath } from 'node:url';
 
 const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'max-files', 'help']);
@@ -141,8 +141,8 @@ async function main() {
     if (action === 'doctor') {
       const project = await projectFor(directory, root);
       const { values } = await learningConfig(directory, project);
-      const capability = await preflight(values, path.join(projectData(directory, project), 'preflight'));
-      return { status: capability.status, modelInvocation: false, model: values.model || '继承 CLI 配置', profile: values.profile, dataDirectory: directory };
+      const capability = await EXECUTORS[values.executor].preflight(values, path.join(projectData(directory, project), 'preflight'));
+      return { status: capability.status, modelInvocation: false, executor: values.executor, model: values.model || '继承 CLI 配置', profile: values.executor === 'codex' ? values.profile : null, ...(values.executor === 'claude' ? { claudeSettings: values.claudeSettings || '继承用户设置' } : {}), dataDirectory: directory };
     }
     if (action === 'schedule') {
       if (subaction === 'preview') return schedulePreview(directory, root, fileURLToPath(import.meta.url));

@@ -65,6 +65,64 @@ export async function preflight(config, runDir, execute = runProcess) {
   if (featureCheck.code !== 0 || DISABLE.filter(k => available.has(k) && !MANAGED_ONLY.includes(k)).some(k => !featureCheck.stdout.split(/\r?\n/).some(l => l.trim().startsWith(k + ' ') && /\bfalse\s*$/.test(l)))) fail('ISOLATION', '工具或 hook 仍启用');
   return { common, flags, checkedAt: new Date().toISOString(), status: 'capabilities-verified', modelInvocation: false };
 }
+// --bare 跳过 settings 与插件里的 hooks、插件同步和 CLAUDE.md 发现；只载 user 设置以继承 env 中的认证与路由。
+const CLAUDE_ISOLATION = ['--bare', '--setting-sources', 'user', '--strict-mcp-config', '--tools', '', '--no-session-persistence'];
+const CLAUDE_REQUIRED = ['--bare', '--setting-sources', '--settings', '--strict-mcp-config', '--tools', '--json-schema', '--output-format', '--no-session-persistence', '--include-hook-events'];
+// 专用设置文件取代用户设置：不载任何设置来源，并去掉宿主进程里的 Anthropic 变量，认证、网关和模型只由该文件决定。
+function claudeFlags(config) {
+  if (!config.claudeSettings) return CLAUDE_ISOLATION;
+  const flags = CLAUDE_ISOLATION.slice();
+  flags[flags.indexOf('user')] = '';
+  return [...flags, '--settings', config.claudeSettings];
+}
+function claudeEnv(config) {
+  const env = { ...process.env, WORKFLOW_REVIEW: '1' };
+  if (config.claudeSettings) for (const key of Object.keys(env)) if (/^(ANTHROPIC_|CLAUDE_CODE_)/i.test(key)) delete env[key];
+  return env;
+}
+export async function claudePreflight(config, runDir, execute = runProcess) {
+  await mkdir(runDir, { recursive: true });
+  if (config.claudeSettings) {
+    let settings;
+    try { settings = JSON.parse((await readFile(config.claudeSettings, 'utf8')).replace(/^\uFEFF/, '')); } catch { fail('CONFIG', 'claudeSettings 文件不存在或不是有效 JSON'); }
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) fail('CONFIG', 'claudeSettings 必须是 JSON 对象');
+    // 设置文件里的 hooks 会被 --bare 跳过，但不应依赖它：带 hooks 的文件直接拒绝。
+    if (settings.hooks || settings.enabledPlugins || settings.mcpServers) fail('ISOLATION', 'claudeSettings 不能包含 hooks、插件或 MCP');
+  }
+  const version = await execute(config.claudePath, ['--version'], { cwd: runDir });
+  if (version.code !== 0 || !version.stdout.includes('Claude Code')) fail('EXECUTOR', 'claudePath 指向的不是 Claude Code CLI');
+  const help = await execute(config.claudePath, ['--help'], { cwd: runDir });
+  if (help.code !== 0 || !CLAUDE_REQUIRED.every(k => help.stdout.includes(k))) fail('ISOLATION', '此 Claude Code 版本缺少隔离所需参数');
+  return { flags: claudeFlags(config), checkedAt: new Date().toISOString(), status: 'capabilities-verified', modelInvocation: false };
+}
+// 预检无法不调用模型就证明隔离生效，所以运行时再按 init 与 hook 事件核对，不符则不采用结果。
+export async function claudeRunner(config, prompt, schema, runDir, capability) {
+  const args = ['-p', ...capability.flags, '--output-format', 'stream-json', '--verbose', '--include-hook-events', '--json-schema', JSON.stringify(schema)];
+  if (config.model) args.push('--model', config.model);
+  if (config.reasoningEffort) args.push('--effort', config.reasoningEffort);
+  const result = await runProcess(config.claudePath, args, { cwd: runDir, input: prompt, timeoutMs: config.maxRunMinutes * 60000, env: claudeEnv(config) });
+  return claudeOutcome(result);
+}
+export function claudeOutcome(result) {
+  let init = null, final = null, hooks = 0;
+  for (const line of result.stdout.split(/\r?\n/)) {
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event.type === 'system' && event.subtype === 'init') init = event;
+    else if (event.type === 'system' && /^hook_/.test(event.subtype || '')) hooks++;
+    else if (event.type === 'result') final = event;
+  }
+  const usage = final?.usage ?? null;
+  if (result.timedOut) return { status: 'timeout', usage };
+  if (result.code !== 0 || result.overflow) return { status: 'failed', usage, reason: result.overflow ? '输出超过保护上限' : '执行器失败，退出码 ' + result.code };
+  if (!init || hooks || (init.mcp_servers || []).length || (init.tools || []).some(t => t !== 'StructuredOutput')) return { status: 'failed', usage, reason: '执行器隔离未生效，结果不采用' };
+  if (!final || final.is_error || final.subtype !== 'success' || !final.structured_output || typeof final.structured_output !== 'object') return { status: 'failed', usage, reason: '结果不是有效 JSON' };
+  return { status: 'completed', answer: final.structured_output, usage };
+}
+export const EXECUTORS = {
+  codex: { preflight: (config, runDir, execute) => preflight(config, runDir, execute), runner: (...a) => codexRunner(...a) },
+  claude: { preflight: (config, runDir, execute) => claudePreflight(config, runDir, execute), runner: (...a) => claudeRunner(...a) },
+};
 export async function codexRunner(config, prompt, schema, runDir, capability) {
   const schemaFile = path.join(runDir, 'response-schema.json');
   const answerFile = path.join(runDir, 'answer.json');
