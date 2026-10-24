@@ -106,6 +106,32 @@ test('onboard → 对齐 → 裁决 → 启用学习 → remove 全流程无残�
   assert.equal((await onboardProject(f.directory, f.project, { execute: fakeExecute() })).status, 'onboarded');
 });
 
+test('重复 onboard 只刷新管理区，保留学习开关、计划任务登记和对齐裁决', async () => {
+  const f = await environment();
+  const first = await onboardProject(f.directory, f.project, { execute: fakeExecute() });
+  assert.equal(first.status, 'onboarded', JSON.stringify(first));
+  await setLearningEnabled(f.directory, f.project, true);
+  await mutate(f.directory, async state => {
+    const project = state.projects[first.projectId];
+    project.learning.schedule = { taskName: 'workflow-learning-keep' };
+    project.alignment.decisions = [{ id: 'D1', status: 'accepted-project', decidedAt: '2026-10-01T00:00:00Z' }];
+    project.alignment.findings = [{ id: 'F1', status: 'pending' }];
+  });
+  const again = await onboardProject(f.directory, f.project, { execute: fakeExecute() });
+  assert.equal(again.status, 'onboarded', JSON.stringify(again));
+  assert.equal(again.projectId, first.projectId);
+  assert.equal(again.learning.enabled, true);
+  assert.equal(again.learning.schedule, 'workflow-learning-keep');
+  assert.ok(!again.next.some(step => step.commands?.some(c => c.includes('--enable-learning'))), '已启用学习时不再提示启用');
+  const project = (await readState(f.directory)).projects[first.projectId];
+  assert.equal(project.learning.enabled, true);
+  assert.equal(project.learning.schedule.taskName, 'workflow-learning-keep');
+  assert.deepEqual(project.alignment.decisions.map(d => [d.id, d.status]), [['D1', 'accepted-project']]);
+  assert.deepEqual(project.alignment.findings.map(d => d.id), ['F1']);
+  const agents = await readFile(path.join(f.project, 'AGENTS.md'), 'utf8');
+  assert.equal(agents.split(BEGIN).length, 2, '管理区原位替换，不重复追加');
+});
+
 test('onboard --enable-learning 一次启用学习并注册计划任务；注册失败保留接入并给补跑命令', { skip: process.platform !== 'win32' }, async () => {
   const f = await environment();
   const calls = [];

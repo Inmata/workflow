@@ -97,7 +97,9 @@ export async function enableProject(directory, root, options = {}) {
     const block = await portableBlock(root, previous);
     const output = oldBlock ? original.slice(0, oldBlock.start) + block + original.slice(oldBlock.end) : `${original}${original && !original.endsWith('\n') ? '\n' : ''}${block}\n`;
     const projectId = previous?.projectId || id('project');
+    // 重复接入只刷新管理区和身份；学习开关、计划任务登记、对齐裁决等其余登记沿用旧记录。
     const project = {
+      ...(previous || {}),
       schemaVersion: 1, projectId, root, identity: currentIdentity,
       worktrees: [{ root, identity: currentIdentity }], knowledgeRoot: root,
       managedBlockHash: digest(block), enabled: true,

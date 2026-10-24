@@ -99,12 +99,13 @@ export async function onboardProject(directory, root, options = {}) {
   // 宿主的自动审批会拦截代理启用学习和注册计划任务；用户在终端加 --enable-learning 一次完成。
   const enabledLearning = !options.skipLearning && options.enableLearning ? await enableLearning(directory, root, options) : null;
   if (enabledLearning && enabledLearning.status !== 'enabled') next.push({ step: `后台复盘未完全启用：${enabledLearning.message}修好后补跑`, commands: enabledLearning.commands });
-  if (!options.skipLearning && !options.enableLearning) next.push({ step: '启用后台复盘（会按配置真实调用模型并消耗额度，需用户同意）。代理执行会被宿主审批拦截，由用户在终端执行', commands: [command(['project', 'onboard', '--root', root, '--enable-learning'], { stateDir: directory })] });
+  const alreadyLearning = binding.previous?.learning?.enabled === true;
+  if (!options.skipLearning && !options.enableLearning && !alreadyLearning) next.push({ step: '启用后台复盘（会按配置真实调用模型并消耗额度，需用户同意）。代理执行会被宿主审批拦截，由用户在终端执行', commands: [command(['project', 'onboard', '--root', root, '--enable-learning'], { stateDir: directory })] });
   next.push({ step: '在项目目录开一个新会话。hook 会注入 workflow 入口，Lead 按 alignmentGuide 完成项目对齐。' });
   return {
     status: 'onboarded', root, projectId: enabled.projectId, agentsChanged: enabled.agentsChanged,
     alignment: { docPath: scanned.docPath, indexedFiles: scanned.files.length, truncated: scanned.truncated },
-    learning: learning ? { status: learning.status, executor: learning.executor, model: learning.model, ...(learning.executor === 'codex' ? { profile: learning.profile } : { claudeSettings: learning.claudeSettings }), ...(enabledLearning ? { enabled: enabledLearning.status !== 'failed', schedule: enabledLearning.schedule || 'not-registered' } : {}) } : { status: 'skipped' },
+    learning: learning ? { status: learning.status, executor: learning.executor, model: learning.model, ...(learning.executor === 'codex' ? { profile: learning.profile } : { claudeSettings: learning.claudeSettings }), ...(enabledLearning ? { enabled: enabledLearning.status !== 'failed', schedule: enabledLearning.schedule || 'not-registered' } : alreadyLearning ? { enabled: true, schedule: binding.previous.learning.schedule?.taskName || 'not-registered' } : {}) } : { status: 'skipped' },
     warnings: learning?.warnings || [], next,
   };
 }
