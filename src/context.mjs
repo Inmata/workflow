@@ -16,7 +16,7 @@ export function signalUsage(cli = cliPath()) {
 // 后台学习会真实调用模型，接入不自动授权；Lead 在对齐后补问一次，并把完整命令交给用户或在授权后直接执行。
 function learningNote(root, stateDir) {
   const run = args => command([...args, '--root', root], { stateDir });
-  return `后台学习尚未启用、计划任务未注册：这是接入的一部分。对齐完成后向用户说明会按 learning 配置真实调用模型并消耗额度（执行器与专用配置见 backgroundReviewGuide），先运行 \`${run(['learning', 'doctor'])}\` 核对执行器；用户同意后依次执行 \`${run(['learning', 'enable'])}\`、\`${run(['learning', 'schedule', 'install'])}\`、\`${run(['learning', 'status'])}\`。命令被宿主权限拦截时，把这几条完整命令原样交给用户执行，不改写、不只给选项。用户不需要时执行 \`${run(['learning', 'disable'])}\` 记下决定，此提示不再出现。`;
+  return `后台学习尚未启用、计划任务未注册：这是接入的一部分。对齐完成后向用户说明会按 learning 配置真实调用模型并消耗额度（执行器与专用配置见 backgroundReviewGuide），先运行 \`${run(['learning', 'doctor'])}\` 核对执行器；用户同意后请用户在自己的终端执行 \`${command(['project', 'onboard', '--root', root, '--enable-learning'], { stateDir })}\`（一次完成启用和计划任务注册；代理执行会被宿主自动审批拦截），原样给出这条完整命令，不改写、不只给选项。用户不需要时执行 \`${run(['learning', 'disable'])}\` 记下决定，此提示不再出现。`;
 }
 function alignmentNote(role, alignment, session, task) {
   if (role !== 'lead') return '';
@@ -31,7 +31,7 @@ function alignmentAction(alignment) {
   if (!alignment.docExists) return '项目对齐索引已建立但文档缺失：按协议生成对齐文件，差异按提问路径询问用户，不擅自实施。';
   if (alignment.mismatch?.length) return `对齐文档表格与本机索引不一致（${alignment.mismatch.map(m => m.id + ':' + m.document + '/' + m.index).join('、')}）：不要手改表格，按 alignmentGuide 用 decide 重新登记。`;
   if (alignment.stale) return `项目对齐索引已过期（${alignment.changed.length + alignment.missing.length + alignment.directoryChanged.length} 项变化）：只重读变化文件和新增资料，更新对齐文件，不重新全量扫描。`;
-  if (alignment.pendingDecisions || alignment.pendingFindings) return `项目对齐还有 ${alignment.pendingDecisions} 项待裁决、${alignment.pendingFindings} 项结构建议；按提问路径向用户确认，可跨回合裁决。`;
+  if (alignment.pendingDecisions || alignment.pendingFindings) return `项目对齐还有 ${alignment.pendingDecisions} 项待裁决、${alignment.pendingFindings} 项结构建议；按提问路径向用户确认，可跨回合裁决；用户批准的结构建议在当回合直接执行修改，再用 decide 登记 accepted-change。`;
   return '';
 }
 // 每包一行，不附结果正文：压缩后据此避免重复派工和重读已消费结果。
@@ -80,7 +80,7 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
     enabled: true, projectId: project.projectId, root: project.root, worktree: resolved.worktree,
     role, documents: [docPath('workflow.md'), docPath('roles', `${role}.md`)],
     cli: cliPath(), version: PRODUCT_VERSION, signal: signalUsage(), identity,
-    ownerSessionId: project.ownerSessionId, coexistenceMode: project.coexistenceMode, pending,
+    coexistenceMode: project.coexistenceMode, pending,
     alignment, knowledge, notices,
     ...(ledger ? { ledger } : {}),
     learningGuide: docPath('learning.md'),

@@ -89,7 +89,7 @@ docs/plans 或 docs/archive 下的历史计划（当前任务直接相关除外�
 ### 5. 结构建议（只报告，不改）
 发现文档过期、重复、职责重叠、缺索引、链接失效时，
 写进"结构建议"，不要直接修改、重命名或移动任何文件。
-我批准后，才在后续任务里执行修改，并用 decide 把状态登记为 accepted-change（拒绝为 rejected）。结构建议不能用 accepted-project / accepted-workflow，decide 会拒绝并列出合法值。
+我批准后，在当回合建立包含相应路径的 write 任务直接执行修改，完成后用 decide 把状态登记为 accepted-change（拒绝为 rejected）；我没批准的不动。结构建议不能用 accepted-project / accepted-workflow，decide 会拒绝并列出合法值。
 
 ### 6. 写作规则
 - 只写能从文件确认的事实；找不到写「未找到」，不推断。
@@ -135,7 +135,9 @@ node bin/workflow.mjs project align suggest --root "D:/项目" --input finding.j
 }
 ```
 
-以上只展示业务字段。三个写命令还必须带[当前身份](usage.md#任务与回执)和明确的 `baseline`：用 `knowledge inspect --path <对齐文件>` 获取编辑前指纹，不存在时传 `null`。先声明包含对齐文件路径的 write 任务，并确保当前会话是知识负责人；计划或只读任务不能写对齐文件。写入共用快照、指纹检查与事务恢复，首次没有索引时补只读扫描。
+以上只展示业务字段。三个写命令还必须带[当前身份](usage.md#任务与回执)和明确的 `baseline`：用 `knowledge inspect --path <对齐文件>` 获取编辑前指纹，不存在时传 `null`。先声明包含对齐文件路径的 write 任务；同一项目的任何 Lead 会话都可写，计划或只读任务不能写对齐文件。写入共用快照、指纹检查与事务恢复：别的会话或用户先改过文档时返回 `CONFLICT`，重新 inspect 取新指纹后再写。首次没有索引时补只读扫描。
+
+`apply` 写进表格但从未登记的行：状态为 `pending` 的自动登记为待裁决（等同于 suggest），返回结果的 `registered` 列出这些 ID；已写成其他状态的行拒绝写入并给出 decide 命令，因为裁决必须经 decide 留痕。
 
 扫描规则：
 
@@ -182,7 +184,7 @@ Lead 还会得到 `alignmentGuide` 路径。`exists=false` 表示尚未对齐；
 ## 边界
 
 - 不新增 phase，不改 signal schema；只读扫描是准备工作，写对齐文件必须建立有相应路径权限的任务。
-- 不派 Worker，不进入实施；结构建议只有用户批准后才在后续任务执行。
+- 不派 Worker；结构建议只有用户批准后才执行，批准后在当回合直接修改并用 decide 登记。
 - 项目原有做法不自动服从，也不自动推翻；每条真实差异都要用户裁决并留痕。
 - 不读构建产物、缓存和历史计划正文；未读文件仍列入全量清单并标注"存在但未读"。
 - 索引只保存 ID、状态和裁决时间；理由与建议正文以项目内文档为权威。

@@ -66,11 +66,6 @@ export async function readState(directory) {
   validateState(value);
   if (value.schemaVersion === 1) {
     value.schemaVersion = STATE_VERSION;
-    for (const project of Object.values(value.projects)) {
-      const live = Object.values(value.sessions).filter(s => s.projectId === project.projectId && !s.interrupted && s.ticket);
-      project.leadSessions = live.map(s => s.sessionId);
-      if (!project.ownerExplicit) project.ownerSessionId = live.length === 1 ? live[0].sessionId : null;
-    }
     for (const task of Object.values(value.tasks)) {
       if (task.lifecycle === 'active' && !Object.values(value.sessions).some(s => s.projectId === task.projectId && s.taskId === task.taskId && !s.interrupted && s.ticket)) task.lifecycle = 'suspended';
     }

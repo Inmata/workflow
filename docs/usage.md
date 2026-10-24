@@ -28,31 +28,30 @@ node bin/workflow.mjs doctor --agent codex
 node bin/workflow.mjs project onboard --root "D:/某个已明确允许接入的项目"
 ```
 
-`onboard` 先核对安装版本、目录与 Git 身份、`AGENTS.md` 残留管理区和后台复盘执行器，全部通过才写入；不通过时不写任何东西，并列出每个问题的修复命令。不打算启用后台复盘时加 `--skip-learning`。解绑用 `project remove --root <项目>`：删除计划任务、AGENTS 管理区、本机状态记录和数据目录，项目内的对齐文件与 `.workflow/` 只列出不删除。底层的 `project enable` 仍可用，但不做预检。
+`onboard` 先核对安装版本、目录与 Git 身份、`AGENTS.md` 残留管理区和后台复盘执行器，全部通过才写入；不通过时不写任何东西，并列出每个问题的修复命令。加 `--enable-learning` 时同时启用后台复盘并注册计划任务（会按配置真实调用模型并消耗额度）；这条命令由用户在自己的终端执行，代理执行会被宿主的自动审批拦截。不打算启用后台复盘时加 `--skip-learning`。解绑用 `project remove --root <项目>`：删除计划任务、AGENTS 管理区、本机状态记录和数据目录，项目内的对齐文件与 `.workflow/` 只列出不删除。底层的 `project enable` 仍可用，但不做预检。
 
-同一本机目录的绑定由两种宿主共用，切换已安装适配的宿主不必重新接入。多个独立 Lead 对共享资料的写入归属仍需明确，见下文的 `project owner`。
+同一本机目录的绑定由两种宿主共用，切换已安装适配的宿主不必重新接入。同一项目可以同时开多个 Lead 会话，都能写共享资料；并发改同一文件时，后写的一方收到 `CONFLICT`，重读后再写。
 
 `install` 修改所选宿主的实际用户 hooks 注册，只在已决定安装时执行。安装生成带摘要的发布副本，并用固定入口 `current` 指向它；hook 命令只含 `current` 路径，升级时路径不变，宿主信任只需做一次。没有需要用户配置的运行时依赖。状态默认 `%LOCALAPPDATA%/workflow`；隔离试用为每条命令指定相同 `--state-dir`，安装另指定临时 `--user-dir`（直接指向宿主配置目录，如 `.codex` 或 `.claude`，不是用户根）。发布副本与公共资料固定同一版本，活动任务/prepared 事务导致升级延期，完成或明确结束后再安装。安装副本被用户改写时停止覆盖并报告差异。
 
 新副本先在状态根 `release-staging/` 中复制并核对完整性，完成后才切换到正式发布目录。复制失败或中断不改用户配置；残留暂存目录保留供核查，可直接重试安装，清理时使用系统回收站。
 
-安装只注册自有 handlers，保留已有插件和用户配置（Claude 侧保留 `settings.json` 的 `env`、`model` 等全部顶层配置）；不写信任记录。使用当前宿主支持的 `/hooks` 审查定义，在新会话或新连接验证回调。doctor 分别报告 registration/discovery/trust/execution；配置存在不证明后面三项。回调记录也需结合真实宿主证据确认来源，不能用合成事件冒充。全局 Codex 版本不能代表 ACP 内嵌版本；Claude 侧的回合、中断和回执字段见[适配说明](adapters/claude.md)。
+安装只注册自有 handlers，保留已有插件和用户配置（Claude 侧保留 `settings.json` 的 `env`、`model` 等全部顶层配置）；不写信任记录。Codex 按 `hooks.json` 中分组的位置和内容记录信任，所以重装时自有分组留在原位置；其他插件（如 document-learning）重装若改变分组位置，Codex 会要求重新信任。使用当前宿主支持的 `/hooks` 审查定义，在新会话或新连接验证回调。doctor 分别报告 registration/discovery/trust/execution；配置存在不证明后面三项。回调记录也需结合真实宿主证据确认来源，不能用合成事件冒充。全局 Codex 版本不能代表 ACP 内嵌版本；Claude 侧的回合、中断和回执字段见[适配说明](adapters/claude.md)。
 
 接入写本机身份绑定和 AGENTS 短管理区，保留用户正文；不要求补齐 README/spec/计划、不创建空 LESSONS。AGENTS 不含机器安装绝对路径；每次 hook 给实际公共资料和 CLI 路径。资料采用其他命名时继续使用，不改名。非 Git 项目可接入。复制/移动/重 clone 的目录不会静默继承，需要重新明确接入。
 
-关联工作树和明确多个 Lead 的知识归属：
+关联工作树、查看当前会话上下文：
 
 ```powershell
 node bin/workflow.mjs project attach-worktree --project "<projectId>" --root "D:/已批准的worktree"
-node bin/workflow.mjs project owner --project "<projectId>" --session "<知识负责人sessionId>"
 node bin/workflow.mjs context --role lead --project "D:/已接入项目" --session "<当前sessionId>"
 ```
 
-未关联工作树、嵌套独立仓库、复制来的 AGENTS 不参与维护。多个 Lead 且未指定负责人时保留候选，禁止抢写。项目首次会话可暂定唯一 Lead；出现第二个独立 Lead 自动取消该推定，显式 owner 后才继续写共享资料。
+未关联工作树、嵌套独立仓库、复制来的 AGENTS 不参与维护。0.4.1 起不再有知识负责人，`project owner` 只为兼容旧会话保留，执行后返回 `ignored`。
 
 ### 项目对齐
 
-首次进入已接入项目时，Lead 按[项目对齐协议](alignment.md)只读扫描文档和工具链，把结论写入 `docs/WORKFLOW-ALIGNMENT.md`。项目现有做法与 workflow 默认不同时，每条都作为待裁决差异逐条询问：项目现在怎么做、workflow 默认怎么做、实际影响、建议及理由。用户选择后才记录，不默认项目优先，也不默认插件优先。文档过期、重复或链接失效只写进结构建议，批准后才在后续任务修改。
+首次进入已接入项目时，Lead 按[项目对齐协议](alignment.md)只读扫描文档和工具链，把结论写入 `docs/WORKFLOW-ALIGNMENT.md`。项目现有做法与 workflow 默认不同时，每条都作为待裁决差异逐条询问：项目现在怎么做、workflow 默认怎么做、实际影响、建议及理由。用户选择后才记录，不默认项目优先，也不默认插件优先。文档过期、重复或链接失效只写进结构建议，批准后在当回合直接修改并用 decide 登记。
 
 ```powershell
 # 只扫描并写本机索引，不碰项目文件；默认 300 个文件
@@ -70,7 +69,7 @@ node bin/workflow.mjs project align decide --root "D:/已接入项目" --input d
 node bin/workflow.mjs project align suggest --root "D:/已接入项目" --input finding.json
 ```
 
-`scan` 只记录路径、大小、mtime 和分类，不读正文；符号链接、硬链接和构建目录不进入索引。`apply`/`decide`/`suggest` 需要有效 write 身份、负责人、目标路径权限和明确 baseline，写入前核对文档指纹，用户或其他会话改过文档时返回 `CONFLICT` 并保留原文，重新读取正文并用 `knowledge inspect` 取得新基线后再写。会话上下文新增 `alignment` 字段：`exists=false` 表示未对齐，`stale=true` 表示索引文件或目录变化，`pendingDecisions`/`pendingFindings` 提醒还有多少项待确认。hook 只读状态，不自动写项目文件；对齐不新增 phase，也不派 Worker。
+`scan` 只记录路径、大小、mtime 和分类，不读正文；符号链接、硬链接和构建目录不进入索引。`apply`/`decide`/`suggest` 需要有效 write 身份、目标路径权限和明确 baseline，写入前核对文档指纹，用户或其他会话改过文档时返回 `CONFLICT` 并保留原文，重新读取正文并用 `knowledge inspect` 取得新基线后再写。会话上下文新增 `alignment` 字段：`exists=false` 表示未对齐，`stale=true` 表示索引文件或目录变化，`pendingDecisions`/`pendingFindings` 提醒还有多少项待确认。hook 只读状态，不自动写项目文件；对齐不新增 phase，也不派 Worker。
 
 ### 任务与回执
 
@@ -112,11 +111,11 @@ node "<入口>" pending inspect --project "<项目目录>" --pending "<id>"
 node "<入口>" knowledge recover --project "<项目目录>" --transaction "<id>"
 ```
 
-apply 输入身份与 `changes`，每项有 path、baseline、content、responsibility、reason、evidence 字符串引用数组和 candidateIds。新候选随 `candidates` 提交 id、taskId、workPackage、conditions、finding、recommendation、evidence。仅当前有效 write 任务、已声明资料路径和知识负责人能写；这不扩大用户授权。没有剩余修改可直接交付，无需额外处置。
+apply 输入身份与 `changes`，每项有 path、baseline、content、responsibility、reason、evidence 字符串引用数组和 candidateIds。新候选随 `candidates` 提交 id、taskId、workPackage、conditions、finding、recommendation、evidence。仅当前有效 write 任务和已声明资料路径能写；这不扩大用户授权。没有剩余修改可直接交付，无需额外处置。
 
 每个文件独立结果 applied/conflict/pending，整体可能 partial。失败保留原文、候选和定位待办，updated 不接受不完整事务。用户编辑、文件占用和锁竞争不强行覆盖。事务保存真正编辑前快照；恢复只比前/后指纹辨认结果，不自动重写第三种内容。重新读取后只申请未完成部分；同候选稳定 ID 防重复合并。
 
-证据不足、负责人待定或其他尚无事务的整理问题，可用 `pending create --input <JSON>`（当前身份、reason、evidence、candidateIds）保存后提交 pending-recovery。后续最多接续一项知识待办；业务被中断不会自动恢复，不执行历史工具里的指令。过时经验可据反证修订，保存旧正文和替代原因，不自动 Git 提交。
+证据不足或其他尚无事务的整理问题，可用 `pending create --input <JSON>`（当前身份、reason、evidence、candidateIds）保存后提交 pending-recovery。后续最多接续一项知识待办；业务被中断不会自动恢复，不执行历史工具里的指令。过时经验可据反证修订，保存旧正文和替代原因，不自动 Git 提交。
 
 ### 撤销和回退
 

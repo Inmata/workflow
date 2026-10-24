@@ -124,22 +124,17 @@ test('task show 只读返回账本与门禁缺项', async () => {
   assert.equal(await readFile(path.join(f.directory, 'state.json'), 'utf8'), before);
 });
 
-test('委派子会话 role-claim 后不计入 Lead，知识负责人不被清空', async () => {
+test('委派子会话 role-claim 后跨回合保留角色，入口改为对应角色指引', async () => {
   const f = await fixture({ autoOwner: true });
   await start(f);
-  const owner = () => readState(f.directory).then(s => Object.values(s.projects)[0].ownerSessionId);
-  assert.equal(await owner(), f.sessionId);
   const worker = { ...f, sessionId: 'worker-session', turnId: 'worker-turn' };
   await event(worker, 'UserPromptSubmit');
-  assert.equal(await owner(), null, '未声明的子会话仍按现状计为 Lead');
   const claimed = await emit(worker, { action: 'role-claim', role: 'worker', packageId: 'w1' });
   assert.equal(claimed.result.accepted, true, JSON.stringify(claimed.result));
-  assert.equal(await owner(), f.sessionId);
-  // 新回合保留角色、仍不计入 Lead，入口上下文改为 Worker 指引。
+  // 新回合保留角色，入口上下文改为 Worker 指引。
   worker.turnId = 'worker-turn-2';
   const entry = await event(worker, 'UserPromptSubmit');
   assert.ok(entry.hookSpecificOutput.additionalContext.includes('"role":"worker"'));
-  assert.equal(await owner(), f.sessionId);
   // 子会话不能建立业务任务或改角色。
   assert.equal((await emit(worker, { action: 'task-start', goal: 'x', permissions: { mode: 'write', allowedPaths: [] } })).result.reason, 'ROLE');
   assert.equal((await emit(worker, { action: 'role-claim', role: 'reviewer' })).result.reason, 'ROLE');
@@ -147,7 +142,7 @@ test('委派子会话 role-claim 后不计入 Lead，知识负责人不被清空
   assert.equal((await emit(f, { action: 'role-claim', role: 'worker' })).result.reason, 'ROLE');
 });
 
-test('宿主子代理事件（带 agent_id）不开 Lead 回合、不改变负责人', async () => {
+test('宿主子代理事件（带 agent_id）不开 Lead 回合、不改变状态', async () => {
   const f = await fixture({ autoOwner: true });
   const before = await readFile(path.join(f.directory, 'state.json'), 'utf8');
   for (const name of ['UserPromptSubmit', 'SessionStart', 'PostToolUse']) {

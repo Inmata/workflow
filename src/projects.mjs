@@ -100,8 +100,6 @@ export async function enableProject(directory, root, options = {}) {
     const project = {
       schemaVersion: 1, projectId, root, identity: currentIdentity,
       worktrees: [{ root, identity: currentIdentity }], knowledgeRoot: root,
-      ownerSessionId: options.owner || previous?.ownerSessionId || null,
-      ownerExplicit: Boolean(options.owner || previous?.ownerExplicit), leadSessions: previous?.leadSessions || [],
       managedBlockHash: digest(block), enabled: true,
       coexistenceMode: options.coexistenceMode || previous?.coexistenceMode || 'bounded',
     };
@@ -149,13 +147,7 @@ export async function attachWorktree(directory, projectId, root) {
     return { status: 'attached', projectId, root, knowledgeRoot: project.knowledgeRoot };
   });
 }
-export async function setOwner(directory, projectId, sessionId) {
-  return mutate(directory, async state => {
-    const project = state.projects[projectId];
-    if (!project?.enabled) fail('PROJECT', '项目未启用');
-    if (!sessionId || typeof sessionId !== 'string') fail('INPUT', '需要明确知识负责人 sessionId');
-    project.ownerSessionId = sessionId;
-    project.ownerExplicit = true;
-    return { projectId, ownerSessionId: sessionId };
-  });
+// 0.4.1 起不再有知识负责人；保留命令，让旧会话里的指定命令不报错。
+export async function setOwner(directory, projectId) {
+  return { status: 'ignored', projectId: projectId || null, message: '已不需要指定知识负责人：同一项目的任何 Lead 会话都可写，并发修改由 baseline 指纹检测冲突。' };
 }

@@ -165,7 +165,7 @@ node bin/workflow.mjs knowledge revise --root "D:/项目" --input revision.json
 
 ## 启用与运行
 
-首次试点按照[另一台电脑验收清单](acceptance.md)进行。安装和项目接入不会自动授权后台维护。显式启用后才授予 `.workflow/knowledge/` 写入权限。项目接入后 Lead 会在会话入口收到提示，经用户同意后执行下面的启用与注册；用户不需要时执行 `learning disable` 记下决定，提示不再出现：
+首次试点按照[另一台电脑验收清单](acceptance.md)进行。安装和项目接入不会自动授权后台维护。显式启用后才授予 `.workflow/knowledge/` 写入权限。项目接入后 Lead 会在会话入口收到提示，经用户同意后请用户在终端执行 `project onboard --root <项目> --enable-learning`，一次完成启用与注册（代理执行会被宿主的自动审批拦截）。也可以用下面的分步命令；用户不需要时执行 `learning disable` 记下决定，提示不再出现：
 
 ```powershell
 node bin/workflow.mjs learning doctor --root "D:/项目"

@@ -6,9 +6,11 @@ import { agentsFile, blockFrom, disableProject, enableProject, identity, identit
 import { installRecord, releaseIntegrity } from './install.mjs';
 import { learningConfig, setLearningEnabled } from './learning-config.mjs';
 import { scanAlignment } from './alignment.mjs';
+import { migrateCandidates } from './learning.mjs';
+import { installSchedule } from './scheduler.mjs';
 import { EXECUTORS, runProcess } from './runner.mjs';
 import { HOSTS } from './hooks.mjs';
-import { PRODUCT_ROOT, PRODUCT_VERSION, command } from './entry.mjs';
+import { PRODUCT_ROOT, PRODUCT_VERSION, cliPath, command } from './entry.mjs';
 
 const slash = value => value.replaceAll('\\', '/');
 const base64 = value => Buffer.from(JSON.stringify(value), 'utf8').toString('base64');
@@ -89,19 +91,40 @@ export async function onboardProject(directory, root, options = {}) {
   const problems = [...install, ...binding.problems];
   if (learning && !['capabilities-verified'].includes(learning.status)) problems.push({ code: 'LEARNING', message: `后台复盘执行器预检未通过：${learning.message} 修好配置后重试；不打算启用后台复盘时，加 --skip-learning 接入。`, commands: [command(['learning', 'doctor', '--global'], { stateDir: directory }), command(['project', 'onboard', '--root', root, '--skip-learning'], { stateDir: directory })] });
   if (problems.length) return { status: 'blocked', root, written: false, problems, warnings: learning?.warnings || [] };
-  const enabled = await enableProject(directory, root, { owner: options.owner, coexistenceMode: options.coexistenceMode });
+  const enabled = await enableProject(directory, root, { coexistenceMode: options.coexistenceMode });
   const scanned = await scanAlignment(directory, root);
   if (options.skipLearning) await setLearningEnabled(directory, root, false);
   const run = args => command([...args, '--root', root], { stateDir: directory });
   const next = [];
-  if (!options.skipLearning) next.push({ step: '启用后台复盘（会按配置真实调用模型并消耗额度，需用户同意）', commands: [run(['learning', 'enable']), run(['learning', 'schedule', 'install']), run(['learning', 'status'])] });
+  // 宿主的自动审批会拦截代理启用学习和注册计划任务；用户在终端加 --enable-learning 一次完成。
+  const enabledLearning = !options.skipLearning && options.enableLearning ? await enableLearning(directory, root, options) : null;
+  if (enabledLearning && enabledLearning.status !== 'enabled') next.push({ step: `后台复盘未完全启用：${enabledLearning.message}修好后补跑`, commands: enabledLearning.commands });
+  if (!options.skipLearning && !options.enableLearning) next.push({ step: '启用后台复盘（会按配置真实调用模型并消耗额度，需用户同意）。代理执行会被宿主审批拦截，由用户在终端执行', commands: [command(['project', 'onboard', '--root', root, '--enable-learning'], { stateDir: directory })] });
   next.push({ step: '在项目目录开一个新会话。hook 会注入 workflow 入口，Lead 按 alignmentGuide 完成项目对齐。' });
   return {
     status: 'onboarded', root, projectId: enabled.projectId, agentsChanged: enabled.agentsChanged,
     alignment: { docPath: scanned.docPath, indexedFiles: scanned.files.length, truncated: scanned.truncated },
-    learning: learning ? { status: learning.status, executor: learning.executor, model: learning.model, ...(learning.executor === 'codex' ? { profile: learning.profile } : { claudeSettings: learning.claudeSettings }) } : { status: 'skipped' },
+    learning: learning ? { status: learning.status, executor: learning.executor, model: learning.model, ...(learning.executor === 'codex' ? { profile: learning.profile } : { claudeSettings: learning.claudeSettings }), ...(enabledLearning ? { enabled: enabledLearning.status !== 'failed', schedule: enabledLearning.schedule || 'not-registered' } : {}) } : { status: 'skipped' },
     warnings: learning?.warnings || [], next,
   };
+}
+
+// 启用学习后注册计划任务；任一步失败不回退接入，只报告原因和补跑命令。
+async function enableLearning(directory, root, { execute = runProcess } = {}) {
+  const run = args => command([...args, '--root', root], { stateDir: directory });
+  try {
+    await setLearningEnabled(directory, root, true);
+    await migrateCandidates(directory, root);
+  } catch (error) {
+    return { status: 'failed', message: error.message, commands: [run(['learning', 'enable']), run(['learning', 'schedule', 'install'])] };
+  }
+  if (process.platform !== 'win32') return { status: 'enabled', schedule: 'not-applicable' };
+  try {
+    const registered = await installSchedule(directory, root, cliPath(), execute);
+    return { status: 'enabled', schedule: registered.taskName };
+  } catch (error) {
+    return { status: 'schedule-failed', message: `学习已启用，计划任务注册失败（${error.code || 'SCHEDULER'}：${error.message}）。`, commands: [run(['learning', 'schedule', 'install']), run(['learning', 'status'])] };
+  }
 }
 
 async function deleteSchedule(schedule, execute) {

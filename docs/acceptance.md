@@ -29,7 +29,7 @@ node bin/workflow.mjs project enable --root $pilotRoot --state-dir $workflowStat
 
 使用 Claude Code 时安装参数改为 `--agent claude`。核对宿主 `/hooks` 发现和信任状态，打开试点项目的新会话确认真实回调。`doctor` 中配置存在、回调观测、宿主实际执行是不同证据，不能互相替代。
 
-首次修改状态会保存 v1 原文备份。旧候选在 `learning enable` 时幂等导入；旧 `applied` 只能证明写入过，不算已验证经验。旧中断任务应为 `suspended`，旧会话不应永久占住负责人或挡住升级。
+首次修改状态会保存 v1 原文备份。旧候选在 `learning enable` 时幂等导入；旧 `applied` 只能证明写入过，不算已验证经验。旧中断任务应为 `suspended`，旧会话不应挡住升级。
 
 ## 3. 设置参数，再做无模型检查
 
@@ -92,8 +92,8 @@ node bin/workflow.mjs learning schedule remove --root $pilotRoot --state-dir $wo
 
 | 场景 | 通过条件 |
 | --- | --- |
-| Codex spawn_agent 子代理 | 子线程事件带 `agent_id`；插件不开回合，`ownerSessionId` 不变 |
-| Codeg 委派子会话 | 子会话发 `role-claim` 后 `doctor --project` 的 owner 不被清空；之后入口注入 Worker/Reviewer 上下文 |
+| Codex spawn_agent 子代理 | 子线程事件带 `agent_id`；插件不开回合，状态不变 |
+| Codeg 委派子会话 | 子会话发 `role-claim` 后入口注入 Worker/Reviewer 上下文 |
 | 提问置 waiting-user | Codex 原生、Codex 经 Codeg MCP、Claude `AskUserQuestion`、Claude 经 Codeg MCP 四种组合分别记录 PostToolUse 原文 `tool_name`，确认 phase=waiting-user |
 | Codex Plan / Default | 分别记录 hook 上报的 `permission_mode`；Default 且 flag 关闭时通过 Codeg MCP 或文本提问完成一次首次对齐，含跨回合 decide |
 | Claude ACP | 在 Codeg 的 Claude ACP 中确认 default 模式能否调用 `AskUserQuestion` |

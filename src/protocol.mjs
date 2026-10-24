@@ -35,23 +35,7 @@ export function openTurn(state, project, sessionId, turnId, { compact = false, e
     ...(session?.role ? { role: session.role, packageId: session.packageId || null } : {}),
   };
   state.sessions[key] = session;
-  refreshOwners(state, project);
   return session;
-}
-// 宿主窗口直接关闭时可能收不到 SessionEnd；超过此时长没有新回合的会话不再参与负责人推定。
-export const LEAD_IDLE_MS = 12 * 60 * 60 * 1000;
-function liveLead(session, project, now) {
-  if (session.projectId !== project.projectId || session.interrupted || !session.ticket || session.role) return false;
-  const seen = Date.parse(session.lastSeenAt || '');
-  return Number.isFinite(seen) && now - seen <= LEAD_IDLE_MS;
-}
-export function refreshOwners(state, project) {
-  // 只有 Lead 会话参与知识负责人推定；已声明 Worker/Reviewer 的委派会话不能清空负责人。
-  const now = Date.now();
-  project.leadSessions = Object.values(state.sessions).filter(s => liveLead(s, project, now)).map(s => s.sessionId);
-  const owner = Object.values(state.sessions).find(s => s.projectId === project.projectId && s.sessionId === project.ownerSessionId);
-  if (project.ownerExplicit && owner?.interrupted) { project.ownerExplicit = false; project.ownerSessionId = null; }
-  if (!project.ownerExplicit) project.ownerSessionId = project.leadSessions.length === 1 ? project.leadSessions[0] : null;
 }
 export function currentIdentity(state, payload, { replay = false, requireTask = true } = {}) {
   if (payload?.schemaVersion !== SCHEMA_VERSION) fail('SCHEMA', '未知信号版本');
@@ -177,7 +161,6 @@ export function acceptSignal(state, payload) {
     if (payload.packageId !== undefined) identifier(payload.packageId, 'packageId');
     session.role = payload.role;
     session.packageId = payload.packageId || null;
-    refreshOwners(state, project);
   } else if (session.role) {
     fail('ROLE', `当前会话已声明为 ${session.role}；业务任务和账本由 Lead 维护`);
   } else if (payload.action === 'task-start') {
@@ -266,5 +249,4 @@ export function interrupt(state, project, session) {
     task.lifecycle = 'suspended';
     pendingFor(state, project.projectId, session.taskId, '业务被中断或会话结束；仅保存，不自动继续', 'business-incomplete');
   }
-  refreshOwners(state, project);
 }

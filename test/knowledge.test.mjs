@@ -4,7 +4,6 @@ import path from 'node:path';
 import { link, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { applyKnowledge, createPending, inspectKnowledge, recoverTransaction, safeDocument } from '../src/knowledge.mjs';
 import { readState } from '../src/store.mjs';
-import { setOwner } from '../src/projects.mjs';
 import { deliver, event, fixture, identity, start } from './helpers.mjs';
 
 const candidate = (taskId, id = 'finding-1') => ({ id, taskId, workPackage: 'A1', conditions: '当前隔离项目', finding: '资料缺少已核实前置条件', recommendation: '补写条件并引用证据', evidence: ['test:已核实的输入'] });
@@ -94,12 +93,17 @@ test('快照准备后外部编辑仍拒绝覆盖', async () => {
   assert.equal(tx.files[0].status, 'conflict');
   assert.equal(await readFile(path.join(f.project, 'README.md'), 'utf8'), '准备后的用户编辑');
 });
-test('V02 多个独立 Lead 未明确归属不能争写，指定知识负责人后才可写', async () => {
+test('V02 多个 Lead 会话都可写；另一会话先写后旧指纹返回冲突', async () => {
   const f = await fixture({ autoOwner: true });
   await start(f);
-  await event(f, 'UserPromptSubmit', { session_id: 'session-2', turn_id: 'turn-other' });
-  await assert.rejects(applyKnowledge(f.directory, await input(f, [await change(f)])), { code: 'OWNER' });
-  await setOwner(f.directory, f.projectId, f.sessionId);
+  const other = { ...f, sessionId: 'session-2', turnId: 'turn-other', taskId: 'task-other' };
+  await event(other, 'UserPromptSubmit');
+  await start(other);
+  const stale = await change(f);
+  assert.equal((await applyKnowledge(other.directory, await input(other, [await change(other, 'README.md', '# 项目\n另一会话的修改\n')], [candidate(other.taskId)]))).status, 'applied');
+  const tx = await applyKnowledge(f.directory, await input(f, [stale]));
+  assert.equal(tx.files[0].status, 'conflict');
+  assert.equal(await readFile(path.join(f.project, 'README.md'), 'utf8'), '# 项目\n另一会话的修改\n');
   assert.equal((await applyKnowledge(f.directory, await input(f, [await change(f)]))).status, 'applied');
 });
 test('计划、只读、任务范围外、路径逃逸、敏感正文和硬链接拒绝', async () => {

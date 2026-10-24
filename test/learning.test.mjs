@@ -42,9 +42,7 @@ test('9 份材料关闭会话后持久保存；跨日新会话可见，年龄触
   const config = (await learningConfig(f.directory, project)).values;
   assert.equal(dueReason(items, config, new Date(items[0].createdAt)), null);
   assert.equal(dueReason(items, config, new Date(Date.parse(items[0].createdAt) + 25 * 3600000)), 'age');
-  assert.equal((await getOwner(f)), 'session-2');
 });
-async function getOwner(f) { return (await readState(f.directory)).projects[f.projectId].ownerSessionId; }
 
 test('配置个人默认与项目覆盖；非法配置保留旧文件', async () => {
   const f = await fixture();
@@ -210,10 +208,10 @@ test('Windows 调度预览和模拟注册使用固定路径，禁用后检查不
   const f = await fixture();
   // 接入时 Lead 应被提示补做后台学习启用与调度注册；用户作出决定后不再提示。
   const { getContext } = await import('../src/context.mjs');
-  assert.match((await getContext(f.directory, f.project, 'lead', f.sessionId)).instruction, /learning schedule install/);
-  assert.doesNotMatch((await getContext(f.directory, f.project, 'worker', f.sessionId)).instruction, /learning schedule install/);
+  assert.match((await getContext(f.directory, f.project, 'lead', f.sessionId)).instruction, /--enable-learning/);
+  assert.doesNotMatch((await getContext(f.directory, f.project, 'worker', f.sessionId)).instruction, /--enable-learning/);
   await setLearningEnabled(f.directory, f.project, true);
-  assert.doesNotMatch((await getContext(f.directory, f.project, 'lead', f.sessionId)).instruction, /learning schedule install/);
+  assert.doesNotMatch((await getContext(f.directory, f.project, 'lead', f.sessionId)).instruction, /--enable-learning/);
   const preview = await schedulePreview(f.directory, f.project, entry);
   assert.match(preview.xml, /<StartBoundary>[^<]+Z<\/StartBoundary>/);
   // 计划任务若直接起控制台程序，默认终端会先弹出窗口并抢焦点。
@@ -230,7 +228,7 @@ test('Windows 调度预览和模拟注册使用固定路径，禁用后检查不
     assert.equal(calls.length, 3);
   }
   await setLearningEnabled(f.directory, f.project, false);
-  assert.doesNotMatch((await getContext(f.directory, f.project, 'lead', f.sessionId)).instruction, /learning schedule install/);
+  assert.doesNotMatch((await getContext(f.directory, f.project, 'lead', f.sessionId)).instruction, /--enable-learning/);
   assert.equal((await tick(f.directory, f.project, { runner: () => assert.fail('不应调用') })).status, 'disabled');
 });
 

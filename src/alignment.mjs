@@ -3,6 +3,7 @@ import { lstat, readdir } from 'node:fs/promises';
 import { canonical, digest, fail, mutate, readState, readText, samePath } from './store.mjs';
 import { authorizeWrite } from './knowledge.mjs';
 import { document, safeDocument, writeDocuments } from './documents.mjs';
+import { command } from './entry.mjs';
 
 // 对齐索引只收集路径、大小和 mtime，正文由 Lead 读取和归纳。
 // 索引本身是确定性数据，不调用模型，也不写项目文件（apply 除外）。
@@ -287,6 +288,19 @@ function resolvePending(text, item) {
   }
   return text;
 }
+// apply 写进表格但从未登记的行：pending 自动登记，等同于 suggest；已写成裁决状态的必须经 decide 留痕。
+function unregisteredRows(output, alignment, inputDecisions) {
+  const recorded = new Set([...(alignment?.decisions || []), ...(alignment?.findings || []), ...inputDecisions].map(item => item?.id));
+  const rows = { decisions: [], findings: [], decided: [] };
+  for (const [heading, kind] of [[DECISION_HEADING, 'decisions'], [FINDING_HEADING, 'findings']]) {
+    for (const [id, status] of rowStatuses(output, heading)) {
+      if (recorded.has(id)) continue;
+      if (status === 'pending') rows[kind].push(id);
+      else rows.decided.push({ id, status });
+    }
+  }
+  return rows;
+}
 async function updateAlignment(directory, root, input, action) {
   const target = await canonical(root);
   // 权限在索引和正文写入之前核对。
@@ -309,6 +323,12 @@ async function updateAlignment(directory, root, input, action) {
       const a = output.indexOf(BEGIN), b = output.indexOf(END);
       if ((a >= 0) !== (b >= 0) || (a >= 0 && b < a)) fail('CONFLICT', '对齐管理区不完整');
       output = a >= 0 ? output.slice(0, a) + block + output.slice(b + END.length) : output + (output && !output.endsWith('\n') ? '\n' : '') + block + '\n';
+    }
+    const added = action === 'apply' ? unregisteredRows(output, project.alignment, decisions) : { decisions: [], findings: [], decided: [] };
+    if (added.decided.length) {
+      const list = added.decided.map(item => `${item.id}（表格写的是 ${item.status}）`).join('、');
+      const example = JSON.stringify({ decisions: added.decided.map(item => ({ id: item.id, status: 'pending' })) });
+      fail('INPUT', `表格里有未登记却已写了裁决状态的行：${list}。裁决必须经 decide 留痕：把这些行的状态改回 pending 后重发 apply（会自动登记为待裁决），用户裁决后再执行 ${command(['project', 'align', 'decide', '--root', target, '--input', '<JSON文件>'])}，JSON 形如 ${example}，status 填用户的裁决。`);
     }
     if (action === 'decide' && !decisions.length) fail('INPUT', '需要 decisions');
     if (action === 'suggest' && !findings.length) fail('INPUT', '需要 findings');
@@ -333,13 +353,16 @@ async function updateAlignment(directory, root, input, action) {
     alignment.docPath = relative; alignment.docFingerprint = digest(output);
     const dm = new Map((alignment.decisions || []).map(i => [i.id, i]));
     for (const i of decisions) dm.set(i.id, { id: i.id, status: i.status, decidedAt: new Date().toISOString() });
+    for (const id of added.decisions) dm.set(id, { id, status: 'pending' });
     alignment.decisions = [...dm.values()];
     const fm = new Map((alignment.findings || []).map(i => [i.id, i]));
     for (const i of findings) fm.set(i.id, { id: i.id, status: 'pending' });
+    for (const id of added.findings) fm.set(id, { id, status: 'pending' });
     for (const i of decisions) if (fm.has(i.id)) fm.set(i.id, { id: i.id, status: i.status });
     alignment.findings = [...fm.values()];
     await refreshDirectory(alignment, target, relative);
-    return { status: action === 'apply' ? 'applied' : 'recorded', transactionId: tx.transactionId, docPath: relative, revision: session.revision };
+    const registered = [...added.decisions, ...added.findings];
+    return { status: action === 'apply' ? 'applied' : 'recorded', transactionId: tx.transactionId, docPath: relative, revision: session.revision, ...(registered.length ? { registered } : {}) };
   });
 }
 export const applyAlignment = (directory, root, input = {}) => updateAlignment(directory, root, input, 'apply');

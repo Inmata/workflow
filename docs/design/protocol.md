@@ -6,7 +6,7 @@
 
 状态根为 `--state-dir`，默认 `%LOCALAPPDATA%/workflow`（非 Windows 回退到用户数据目录）。状态文件升级为 `schemaVersion=2`，信号仍为 v1。首次持久化前把 v1 原始字节备份到 `migrations/`，中断任务迁为 suspended，裁剪无效会话归属。未知 schema 或损坏状态拒绝修改，hook 保守放行。锁通过独占创建获得，不按年龄抢活锁；锁释放保留诊断文件。后台学习的数据与配置见[学习协议](../learning.md)。
 
-项目保存 `projectId`、`root`（realpath）、`identity`（目录 dev/ino/birthtime 和 Git 公共目录）、`worktrees`、`knowledgeRoot`、`ownerSessionId`、`leadSessions`、`managedBlockHash`、`enabled`、`coexistenceMode`；可选 `alignment` 见下文“项目对齐”。同名、remote 相同、拷贝入口均不建立绑定。子目录识别遇到独立 `.git` 即停止继承；worktree 必须显式关联且核对公共目录。项目重绑需要显式 enable。`leadSessions` 只计未声明子角色的会话；多个 Lead 首次冲突时清空自动推定的知识负责人，显式 `project owner` 后才可共享写入。
+项目保存 `projectId`、`root`（realpath）、`identity`（目录 dev/ino/birthtime 和 Git 公共目录）、`worktrees`、`knowledgeRoot`、`managedBlockHash`、`enabled`、`coexistenceMode`；可选 `alignment` 见下文“项目对齐”。同名、remote 相同、拷贝入口均不建立绑定。子目录识别遇到独立 `.git` 即停止继承；worktree 必须显式关联且核对公共目录。项目重绑需要显式 enable。0.4.1 起取消知识负责人：同一项目的任何 Lead 会话都可共享写入，并发冲突由 baseline 指纹、写锁和事务恢复处理；旧状态里的 `ownerSessionId`、`leadSessions` 字段保留但不再使用。
 
 任务为项目级稳定 ID，记录 `goal`、`parentTaskId`、`lifecycle`、`repairIssued`、`deliveries`、`candidates`、`permissions`。任务 ID 只可经 signal 显式绑定；hook 不根据提示词猜任务，不把新用户回合自动视为新任务。任务由 `task-start` 建立，`task-end` 明确结束；完成可有知识待办。权限包含 `mode=write|read-only|plan` 和本任务资料相对路径 `allowedPaths`，不允许任意源代码或配置写入。
 
@@ -64,7 +64,7 @@ PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输�
 
 `knowledge inspect --project <root> --path <relative>` 输出 `{path,exists,content,fingerprint}`，缺文件 fingerprint=null。`knowledge apply` 输入身份字段与 `changes:[{path,baseline,content,responsibility,reason,evidence,candidateIds}]`、`candidates`。candidate 包含 `id,taskId,workPackage,conditions,finding,recommendation,evidence`。
 
-仅知识负责人、当前有效 write 任务及 allowedPaths 内非敏感 UTF-8 文本可写。禁止绝对路径、`..`、Git/客户端配置、凭据文件、二进制；遇到链接/硬链接拒绝自动写入并要求先核对目标。检查祖先 realpath 防目录链接逃逸。新文件必须有实际正文。非敏感声明和证据由 Lead 核对；插件拒绝常见凭据内容，不复制全仓或完整聊天。
+仅当前有效 write 任务及 allowedPaths 内非敏感 UTF-8 文本可写。禁止绝对路径、`..`、Git/客户端配置、凭据文件、二进制；遇到链接/硬链接拒绝自动写入并要求先核对目标。检查祖先 realpath 防目录链接逃逸。新文件必须有实际正文。非敏感声明和证据由 Lead 核对；插件拒绝常见凭据内容，不复制全仓或完整聊天。
 
 处理顺序：状态锁 → 校验当前身份/修订号 → 每目标文件锁 → 读取基线 → 保存前快照和后内容到本机事务目录并持久化 prepared → 再核指纹 → 同目录临时文件原子替换 → 记录 applied 指纹 → 持久化状态。每个文件独立，部分成功返回 partial；未成功项创建 knowledge-pending。单任务/候选稳定 ID 去重，同候选内容冲突拒绝，重复申请不追加相同经验。
 
@@ -74,7 +74,7 @@ PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输�
 
 ## 项目对齐
 
-对齐不新增 phase、不改 signal schema。`scan` 只读扫描项目并写本机索引，`status` 检查索引；`apply`、`decide`、`suggest` 需要有效身份、负责人、write 任务、目标 allowedPaths 与明确 baseline，使用共享写入事务。只读/计划任务即使对齐文件缺失也不能写。
+对齐不新增 phase、不改 signal schema。`scan` 只读扫描项目并写本机索引，`status` 检查索引；`apply`、`decide`、`suggest` 需要有效身份、write 任务、目标 allowedPaths 与明确 baseline，使用共享写入事务。只读/计划任务即使对齐文件缺失也不能写。
 
 索引保存 `schemaVersion`、`generatedAt`、`docPath`、`docFingerprint`、`files`（`path/size/mtimeMs/kind`）、`directories`（索引文件父目录的 `path/mtimeMs`）、`decisions` 与 `findings`（只存 ID、状态和裁决时间）。扫描收集文档文本和工具链入口，排除 `.git`、`node_modules`、`bin`、`obj`、`dist`、`build`、`work`、`release-staging`、`.workflow`、缓存和临时目录；默认 300 个文件，`--max-files` 最大 300。符号链接、硬链接和目录逃逸不进入索引，在 `skipped` 报告原因。每个文件只取大小和 mtime，不读正文；对齐文档自身不进入索引，避免写回后自判过期。
 

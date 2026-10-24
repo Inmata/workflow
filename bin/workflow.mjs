@@ -16,7 +16,7 @@ import { installSchedule, removeSchedule, schedulePreview, tick } from '../src/s
 import { learningDoctor, onboardProject, removeProject } from '../src/onboard.mjs';
 import { cliPath } from '../src/entry.mjs';
 
-const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'max-files', 'skip-learning', 'help']);
+const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'max-files', 'skip-learning', 'enable-learning', 'help']);
 function argumentsFor(argv) {
   const options = {}, commands = [];
   for (let index = 0; index < argv.length; index++) {
@@ -24,7 +24,7 @@ function argumentsFor(argv) {
     if (!value.startsWith('--')) { commands.push(value); continue; }
     const key = value.slice(2);
     if (!allowed.has(key) || Object.hasOwn(options, key)) fail('ARGUMENT', `未知或重复参数 --${key}`);
-    if (['help', 'global', 'now', 'skip-learning'].includes(key)) { options[key] = true; continue; }
+    if (['help', 'global', 'now', 'skip-learning', 'enable-learning'].includes(key)) { options[key] = true; continue; }
     if (!argv[index + 1] || argv[index + 1].startsWith('--')) fail('ARGUMENT', `参数 --${key} 缺少值`);
     options[key] = argv[++index];
   }
@@ -41,11 +41,10 @@ const help = {
   usage: 'node bin/workflow.mjs <命令> [--state-dir <本机状态目录>]',
   commands: [
     'install --agent codex|claude [--user-dir <宿主配置目录>]', 'uninstall --agent codex|claude', 'doctor [--agent codex|claude] [--project <目录>]',
-    'project onboard --root <目录> [--owner <sessionId>] [--skip-learning]（推荐：先全部预检，通过才接入并扫描）',
+    'project onboard --root <目录> [--enable-learning|--skip-learning]（推荐：先全部预检，通过才接入并扫描；--enable-learning 同时启用后台复盘并注册计划任务，须用户在终端执行）',
     'project remove --root <目录>（清除本机绑定、计划任务、管理区和本机数据；项目内资料只列出不删）',
-    'project enable --root <目录> [--owner <sessionId>] [--coexistence-mode bounded|pending-only]',
+    'project enable --root <目录> [--coexistence-mode bounded|pending-only]',
     'project disable --root <目录>', 'project attach-worktree --project <projectId> --root <目录>',
-    'project owner --project <projectId> --session <sessionId>',
     'project align scan|status --root <目录> [--max-files N]',
     'project align apply|decide|suggest --root <目录> --input <JSON文件>',
     'context --role lead|worker|reviewer [--project <目录>] [--session <sessionId>]',
@@ -101,12 +100,12 @@ async function main() {
     return showTask(await readState(directory), root, options.task);
   }
   if (command === 'project') {
-    if (action === 'onboard') { if (!options.root) fail('ARGUMENT', 'onboard 需要明确 --root'); return onboardProject(directory, options.root, { owner: options.owner, coexistenceMode: options['coexistence-mode'], skipLearning: options['skip-learning'] }); }
+    if (action === 'onboard') { if (!options.root) fail('ARGUMENT', 'onboard 需要明确 --root'); if (options['enable-learning'] && options['skip-learning']) fail('ARGUMENT', '--enable-learning 与 --skip-learning 不能同时使用'); return onboardProject(directory, options.root, { coexistenceMode: options['coexistence-mode'], skipLearning: options['skip-learning'], enableLearning: options['enable-learning'] }); }
     if (action === 'remove') { if (!options.root) fail('ARGUMENT', 'remove 需要明确 --root'); return removeProject(directory, options.root); }
-    if (action === 'enable') { if (!options.root) fail('ARGUMENT', 'enable 需要明确 --root'); return enableProject(directory, options.root, { owner: options.owner, coexistenceMode: options['coexistence-mode'] }); }
+    if (action === 'enable') { if (!options.root) fail('ARGUMENT', 'enable 需要明确 --root'); return enableProject(directory, options.root, { coexistenceMode: options['coexistence-mode'] }); }
     if (action === 'disable') { if (!options.root) fail('ARGUMENT', 'disable 需要明确 --root'); return disableProject(directory, options.root); }
     if (action === 'attach-worktree') { if (!options.project || !options.root) fail('ARGUMENT', '需要明确 --project ID 和 --root'); return attachWorktree(directory, options.project, options.root); }
-    if (action === 'owner') return setOwner(directory, options.project, options.session);
+    if (action === 'owner') return setOwner(directory, options.project);
     if (action === 'align') {
       if (subaction === 'scan') return scanAlignment(directory, root, { maxFiles: options['max-files'] });
       if (subaction === 'status') return alignmentStatus(directory, root);

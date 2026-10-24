@@ -275,7 +275,7 @@ export async function doctor(directory, root, { agent = 'codex', userDir } = {})
     version: record?.version || null,
     ...(agent === 'codex' ? { questionInDefaultMode: await codexQuestionFeature(userDir || (record?.configFile ? path.dirname(record.configFile) : undefined)) } : {}),
     activeTasks: Object.values(state.tasks).filter(task => task.lifecycle === 'active').map(task => task.taskId),
-    project: project ? { projectId: project.project.projectId, enabled: true, coexistenceMode: project.project.coexistenceMode, ownerSessionId: project.project.ownerSessionId } : null,
+    project: project ? { projectId: project.project.projectId, enabled: true, coexistenceMode: project.project.coexistenceMode } : null,
     pending: Object.values(state.pending).filter(item => item.status === 'open' && (!root || (project && item.projectId === project.project.projectId))).map(item => ({ pendingId: item.pendingId, kind: item.kind, reason: item.reason })),
     next: registered ? '使用当前 ACP 宿主核对 hooks/list 与 /hooks 信任，在新会话观察本插件回调；不要用全局 CLI 版本代替 ACP 版本' : '先核对安装/注册差异；测试始终使用临时 user-dir/state-dir',
   };

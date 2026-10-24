@@ -64,10 +64,11 @@ test('onboard → 对齐 → 裁决 → 启用学习 → remove 全流程无残�
   assert.ok(onboarded.next[0].commands.every(c => c.startsWith('node ') && c.includes('--root')));
   assert.ok(!calls.some(c => c.includes('-p')), '预检不得调用模型');
   assert.ok((await readFile(path.join(f.project, 'AGENTS.md'), 'utf8')).includes(BEGIN));
-  // 新会话：唯一 Lead 会话自动成为知识负责人，入口带版本与信号模板。
+  // 新会话：入口带版本与信号模板，不再有知识负责人字段；学习提示给用户终端执行的一步命令。
   const opened = await event(f, 'UserPromptSubmit');
   const injected = JSON.parse(opened.hookSpecificOutput.additionalContext.slice('workflow 入口：'.length));
-  assert.equal(injected.ownerSessionId, f.sessionId);
+  assert.equal(Object.hasOwn(injected, 'ownerSessionId'), false);
+  assert.ok(injected.instruction.includes('--enable-learning'));
   assert.ok(injected.version && injected.signal.command.includes('signal --base64'));
   assert.ok(injected.instruction.includes('learning doctor'));
   f.projectId = injected.projectId;
@@ -103,6 +104,32 @@ test('onboard → 对齐 → 裁决 → 启用学习 → remove 全流程无残�
   assert.ok(!(await readFile(path.join(f.project, 'AGENTS.md'), 'utf8')).includes(BEGIN));
   // 清除后可一步重新接入。
   assert.equal((await onboardProject(f.directory, f.project, { execute: fakeExecute() })).status, 'onboarded');
+});
+
+test('onboard --enable-learning 一次启用学习并注册计划任务；注册失败保留接入并给补跑命令', { skip: process.platform !== 'win32' }, async () => {
+  const f = await environment();
+  const calls = [];
+  // 真实 schtasks 对未注册任务的 /Query 返回非零。
+  const fresh = base => async (file, args) => file === 'schtasks.exe' && args[0] === '/Query' ? { code: 1, stdout: '', stderr: '' } : base(file, args);
+  const done = await onboardProject(f.directory, f.project, { enableLearning: true, execute: fresh(fakeExecute(calls)) });
+  assert.equal(done.status, 'onboarded', JSON.stringify(done));
+  assert.equal(done.learning.enabled, true);
+  assert.ok(done.learning.schedule.startsWith('workflow-learning-'));
+  assert.ok(calls.some(c => c[0] === 'schtasks.exe' && c.includes('/Create')));
+  assert.ok(!done.next.some(step => step.commands?.some(c => c.includes('--enable-learning'))));
+  const project = Object.values((await readState(f.directory)).projects)[0];
+  assert.equal(project.learning.enabled, true);
+  assert.equal(project.learning.schedule.taskName, done.learning.schedule);
+
+  const g = await environment();
+  const failing = async (file, args) => file === 'schtasks.exe' && args[0] === '/Create' ? { code: 1, stdout: '', stderr: '拒绝访问' } : fresh(fakeExecute())(file, args);
+  const partial = await onboardProject(g.directory, g.project, { enableLearning: true, execute: failing });
+  assert.equal(partial.status, 'onboarded');
+  assert.equal(partial.learning.enabled, true);
+  assert.equal(partial.learning.schedule, 'not-registered');
+  assert.ok(partial.next[0].step.includes('计划任务注册失败'));
+  assert.ok(partial.next[0].commands.some(c => c.includes('learning schedule install') && c.includes('--root')));
+  assert.equal(Object.values((await readState(g.directory)).projects)[0].learning.enabled, true, '学习已启用，只缺计划任务');
 });
 
 test('learning doctor 缺专用配置时警告并给出完整命令；--global 无需绑定', async () => {
@@ -171,17 +198,35 @@ test('插件在会话中途升级时提示开新会话；旧发布副本的入�
   assert.ok(accepted.hookSpecificOutput.additionalContext.startsWith('workflow 回执：{"accepted":true'), JSON.stringify(accepted));
 });
 
-test('多个 Lead 会话时 OWNER 报错给出指定命令；长时间无回合的会话不参与推定', async () => {
+test('两个 Lead 会话先后写同一对齐文件：都能写，旧指纹返回 CONFLICT；project owner 只兼容不生效', async () => {
   const f = await fixture({ autoOwner: true });
-  const other = { ...f, sessionId: 'session-2', turnId: 'turn-9' };
+  const other = { ...f, sessionId: 'session-2', turnId: 'turn-9', taskId: 'task-other' };
   await event(other, 'UserPromptSubmit');
-  let state = await readState(f.directory);
-  assert.equal(state.projects[f.projectId].ownerSessionId, null);
-  await start(f, { mode: 'write', allowedPaths: ['docs/WORKFLOW-ALIGNMENT.md'] });
-  await writeFile(path.join(f.project, 'WORKFLOW-ALIGNMENT.md'), '# 对齐\n');
-  await assert.rejects(applyAlignment(f.directory, f.project, { ...await identity(f), baseline: null, content: 'x' }), error => error.code === 'OWNER' && error.message.includes('project owner --project') && error.message.includes('2 个 Lead 会话'));
-  await mutate(f.directory, async current => { current.sessions[sessionKey(f.projectId, 'session-2')].lastSeenAt = '2000-01-01T00:00:00.000Z'; });
-  await event({ ...f, turnId: 'turn-3' }, 'UserPromptSubmit');
-  state = await readState(f.directory);
-  assert.equal(state.projects[f.projectId].ownerSessionId, f.sessionId);
+  const allowed = { mode: 'write', allowedPaths: ['WORKFLOW-ALIGNMENT.md'] };
+  await start(f, allowed);
+  await start(other, allowed);
+  const doc = path.join(f.project, 'WORKFLOW-ALIGNMENT.md');
+  await writeFile(doc, '# 对齐\n');
+  const before = digest(await readFile(doc));
+  assert.equal((await applyAlignment(other.directory, other.project, { ...await identity(other), baseline: before, content: '# 对齐\n另一会话' })).status, 'applied');
+  await assert.rejects(applyAlignment(f.directory, f.project, { ...await identity(f), baseline: before, content: '# 对齐\n本会话' }), { code: 'CONFLICT' });
+  assert.equal((await applyAlignment(f.directory, f.project, { ...await identity(f), baseline: digest(await readFile(doc)), content: '# 对齐\n本会话' })).status, 'applied');
+  const ignored = JSON.parse(cli(['project', 'owner', '--project', f.projectId, '--session', 'session-2', '--state-dir', f.directory]).stdout);
+  assert.equal(ignored.status, 'ignored');
+});
+
+test('apply 自动登记表格里新的 pending 行；未登记却写了裁决状态的行拒绝并给 decide 命令', async () => {
+  const f = await fixture();
+  await start(f, { mode: 'write', allowedPaths: ['WORKFLOW-ALIGNMENT.md'] });
+  const doc = path.join(f.project, 'WORKFLOW-ALIGNMENT.md');
+  const table = (heading, rows) => `\n## ${heading}\n\n| ID | 内容 | 状态 |\n| --- | --- | --- |\n${rows.map(([id, status]) => `| ${id} | x | ${status} |`).join('\n')}\n`;
+  const baseline = async () => { const bytes = await readFile(doc).catch(() => null); return bytes === null ? null : digest(bytes); };
+  const applied = await applyAlignment(f.directory, f.project, { ...await identity(f), baseline: await baseline(), content: '# 对齐\n' + table('待裁决差异', [['D1', 'pending']]) + table('结构建议', [['F1', 'pending']]) });
+  assert.deepEqual(applied.registered, ['D1', 'F1']);
+  const project = Object.values((await readState(f.directory)).projects)[0];
+  assert.deepEqual(project.alignment.decisions.map(d => [d.id, d.status]), [['D1', 'pending']]);
+  assert.deepEqual(project.alignment.findings.map(d => [d.id, d.status]), [['F1', 'pending']]);
+  const text = await readFile(doc, 'utf8');
+  await assert.rejects(applyAlignment(f.directory, f.project, { ...await identity(f), baseline: await baseline(), content: '# 对齐\n' + table('待裁决差异', [['D1', 'pending'], ['D2', 'accepted-project']]) }), error => error.code === 'INPUT' && error.message.includes('D2（表格写的是 accepted-project）') && error.message.includes('project align decide'));
+  assert.equal(await readFile(doc, 'utf8'), text, '拒绝时不写文档');
 });
