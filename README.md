@@ -135,16 +135,39 @@ node bin/workflow.mjs project align status --root "D:/你的项目"
 
 ## 升级
 
-修好代码或文档后，对已安装的每个宿主分别重新执行 `install`；只装了一个宿主时，只运行对应命令：
+升级不改项目文件，不动已接入项目的绑定、对齐文档、材料和经验。每台电脑各执行一次，先结束正在进行的任务（有活动任务时安装会拒绝升级）。以下命令假设本仓库在 `D:\git-repo\workflow`，路径不同时替换成实际目录。
+
+1. 拉取新版本：
 
 ```powershell
+cd D:\git-repo\workflow
+git pull
+```
+
+本插件没有运行时依赖，不需要 `npm install`。
+
+2. 对已安装的每个宿主分别重新执行 `install`，只装了一个宿主时只运行对应命令：
+
+```powershell
+cd D:\git-repo\workflow
 node bin/workflow.mjs install --agent claude
 node bin/workflow.mjs install --agent codex
 ```
 
-它会先算出新的发布摘要，复制到新的带摘要副本，完整性校验通过后才把 `current` 入口切换到新副本；hooks 命令字符串不变，宿主不需要重新信任。旧副本保留不动。两个宿主可以复用同一发布副本和同一入口，但安装命令只更新所选宿主的注册。有活动任务或未辨认事务时会拒绝升级并告诉你原因，等任务结束再来即可。
+它会先算出新的发布摘要，复制到新的带摘要副本，完整性校验通过后才把 `current` 入口切换到新副本；hooks 命令字符串不变，宿主一般不需要重新信任。旧副本保留不动。两个宿主可以复用同一发布副本和同一入口，但安装命令只更新所选宿主的注册。有活动任务或未辨认事务时会拒绝升级并告诉你原因，等任务结束再来即可。
 
-切换后按对应宿主核对 `/hooks` 与确认提示，然后开一个新会话观察第一次回调。
+3. 检查状态：
+
+```powershell
+node bin/workflow.mjs doctor --agent claude
+node bin/workflow.mjs doctor --agent codex
+```
+
+`integrity` 应为 `verified`，`version` 应为新版本号。然后在宿主的 `/hooks` 中核对 workflow 条目，Codex / Codeg 显示 `modified` 时按提示重新确认信任，再开一个新会话观察第一次回调。
+
+已接入的项目不需要重新 `onboard`。后台复盘的计划任务同样经 `current` 入口运行，升级后自动使用新版本，不必重建。另一台电脑上的项目尚未接入时，升级完成后再按[第 2 步](#第-2-步让项目接入)接入。
+
+各版本的变化见 GitHub Releases。
 
 ## 这些概念的关系
 
