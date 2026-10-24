@@ -9,7 +9,7 @@ const DISABLE = ['hooks', 'shell_tool', 'unified_exec', 'multi_agent', 'multi_ag
 const MANAGED_ONLY = ['unified_exec'];
 const psQuote = value => "'" + value.replaceAll("'", "''") + "'";
 export function commandFor(executable, args) {
-  if (process.platform === 'win32' && !executable.toLowerCase().endsWith('.exe')) return { executable: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-Command', '& ' + psQuote(executable) + ' ' + args.map(psQuote).join(' ')] };
+  if (process.platform === 'win32' && !executable.toLowerCase().endsWith('.exe')) return { executable: 'pwsh.exe', args: ['-NoProfile', '-NonInteractive', '-Command', '& ' + psQuote(executable) + ' ' + args.map(psQuote).join(' ')] };
   return { executable, args };
 }
 export async function runProcess(executable, args, options = {}) {
