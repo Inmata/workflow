@@ -43,7 +43,7 @@ for (const relative of codeFiles) {
   const result = spawnSync(process.execPath, ['--check', path.join(root, relative)], { encoding: 'utf8', windowsHide: true, timeout: 10000 });
   check(result.status === 0, `语法错误：${relative} ${result.stderr}`);
 }
-const documents = [...await walk('docs'), ...await walk('examples'), 'README.md'].filter(file => file.endsWith('.md'));
+const documents = [...await walk('docs'), ...await walk('examples'), 'README.md', 'README.en.md'].filter(file => file.endsWith('.md'));
 let links = 0;
 for (const relative of documents) {
   const text = await readFile(path.join(root, relative), 'utf8');

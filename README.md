@@ -1,5 +1,7 @@
 # workflow
 
+简体中文 | [English](README.en.md)
+
 workflow 是一套跨智能体的项目协作与知识维护规则。它解决三件事：**谁做什么**（Lead、Worker、Reviewer 的分工与边界）、**怎么收尾**（任务阶段与待恢复状态）、**怎么积累经验**（短材料持久保存、受限后台复盘、相关经验召回）。
 
 **Lead、Worker、Reviewer 是职责，角色不绑定客户端或模型。** Claude Code 可以担任 Lead，也可以担任 Worker 或 Reviewer；Codex、OpenCode、Pi 等同样按当前授权和实际能力分工。具体安排由用户已确认的角色、可用工具和任务需要决定。
@@ -236,4 +238,4 @@ Claude Code 侧的字段差异（`prompt_id` 回合、`StopFailure` 中断、std
 
 任务可声明分流（`operation-only` / `lead-direct` / `delegated`）。分工任务用批量 `packages` 信号记录工作包账本，`task-end` 时核对必要包终态、审查版本与交付版本一致、验证绑定最终版本；缺项可显式豁免。门禁只核对 Lead 声明记录的一致性，不证明审查或测试真实发生。委派子会话用 `role-claim` 声明角色，避免被计为第二个 Lead。宿主能力（子会话区分、各模式提问工具）记录在适配文档的能力表中，未实测的格子标 unknown。
 
-workflow 管项目开发知识；document-learning 独立管理个人文档经验。两者不共享库或信号。跨会话持久保存限同一电脑；项目配置与正式知识可随 Git 走，本机材料不自动跨电脑同步。
+workflow 管项目开发知识；[document-learning](https://github.com/Inmata/document-learning) 独立管理个人文档经验。两者不共享库或信号。跨会话持久保存限同一电脑；项目配置与正式知识可随 Git 走，本机材料不自动跨电脑同步。
