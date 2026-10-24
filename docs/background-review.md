@@ -6,7 +6,7 @@
 
 ## 1. 首次启用
 
-1. 选执行器并写好模型配置，见[第 2 节](#2-执行器与模型配置)。
+1. 按需调整额度，选执行器并写好模型配置，见[第 2 节](#2-配置额度执行器与模型)。
 2. 只做检查，不调用模型：
 
    ```powershell
@@ -32,18 +32,44 @@
 
 项目接入后，Lead 会在会话入口提示你做第 3 步。不需要后台复盘时执行 `learning disable`，提示不再出现。
 
-## 2. 执行器与模型配置
+## 2. 配置：额度、执行器与模型
 
-配置分两层：个人默认在 `<状态根>/config.json`，项目覆盖在项目的 `.workflow/config.json`，项目层优先。写一个只含要改字段的 JSON 文件，再用命令写入：
+配置分两层：个人默认在 `<状态根>/config.json`（默认 `%LOCALAPPDATA%/workflow/config.json`），项目覆盖在项目的 `.workflow/config.json`，项目层优先。
+
+### 用命令修改
+
+只写要改的字段，没写的保持原值。在 PowerShell 里可以直接把 JSON 用管道传进去：
 
 ```powershell
+$wf = "$env:LOCALAPPDATA/workflow/current/bin/workflow.mjs"   # 安装副本的固定入口
 # 个人默认（所有项目）
-node bin/workflow.mjs learning config set --global --input learning-config.json
-# 只改当前项目
-node bin/workflow.mjs learning config set --root "D:/项目" --input learning-config.json
+'{"maxRunsPerDay":2,"maxBatchItems":15}' | node $wf learning config set --global
+# 只改某个项目
+'{"maxRunsPerDay":3}' | node $wf learning config set --root "D:/项目"
 # 查看最终值和每项来源
-node bin/workflow.mjs learning config get --root "D:/项目"
+node $wf learning config get --root "D:/项目"
 ```
+
+字段多时也可以写进 UTF-8 文件，用 `--input learning-config.json` 传入。`get` 的 `values` 是最终生效值，`sources` 标明每项来自 `project`（项目）、`personal`（个人）还是 `default`（内置默认）。
+
+- 取值会先校验，超出范围直接拒绝，原配置不变。
+- 已注册计划任务的项目，`set` 后会按新间隔自动重新注册。直接手改 JSON 也可以，下次复盘就读新值，只是检查间隔要等下一次旧间隔检查才同步。
+- 恢复默认：`model`、`profile`、`reasoningEffort`、`claudeSettings` 设为 `null` 即恢复继承；数字字段不能设 `null`，填回默认值。
+- 安装副本版本较旧时，新字段（如 `executor`、`claudeSettings`）会被当成未知配置项拒绝，先重新执行 `install`。
+
+### 额度与频率
+
+| 字段 | 默认 | 作用 |
+| --- | --- | --- |
+| `maxRunsPerDay` | 1 | 每个项目每天最多调用几次模型，失败也计入 |
+| `maxBatchItems` | 10 | 一次最多处理几份材料 |
+| `pendingThreshold` | 10 | 攒到几份材料触发 |
+| `maxPendingAgeHours` | 24 | 最旧材料放了多少小时也触发 |
+| `checkIntervalMinutes` | 15 | 计划任务多久检查一次（检查本身不调用模型） |
+| `maxRunMinutes` | 30 | 单次复盘最长时间，超时终止 |
+| `maxInputChars` | 24000 | 每批材料的字符预算 |
+
+完整取值范围见[配置](learning.md#配置)。
 
 密钥和网关地址只放在个人配置或 CLI 自己的配置文件里，不要写进项目 `.workflow/config.json`，后者会随 Git 提交。
 
