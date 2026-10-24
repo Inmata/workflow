@@ -73,8 +73,7 @@ node bin/workflow.mjs learning config set --global --input learning-config.json
     feedback/                     # shown / adopted，不能当成成功
     knowledge-index.json          # 可重建的检索索引
     work/<运行ID>/                # 隔离执行目录、schema、模型结果
-    scheduler.ps1                 # 显式注册时才生成
-    scheduler.xml
+    scheduler.xml                 # 显式注册时才生成
 ```
 
 知识文件含 JSON 元数据和可读正文。项目配置与正式知识可随 Git 走；原始材料、临时反例和运行记录只在采集的电脑上。换会话不会丢材料，换电脑不会自动同步原始材料。本版本不实现跨电脑合并本机状态，也不自动提交知识变更。
@@ -154,6 +153,8 @@ node bin/workflow.mjs learning schedule install --root "D:/项目"
 ```
 
 Windows 计划任务只在当前用户登录时运行，无常驻插件服务。定时检查本身不调用模型；达到条件、没有活动业务任务或只读/计划会话、没有未恢复作业且额度足够才启动。所有项目共用一个复盘锁，单项目每日限额分别计算。
+
+任务经 `conhost.exe --headless` 直接启动 Node（需 Windows 10 1809+），运行时不弹终端窗口、不抢焦点，也不受 PowerShell 执行策略限制。0.3.0 及更早版本登记的任务经 PowerShell 脚本启动，在执行策略为 `Restricted` 的电脑上根本不会运行；升级后请重新执行一次 `learning schedule install`。旧任务若能正常运行，也会在下一次定时检查时自动按新定义重新注册。
 
 首版执行器为 Codex CLI，前台宿主可以是 Claude Code。执行器继承原有认证、路由和 profile，前置检查禁用 hooks、MCP、工具、联网搜索与递归代理；无法核实隔离时停止。分析在项目外临时目录、只读沙箱中进行，只收结构化提案。正式文件由程序核对指纹、保存快照后写入；模型没有直接改项目的职责。`doctor` 只检查能力，不能证明真实模型、额度或认证可用。
 

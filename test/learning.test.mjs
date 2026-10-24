@@ -210,6 +210,9 @@ test('Windows 调度预览和模拟注册使用固定路径，禁用后检查不
   const f = await fixture(); await setLearningEnabled(f.directory, f.project, true);
   const preview = await schedulePreview(f.directory, f.project, entry);
   assert.match(preview.xml, /<StartBoundary>[^<]+Z<\/StartBoundary>/);
+  // 计划任务若直接起控制台程序，默认终端会先弹出窗口并抢焦点。
+  assert.match(preview.xml, /<Command>conhost\.exe<\/Command><Arguments>--headless &quot;[^<]*node[^<]*&quot; /i);
+  assert.ok(!preview.xml.includes('powershell'));
   assert.ok(preview.command.includes('--state-dir'));
   const calls = [];
   const execute = async (file, args) => { calls.push(args); return { code: args.includes('/Query') ? 1 : 0 }; };
