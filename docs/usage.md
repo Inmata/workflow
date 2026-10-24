@@ -25,8 +25,10 @@ node bin/workflow.mjs doctor --agent codex
 然后接入项目，并在该目录用所选宿主打开新主会话，当前主会话承担 Lead：
 
 ```powershell
-node bin/workflow.mjs project enable --root "D:/某个已明确允许接入的项目"
+node bin/workflow.mjs project onboard --root "D:/某个已明确允许接入的项目"
 ```
+
+`onboard` 先核对安装版本、目录与 Git 身份、`AGENTS.md` 残留管理区和后台复盘执行器，全部通过才写入；不通过时不写任何东西，并列出每个问题的修复命令。不打算启用后台复盘时加 `--skip-learning`。解绑用 `project remove --root <项目>`：删除计划任务、AGENTS 管理区、本机状态记录和数据目录，项目内的对齐文件与 `.workflow/` 只列出不删除。底层的 `project enable` 仍可用，但不做预检。
 
 同一本机目录的绑定由两种宿主共用，切换已安装适配的宿主不必重新接入。多个独立 Lead 对共享资料的写入归属仍需明确，见下文的 `project owner`。
 

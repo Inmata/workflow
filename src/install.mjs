@@ -69,7 +69,7 @@ async function currentTarget(directory) {
   try { return await realpath(currentRoot(directory)); } catch { return null; }
 }
 // 快照内容与 fixed 入口指向必须同时正确，才算完整。
-async function releaseIntegrity(directory, record) {
+export async function releaseIntegrity(directory, record) {
   if (!await verifyRelease(record)) return 'unavailable';
   if (record.currentRoot) {
     const target = await currentTarget(directory);
@@ -109,7 +109,7 @@ const hostFor = agent => {
   return host;
 };
 // codex 保留 state.install 作为旧版兼容权威记录，installs.codex 只是同步镜像；claude 只写 installs.claude。
-function installRecord(state, agent) {
+export function installRecord(state, agent) {
   state.installs ||= {};
   if (state.install && !state.installs.codex) state.installs.codex = state.install;
   return agent === 'codex' ? state.install || state.installs.codex || null : state.installs[agent] || null;

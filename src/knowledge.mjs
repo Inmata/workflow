@@ -2,11 +2,18 @@ import { digest, fail, mutate, readState } from './store.mjs';
 import { currentIdentity, identifier, pendingFor, taskKey, textField } from './protocol.mjs';
 import { resolveProject } from './projects.mjs';
 import { document, safeDocument, writeDocuments } from './documents.mjs';
+import { command } from './entry.mjs';
 export { safeDocument } from './documents.mjs';
 
 export function authorizeWrite(state, input) {
   const identity = currentIdentity(state, input);
-  if (identity.project.ownerSessionId !== input.sessionId) fail('OWNER', '知识负责人未明确或不是当前会话');
+  const { project } = identity;
+  if (project.ownerSessionId !== input.sessionId) {
+    // 给出原因和可直接执行的命令；多个 Lead 会话同时在线时不自动推定，由用户指定。
+    const leads = project.leadSessions || [];
+    const why = project.ownerSessionId ? `当前负责人是会话 ${project.ownerSessionId}` : leads.length > 1 ? `有 ${leads.length} 个 Lead 会话同时在线，无法自动推定` : '负责人尚未确定';
+    fail('OWNER', `知识负责人不是当前会话（${why}）。由用户确认后执行 ${command(['project', 'owner', '--project', project.projectId, '--session', input.sessionId])} 指定本会话，再重发。`);
+  }
   if (identity.task.permissions.mode !== 'write' || ['plan', 'read-only'].includes(identity.session.permissionMode)) fail('PERMISSION', '计划或只读任务不能写知识');
   return identity;
 }
@@ -59,6 +66,7 @@ export async function applyKnowledge(directory, input, options = {}) {
     let pending;
     if (tx.status !== 'applied') pending = pendingFor(state, project.projectId, task.taskId, '资料变更尚未完整写入', 'knowledge-pending', { transactionId: tx.transactionId });
     session.revision++;
+    session.revisionReason = '知识写入';
     return { transactionId: tx.transactionId, status: tx.status, files: tx.files, revision: session.revision, ...(pending ? { pendingId: pending.pendingId } : {}) };
   });
 }
@@ -82,6 +90,7 @@ export async function createPending(directory, input) {
     textField(input.reason, 'reason');
     const pending = pendingFor(state, input.projectId, task.taskId, input.reason, 'knowledge-pending', { evidence: input.evidence || [], candidateIds: input.candidateIds || [] });
     session.revision++;
+    session.revisionReason = '知识待办';
     return { pendingId: pending.pendingId, revision: session.revision };
   });
 }

@@ -1,8 +1,9 @@
 import path from 'node:path';
-import { canonical, digest, id, mutate, observeHost, readState, samePath } from './store.mjs';
+import { canonical, digest, id, mutate, observeHost, readState, samePath, within } from './store.mjs';
 import { acceptSignal, interrupt, openTurn, pendingFor, sessionKey, stop, taskKey, TERMINAL_PACKAGE } from './protocol.mjs';
 import { resolveProject } from './projects.mjs';
-import { PRODUCT_ROOT, projectContext } from './context.mjs';
+import { projectContext, signalUsage } from './context.mjs';
+import { PRODUCT_ROOT, PRODUCT_VERSION } from './entry.mjs';
 
 export const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'Interrupt', 'SessionEnd', 'PreCompact', 'PostCompact'];
 // Claude Code 没有 Interrupt 事件；StopFailure 承担中断保存语义，其余同名事件语义与 Codex 对齐。
@@ -93,13 +94,21 @@ export function signalCommand(event) {
   // PowerShell 的直接调用可以带前导调用运算符 `&`；组合命令仍由 shellTokens 拒绝。
   return raw.trim().replace(/^&\s+/, '');
 }
-export async function isSignalInvocation(event, entry = path.join(PRODUCT_ROOT, 'bin', 'workflow.mjs')) {
+// 升级前开的会话可能仍持有旧发布副本的入口；状态根 releases 下的副本同属本插件，signal 输出格式一致，照常接受。
+async function ownEntry(file, entry, directory) {
+  const actual = await canonical(file);
+  if (samePath(actual, await canonical(entry))) return true;
+  if (!directory || path.basename(actual) !== 'workflow.mjs') return false;
+  const releases = await canonical(path.join(directory, 'releases')).catch(() => null);
+  return Boolean(releases && within(releases, actual) && path.relative(releases, actual).split(path.sep).length === 3);
+}
+export async function isSignalInvocation(event, entry = path.join(PRODUCT_ROOT, 'bin', 'workflow.mjs'), directory) {
   if (!['Bash', 'exec_command', 'PowerShell', 'powershell', 'pwsh'].includes(event.tool_name)) return false;
   const tokens = shellTokens(signalCommand(event));
   if (!tokens || tokens.length < 3) return false;
   const nodeToken = tokens[0];
   if (!['node', 'node.exe'].includes(nodeToken.toLowerCase()) && !samePath(path.resolve(nodeToken), process.execPath)) return false;
-  try { if (!samePath(await canonical(tokens[1]), await canonical(entry))) return false; } catch { return false; }
+  try { if (!await ownEntry(tokens[1], entry, directory)) return false; } catch { return false; }
   let index = 2;
   while (tokens[index] === '--state-dir') index += 2;
   return tokens[index] === 'signal';
@@ -107,7 +116,8 @@ export async function isSignalInvocation(event, entry = path.join(PRODUCT_ROOT, 
 function isComposedSignal(event) {
   if (!['Bash', 'exec_command', 'PowerShell', 'powershell', 'pwsh'].includes(event.tool_name)) return false;
   const raw = signalCommand(event);
-  return typeof raw === 'string' && /workflow\.mjs["']?\s+(?:--state-dir\s+\S+\s+)*signal\b/.test(raw) && shellTokens(raw) === null;
+  // 入口可能藏在变量里（$wf=...; node $wf signal），命令里同时出现本插件入口和 signal --base64 就回执。
+  return typeof raw === 'string' && /workflow\.mjs/.test(raw) && /\bsignal\s+--base64\b/.test(raw);
 }
 export async function handleHook(directory, event, options = {}) {
   try {
@@ -119,7 +129,7 @@ export async function handleHook(directory, event, options = {}) {
     if (process.env.WORKFLOW_REVIEW === '1') return {};
     if (isSubagentEvent(event)) return {};
     const question = QUESTION_TOOLS[agent].includes(event.tool_name);
-    const signalInvocation = name === 'PostToolUse' && await isSignalInvocation(event, options.entry);
+    const signalInvocation = name === 'PostToolUse' && await isSignalInvocation(event, options.entry, directory);
     // 组合命令里的本插件 signal 不接受，但要回执说明，否则模型只能从 revision 反推信号丢失。
     const nearMiss = name === 'PostToolUse' && !signalInvocation && isComposedSignal(event);
     const delegationStatus = name === 'PostToolUse' && DELEGATION_STATUS_TOOLS.includes(event.tool_name);
@@ -146,14 +156,19 @@ export async function handleHook(directory, event, options = {}) {
       observeHost(state, agent, name, { at: new Date().toISOString(), sessionId: event.session_id, source: options.synthetic ? 'synthetic' : 'callback' });
       if (session && event.event_id && session.observed[event.event_id]) return {};
       if (name === 'SessionStart' || name === 'UserPromptSubmit') {
+        // 会话开始后插件被重装：hook 已是新版本，但会话里已读的指引和命令仍是旧的，提示开新会话。
+        const seenVersion = session?.productVersion;
         if (name === 'UserPromptSubmit') {
           // 每个用户回合开新票据；Claude 入口缺 prompt_id 时用本机值，后续事件按当前回合关联，不因标识缺失丢弃回执。
           session = openTurn(state, project, event.session_id, hostTurn || id('turn'), { compact: event.source === 'compact', eventId: event.event_id, mode: event.permission_mode });
         } else if (hostTurn) {
           session = openTurn(state, project, event.session_id, hostTurn, { compact: event.source === 'compact', eventId: event.event_id, mode: event.permission_mode });
         }
+        if (session) session.productVersion = seenVersion || PRODUCT_VERSION;
+        const upgraded = seenVersion && PRODUCT_VERSION && seenVersion !== PRODUCT_VERSION ? `workflow 插件已从 ${seenVersion} 升级到 ${PRODUCT_VERSION}：本会话早先读取的指引和命令可能已过时，请提醒用户开新会话；继续工作时以下面的入口为准。
+` : '';
         // 已 role-claim 的委派会话注入对应角色的最小上下文，不再给 Lead 指引。
-        return contextOutput(name, `workflow 入口：${JSON.stringify(await projectContext(state, resolved, session?.role || 'lead', event.session_id, { directory, incremental: true }))}`);
+        return contextOutput(name, `${upgraded}workflow 入口：${JSON.stringify(await projectContext(state, resolved, session?.role || 'lead', event.session_id, { directory, incremental: true }))}`);
       }
       if (!session) return {};
       // Codex 严格核对 turn_id；Claude 的 prompt_id 只在入口事件保证存在，后续事件按当前回合关联。
@@ -163,9 +178,13 @@ export async function handleHook(directory, event, options = {}) {
         if (question) {
           session.phase = 'waiting-user';
           session.revision += 1;
+          session.revisionReason = '提问工具';
           return {};
         }
-        if (nearMiss) return contextOutput(name, 'workflow 未接受：signal 须单独直接调用（不加 cd、&&、;、管道或重定向），请用当前 identity 重发');
+        if (nearMiss) {
+          const usage = signalUsage();
+          return contextOutput(name, `workflow 未接受：signal 须单独直接调用，本次命令含组合、变量或不是本插件入口。${usage.rule} 请用当前 identity 按此格式重发：${usage.command}`);
+        }
         if (!signalInvocation) return {};
         const signals = extractSignals(event.tool_response);
         if (signals.length !== 1) return contextOutput(name, 'workflow 未接受：输出未包含唯一的本插件信号');
@@ -178,7 +197,9 @@ export async function handleHook(directory, event, options = {}) {
           // A rejected signal must not persist a partially changed phase or candidate disposition.
           for (const key of Object.keys(state)) delete state[key];
           Object.assign(state, before);
-          result = { accepted: false, reason: error.code || 'INPUT', message: error.message, ...(error.missing ? { missing: error.missing } : {}) };
+          // 附当前 revision 与回合，代理据此直接重发，不必再猜状态。
+          const current = state.sessions[sessionKey(project.projectId, event.session_id)];
+          result = { accepted: false, reason: error.code || 'INPUT', message: error.message, ...(error.missing ? { missing: error.missing } : {}), expectedRevision: current?.revision, turnId: current?.turnId };
         }
         return contextOutput(name, `workflow 回执：${JSON.stringify(result)}`);
       }

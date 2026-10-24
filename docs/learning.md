@@ -17,10 +17,10 @@
 | `maxInputChars` | 24000 | 本批材料与相关旧知识的 JSON 字符预算 |
 | `retrievalLimit` / `retrievalChars` | 5 / 2500 | 默认召回条数和摘要字符预算 |
 | `executor` | `codex` | 后台复盘用的 CLI：`codex` 或 `claude`；可按项目分别设置 |
-| `model` / `reasoningEffort` / `profile` | `null` | 继承所选 CLI 的现有配置；可分别覆盖。Claude 的 `reasoningEffort` 对应 `--effort`；`profile` 只对 Codex 生效 |
+| `model` / `reasoningEffort` / `profile` | `null` | 推荐 Codex 设 `profile` 为专用 profile（如 `workflow-learning`），后台复盘用自己的 provider 和模型；`null` 表示明确选择继承所选 CLI 的主配置。Claude 的 `reasoningEffort` 对应 `--effort`；`profile` 只对 Codex 生效 |
 | `executorPath` | `codex` | Codex CLI 命令名或绝对路径 |
 | `claudePath` | `claude` | Claude Code CLI 命令名或绝对路径；建议填 `claude.exe` 绝对路径 |
-| `claudeSettings` | `null` | 后台复盘专用的 Claude 设置文件绝对路径；`null` 继承 `~/.claude/settings.json` |
+| `claudeSettings` | `null` | 后台复盘专用的 Claude 设置文件绝对路径，Claude 执行器推荐设置；`null` 表示明确选择继承 `~/.claude/settings.json` |
 | `timeZone` | 当前系统时区 | 每日额度采用的时区 |
 
 数量与年龄条件满足任一项即可；明确用户纠正或已验证反例可以提前触发，但仍受每日额度、权限与并发限制。当天只有 9 份就结束工作，材料仍在磁盘；第二天新会话和下次检查都能找到。电脑关机或用户未登录时不会运行，恢复后再检查，不承诺固定时刻完成。
@@ -48,7 +48,7 @@ node bin/workflow.mjs learning config get --root "D:/项目"
 node bin/workflow.mjs learning config set --global --input learning-config.json
 ```
 
-`get` 同时返回每项来源。无效值会拒绝，旧配置保留。CLI 修改后同步已登记调度；直接改 JSON 时下次旧间隔检查才同步。运行中的作业沿用启动配置。`model` 填你当前账户或自定义路由支持的模型 ID，`reasoningEffort` 填该模型支持的值；插件不猜测模型可用性。`null` 恢复继承，不复制登录凭据、不新增 API Key。真实调用仍消耗现有账户额度。
+`get` 同时返回每项来源。无效值会拒绝，旧配置保留。CLI 修改后同步已登记调度；直接改 JSON 时下次旧间隔检查才同步。运行中的作业沿用启动配置。`model` 填你当前账户或自定义路由支持的模型 ID，`reasoningEffort` 填该模型支持的值；插件不猜测模型可用性。设为 `null` 表示明确选择继承前台配置，插件不复制登录凭据、不新增 API Key；未设专用配置时 `learning doctor` 和 `project onboard` 会给出警告与登记命令。真实调用仍消耗现有账户额度。
 
 ### 切换执行器
 
@@ -58,11 +58,11 @@ node bin/workflow.mjs learning config set --global --input learning-config.json
 { "executor": "claude", "claudePath": "C:/Users/<你>/AppData/Roaming/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe", "model": "group/hardworker", "profile": null }
 ```
 
-两种 CLI 的模型名、effort 取值不一定通用，切换时一并核对。Claude Code 以 `-p --bare --setting-sources user --strict-mcp-config --tools "" --no-session-persistence` 运行：只读用户设置以继承 `env` 里的认证与路由（如 `ANTHROPIC_BASE_URL`、`ANTHROPIC_API_KEY`），跳过 hooks、插件、MCP 与 CLAUDE.md，不提供任何工具，结果经 `--json-schema` 结构化返回。`--bare` 只认 API Key 或 `apiKeyHelper`，不读 OAuth 登录；用订阅登录的账户需改用 API Key 或本地网关。预检不调用模型，运行时再核对初始化事件和 hook 事件，出现工具、MCP 或 hook 回调即不采用结果。
+两种 CLI 的模型名、effort 取值不一定通用，切换时一并核对。Claude Code 以 `-p --bare --strict-mcp-config --tools "" --no-session-persistence` 运行：设了 `claudeSettings` 时用 `--setting-sources "" --settings <文件>`，只由专用文件决定认证与路由；明确选择继承时用 `--setting-sources user`，读取 `~/.claude/settings.json` 的 `env`（如 `ANTHROPIC_BASE_URL`、`ANTHROPIC_API_KEY`）。两种方式都跳过 hooks、插件、MCP 与 CLAUDE.md，不提供任何工具，结果经 `--json-schema` 结构化返回。`--bare` 只认 API Key 或 `apiKeyHelper`，不读 OAuth 登录；用订阅登录的账户需改用 API Key 或本地网关。预检不调用模型，运行时再核对初始化事件和 hook 事件，出现工具、MCP 或 hook 回调即不采用结果。
 
 #### Claude 专用模型配置
 
-不想沿用前台 Claude Code 的网关、密钥和模型时，另建一个设置文件，例如 `%LOCALAPPDATA%/workflow/claude-learning.json`：
+推荐的默认做法：后台复盘不沿用前台 Claude Code 的网关、密钥和模型，另建一个专用设置文件，例如 `%LOCALAPPDATA%/workflow/claude-learning.json`：
 
 ```json
 { "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:3425", "ANTHROPIC_API_KEY": "<密钥>" }, "model": "group/hardworker" }

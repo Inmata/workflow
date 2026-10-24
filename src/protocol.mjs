@@ -29,7 +29,7 @@ export function openTurn(state, project, sessionId, turnId, { compact = false, e
     projectId: project.projectId, sessionId, taskId: session?.taskId || null, turnId,
     ticket: id('ticket'), interruptEpoch: session?.interruptEpoch || 0,
     revision: (session?.revision || 0) + 1, phase: 'unknown', interrupted: false,
-    permissionMode: mode || 'unknown', eventId: eventId || null,
+    permissionMode: mode || 'unknown', eventId: eventId || null, lastSeenAt: new Date().toISOString(),
     receipts: session?.receipts || {}, observed: session?.observed || {}, contextKey: session?.contextKey,
     // role-claim 声明的子角色跨回合保留；未声明的会话按 Lead 处理。
     ...(session?.role ? { role: session.role, packageId: session.packageId || null } : {}),
@@ -38,9 +38,17 @@ export function openTurn(state, project, sessionId, turnId, { compact = false, e
   refreshOwners(state, project);
   return session;
 }
+// 宿主窗口直接关闭时可能收不到 SessionEnd；超过此时长没有新回合的会话不再参与负责人推定。
+export const LEAD_IDLE_MS = 12 * 60 * 60 * 1000;
+function liveLead(session, project, now) {
+  if (session.projectId !== project.projectId || session.interrupted || !session.ticket || session.role) return false;
+  const seen = Date.parse(session.lastSeenAt || '');
+  return Number.isFinite(seen) && now - seen <= LEAD_IDLE_MS;
+}
 export function refreshOwners(state, project) {
   // 只有 Lead 会话参与知识负责人推定；已声明 Worker/Reviewer 的委派会话不能清空负责人。
-  project.leadSessions = Object.values(state.sessions).filter(s => s.projectId === project.projectId && !s.interrupted && s.ticket && !s.role).map(s => s.sessionId);
+  const now = Date.now();
+  project.leadSessions = Object.values(state.sessions).filter(s => liveLead(s, project, now)).map(s => s.sessionId);
   const owner = Object.values(state.sessions).find(s => s.projectId === project.projectId && s.sessionId === project.ownerSessionId);
   if (project.ownerExplicit && owner?.interrupted) { project.ownerExplicit = false; project.ownerSessionId = null; }
   if (!project.ownerExplicit) project.ownerSessionId = project.leadSessions.length === 1 ? project.leadSessions[0] : null;
@@ -52,7 +60,7 @@ export function currentIdentity(state, payload, { replay = false, requireTask = 
   const session = state.sessions[sessionKey(payload.projectId, payload.sessionId)];
   if (!project?.enabled || !session) fail('IDENTITY', '项目或当前会话未接入');
   if (session.turnId !== payload.turnId || session.ticket !== payload.ticket || session.interruptEpoch !== payload.interruptEpoch || session.interrupted) fail('STALE', '票据或回合已失效');
-  if (!replay && session.revision !== payload.expectedRevision) fail('REVISION', '状态已变化，请读取当前 context');
+  if (!replay && session.revision !== payload.expectedRevision) fail('REVISION', `状态已变化（当前 revision=${session.revision}，你给的是 ${payload.expectedRevision}，最近变化：${session.revisionReason || '信号或写入'}）：把 expectedRevision 改为 ${session.revision} 后重发，或读取当前 context`);
   const task = state.tasks[taskKey(payload.projectId, payload.taskId)];
   if (requireTask && (!task || session.taskId !== payload.taskId || task.lifecycle !== 'active')) fail('TASK', '任务未开始、已结束或不属于当前会话');
   return { project, session, task };
@@ -236,6 +244,7 @@ export function acceptSignal(state, payload) {
     }
   }
   session.revision += 1;
+  session.revisionReason = `信号 ${payload.action}`;
   const result = { accepted: true, revision: session.revision, taskId: session.taskId, phase: session.phase, ...extra };
   session.receipts[payload.signalId] = { hash: digest(JSON.stringify(payload)), result };
   return result;
@@ -248,6 +257,7 @@ export function interrupt(state, project, session) {
   if (!session || session.interrupted) return;
   session.interruptEpoch += 1;
   session.revision += 1;
+  session.revisionReason = '会话中断';
   session.ticket = null;
   session.interrupted = true;
   session.phase = 'unknown';

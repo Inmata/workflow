@@ -59,12 +59,14 @@ node bin/workflow.mjs doctor --agent codex
 ### 第 2 步：让项目接入
 
 ```powershell
-node bin/workflow.mjs project enable --root "D:/你的项目"
+node bin/workflow.mjs project onboard --root "D:/你的项目"
 ```
 
-这一步是在项目根目录插入一段很短的 `AGENTS.md` 管理区，并建立本机绑定。它保留你原有的 AGENTS 正文，不要求你补 README、spec 或计划，也不会创建空 LESSONS。
+`onboard` 先把所有检查做完再写入：宿主是否已安装且版本一致、目录和 Git 身份、`AGENTS.md` 里有没有复制来的或残留的管理区、后台复盘执行器能否启动（只核对能力，不调用模型）。任何一项不过都不写入，并一次列出所有问题和可直接复制的修复命令；执行器缺专用配置时给出警告和登记命令。不打算启用后台复盘时加 `--skip-learning`。
 
-接入后，在已安装适配的 Claude Code 或 Codex 中打开**该项目里的新会话**，插件才会给出对应上下文。同一本机目录共用项目绑定，切换这两个宿主无需重复 `project enable`。多个独立 Lead 并行时，共享资料的写入需明确[知识负责人](docs/usage.md#安装与首次接入)。
+检查通过后，它在项目根目录插入一段很短的 `AGENTS.md` 管理区，建立本机绑定并完成首次对齐扫描，最后列出启用后台复盘的完整命令。它保留你原有的 AGENTS 正文，不要求你补 README、spec 或计划，也不会创建空 LESSONS。
+
+接入后，在已安装适配的 Claude Code 或 Codex 中打开**该项目里的新会话**，插件才会给出对应上下文。同一本机目录共用项目绑定，切换这两个宿主无需重复接入。多个独立 Lead 并行时，共享资料的写入需明确[知识负责人](docs/usage.md#安装与首次接入)。
 
 首次会话，Lead 会先做一次[项目对齐](docs/alignment.md)：只读扫描项目文档和工具链，把权威资料、验收入口、项目约定与 workflow 默认的差异写进 `docs/WORKFLOW-ALIGNMENT.md`。项目做法与 workflow 默认不同时**逐条问你**，不擅自按任何一方执行；发现文档过期或结构问题时只报告，批准后才改。之后会话开始和每个用户回合只 stat 索引，文件变了才增量更新，不会重扫整个项目。
 
@@ -101,7 +103,7 @@ node bin/workflow.mjs project align status --root "D:/你的项目"
 
 假设你使用 Claude Code 作为 Lead，项目 `D:/my-app` 要修一个登录超时的问题：
 
-1. 你安装 `--agent claude`，执行 `project enable --root "D:/my-app"`，并在该目录开一个 Claude Code 新会话。
+1. 你安装 `--agent claude`，执行 `project onboard --root "D:/my-app"`，并在该目录开一个 Claude Code 新会话。
 2. 你说"登录 30 秒后超时，帮我查一下并修掉"。
 3. Claude Code 作为 Lead 读项目现有资料，确认这是真实代码修复，通过可用且已授权的委派工具派一个 Worker 改实现并自测。
 4. Worker 交回差异和测试结果，Lead 派独立 Reviewer 做只读审查。
@@ -119,15 +121,17 @@ node bin/workflow.mjs project align status --root "D:/你的项目"
 | --- | --- |
 | 看 Claude 安装/信任/回调状态 | `node bin/workflow.mjs doctor --agent claude` |
 | 看 Codex 安装/信任/回调状态 | `node bin/workflow.mjs doctor --agent codex` |
-| 项目接入 | `node bin/workflow.mjs project enable --root "<项目>"` |
+| 项目接入（预检后一步完成） | `node bin/workflow.mjs project onboard --root "<项目>"` |
 | 项目停用 | `node bin/workflow.mjs project disable --root "<项目>"` |
+| 彻底解绑（计划任务、管理区、本机记录） | `node bin/workflow.mjs project remove --root "<项目>"` |
+| 核对后台复盘执行器（无需项目） | `node bin/workflow.mjs learning doctor --global` |
 | 项目对齐扫描 | `node bin/workflow.mjs project align scan --root "<项目>"` |
 | 检查对齐是否过期 | `node bin/workflow.mjs project align status --root "<项目>"` |
 | 查看角色上下文 | `node bin/workflow.mjs context --role lead --project "<项目>"` |
 | 撤销 Codex 注册 | `node bin/workflow.mjs uninstall --agent codex` |
 | 撤销 Claude 注册 | `node bin/workflow.mjs uninstall --agent claude` |
 
-`disable` 只停用单个项目，管理区没被手改才撤下；`uninstall` 只移除该宿主上本插件自己的 handler，其他插件、发布副本、项目资料和经验全部保留。
+`disable` 只停用单个项目，管理区没被手改才撤下；`remove` 在此基础上删除计划任务、本机状态记录和数据目录，项目里的对齐文件与 `.workflow/` 只列出不删除；`uninstall` 只移除该宿主上本插件自己的 handler，其他插件、发布副本、项目资料和经验全部保留。
 
 ## 升级
 
@@ -171,7 +175,7 @@ npm run demo
 
 ## 当前状态与限制
 
-当前版本 0.3.1，包含协作规则、CLI、两种宿主的 hooks 适配、持久材料、分级知识、配置与可选后台复盘，以及分流、工作包账本、完成门禁和角色声明；真实宿主验收记录见 [0.3.0 验收](docs/acceptance.md#6-030-真实宿主验收)。安装器用内容摘要区分副本。
+当前版本 0.4.0，包含协作规则、CLI、两种宿主的 hooks 适配、持久材料、分级知识、配置与可选后台复盘，以及分流、工作包账本、完成门禁和角色声明；真实宿主验收记录见 [0.3.0 验收](docs/acceptance.md#6-030-真实宿主验收)。安装器用内容摘要区分副本。
 
 宿主是否实际执行 hook、压缩后的上下文行为以及外部编码代理的具体接续能力，会随 Codex / Codeg / Claude Code 版本变化。`doctor --agent <宿主>` 能核对对应注册与副本完整性；以 `/hooks` 和真实会话回调确认宿主侧状态。
 

@@ -41,20 +41,21 @@
 只写要改的字段，没写的保持原值。在 PowerShell 里可以直接把 JSON 用管道传进去：
 
 ```powershell
-$wf = "$env:LOCALAPPDATA/workflow/current/bin/workflow.mjs"   # 安装副本的固定入口
 # 个人默认（所有项目）
-'{"maxRunsPerDay":2,"maxBatchItems":15}' | node $wf learning config set --global
+'{"maxRunsPerDay":2,"maxBatchItems":15}' | node "$env:LOCALAPPDATA/workflow/current/bin/workflow.mjs" learning config set --global
 # 只改某个项目
-'{"maxRunsPerDay":3}' | node $wf learning config set --root "D:/项目"
+'{"maxRunsPerDay":3}' | node "$env:LOCALAPPDATA/workflow/current/bin/workflow.mjs" learning config set --root "D:/项目"
 # 查看最终值和每项来源
-node $wf learning config get --root "D:/项目"
+node "$env:LOCALAPPDATA/workflow/current/bin/workflow.mjs" learning config get --root "D:/项目"
 ```
+
+这些配置命令可以用管道和变量；`signal` 不行，它必须是一条单独的直接调用，格式以会话入口给出的 `signal.command` 为准。
 
 字段多时也可以写进 UTF-8 文件，用 `--input learning-config.json` 传入。`get` 的 `values` 是最终生效值，`sources` 标明每项来自 `project`（项目）、`personal`（个人）还是 `default`（内置默认）。
 
 - 取值会先校验，超出范围直接拒绝，原配置不变。
 - 已注册计划任务的项目，`set` 后会按新间隔自动重新注册。直接手改 JSON 也可以，下次复盘就读新值，只是检查间隔要等下一次旧间隔检查才同步。
-- 恢复默认：`model`、`profile`、`reasoningEffort`、`claudeSettings` 设为 `null` 即恢复继承；数字字段不能设 `null`，填回默认值。
+- 恢复默认：`model`、`profile`、`reasoningEffort`、`claudeSettings` 设为 `null` 表示明确选择继承前台 CLI 配置（不推荐，`learning doctor` 会给出警告）；数字字段不能设 `null`，填回默认值。
 - 安装副本版本较旧时，新字段（如 `executor`、`claudeSettings`）会被当成未知配置项拒绝，先重新执行 `install`。
 
 ### 额度与频率
@@ -104,7 +105,7 @@ profile 叠加在 `~/.codex/config.toml` 之上：provider 的地址和认证在
 ```
 
 - 设了 `claudeSettings`：不读 `~/.claude/settings.json`，也不继承宿主进程的 `ANTHROPIC_*`、`CLAUDE_CODE_*` 变量，网关、密钥和模型只由这个文件决定。文件里不能有 `hooks`、`enabledPlugins`、`mcpServers`。
-- 设为 `null`：继承 `~/.claude/settings.json` 的 `env`，和前台 Claude Code 用同一套认证与路由。
+- 设为 `null`：明确选择继承 `~/.claude/settings.json` 的 `env`，和前台 Claude Code 用同一套认证与路由。不推荐，`learning doctor` 会给出警告。
 - Claude 执行器以 `--bare` 运行，只认 API Key 或 `apiKeyHelper`，不读订阅登录（OAuth）。订阅账户需改用 API Key 或本地网关。
 
 学习配置里的 `model` 和 `reasoningEffort` 优先于 CLI 配置；设为 `null` 时沿用 profile 或设置文件里的值。Claude 的 `reasoningEffort` 对应 `--effort`，`profile` 只对 Codex 生效。

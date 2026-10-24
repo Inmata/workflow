@@ -26,7 +26,7 @@ async function hasGitBoundary(root) {
     cursor = parent;
   }
 }
-function identityEqual(a, b) {
+export function identityEqual(a, b) {
   return JSON.stringify(a.directory) === JSON.stringify(b.directory) && (a.gitCommon === null ? b.gitCommon === null : b.gitCommon !== null && samePath(a.gitCommon, b.gitCommon));
 }
 export async function resolveProject(state, cwd) {
@@ -59,12 +59,12 @@ export async function resolveProject(state, cwd) {
 async function readGitMarker(directory) {
   try { await lstat(path.join(directory, '.git')); return true; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
 }
-async function agentsFile(root) {
+export async function agentsFile(root) {
   const file = path.join(root, 'AGENTS.md');
   try { const info = await lstat(file); if (info.isSymbolicLink() || info.nlink > 1) fail('LINK', 'AGENTS 是链接；先核对真实目标'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   return file;
 }
-function blockFrom(text) {
+export function blockFrom(text) {
   const start = text.indexOf(BEGIN);
   const end = text.indexOf(END);
   if (start < 0 && end < 0) return null;

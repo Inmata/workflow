@@ -9,14 +9,14 @@ import { alignmentStatus, applyAlignment, decideAlignment, scanAlignment, sugges
 import { handleHook } from '../src/hooks.mjs';
 import { gateMissing, taskKey } from '../src/protocol.mjs';
 import { AGENTS, doctor, install, uninstall } from '../src/install.mjs';
-import { capture, feedback, migrateCandidates, reviseKnowledge, selectKnowledge, projectData } from '../src/learning.mjs';
+import { capture, feedback, migrateCandidates, reviseKnowledge, selectKnowledge } from '../src/learning.mjs';
 import { learningConfig, projectFor, setLearningConfig, setLearningEnabled } from '../src/learning-config.mjs';
 import { acknowledgeNotices, learningStatus, recoverReview, reviewOnce } from '../src/review.mjs';
 import { installSchedule, removeSchedule, schedulePreview, tick } from '../src/scheduler.mjs';
-import { EXECUTORS } from '../src/runner.mjs';
-import { fileURLToPath } from 'node:url';
+import { learningDoctor, onboardProject, removeProject } from '../src/onboard.mjs';
+import { cliPath } from '../src/entry.mjs';
 
-const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'max-files', 'help']);
+const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'max-files', 'skip-learning', 'help']);
 function argumentsFor(argv) {
   const options = {}, commands = [];
   for (let index = 0; index < argv.length; index++) {
@@ -24,7 +24,7 @@ function argumentsFor(argv) {
     if (!value.startsWith('--')) { commands.push(value); continue; }
     const key = value.slice(2);
     if (!allowed.has(key) || Object.hasOwn(options, key)) fail('ARGUMENT', `未知或重复参数 --${key}`);
-    if (['help', 'global', 'now'].includes(key)) { options[key] = true; continue; }
+    if (['help', 'global', 'now', 'skip-learning'].includes(key)) { options[key] = true; continue; }
     if (!argv[index + 1] || argv[index + 1].startsWith('--')) fail('ARGUMENT', `参数 --${key} 缺少值`);
     options[key] = argv[++index];
   }
@@ -41,6 +41,8 @@ const help = {
   usage: 'node bin/workflow.mjs <命令> [--state-dir <本机状态目录>]',
   commands: [
     'install --agent codex|claude [--user-dir <宿主配置目录>]', 'uninstall --agent codex|claude', 'doctor [--agent codex|claude] [--project <目录>]',
+    'project onboard --root <目录> [--owner <sessionId>] [--skip-learning]（推荐：先全部预检，通过才接入并扫描）',
+    'project remove --root <目录>（清除本机绑定、计划任务、管理区和本机数据；项目内资料只列出不删）',
     'project enable --root <目录> [--owner <sessionId>] [--coexistence-mode bounded|pending-only]',
     'project disable --root <目录>', 'project attach-worktree --project <projectId> --root <目录>',
     'project owner --project <projectId> --session <sessionId>',
@@ -54,7 +56,7 @@ const help = {
     'knowledge capture|feedback|revise --input <JSON文件> [--root <项目>]',
     'knowledge select|explain --query <任务描述> [--path <当前路径>] [--root <项目>]',
     'learning config get|set [--global] [--input <JSON文件>] [--root <项目>]',
-    'learning enable|disable|status|migrate|doctor|acknowledge [--root <项目>]',
+    'learning enable|disable|status|migrate|acknowledge [--root <项目>]', 'learning doctor [--global] [--root <项目>]（不调用模型）',
     'learning review [--now] [--root <项目>]（真实模型调用）',
     'learning recover --run <运行ID> [--root <项目>]（不调用模型）',
     'learning schedule preview|install|remove [--root <项目>]',
@@ -99,6 +101,8 @@ async function main() {
     return showTask(await readState(directory), root, options.task);
   }
   if (command === 'project') {
+    if (action === 'onboard') { if (!options.root) fail('ARGUMENT', 'onboard 需要明确 --root'); return onboardProject(directory, options.root, { owner: options.owner, coexistenceMode: options['coexistence-mode'], skipLearning: options['skip-learning'] }); }
+    if (action === 'remove') { if (!options.root) fail('ARGUMENT', 'remove 需要明确 --root'); return removeProject(directory, options.root); }
     if (action === 'enable') { if (!options.root) fail('ARGUMENT', 'enable 需要明确 --root'); return enableProject(directory, options.root, { owner: options.owner, coexistenceMode: options['coexistence-mode'] }); }
     if (action === 'disable') { if (!options.root) fail('ARGUMENT', 'disable 需要明确 --root'); return disableProject(directory, options.root); }
     if (action === 'attach-worktree') { if (!options.project || !options.root) fail('ARGUMENT', '需要明确 --project ID 和 --root'); return attachWorktree(directory, options.project, options.root); }
@@ -139,14 +143,13 @@ async function main() {
     if (action === 'recover') return recoverReview(directory, root, options.run);
     if (action === 'tick') return tick(directory, root);
     if (action === 'doctor') {
-      const project = await projectFor(directory, root);
-      const { values } = await learningConfig(directory, project);
-      const capability = await EXECUTORS[values.executor].preflight(values, path.join(projectData(directory, project), 'preflight'));
-      return { status: capability.status, modelInvocation: false, executor: values.executor, model: values.model || '继承 CLI 配置', profile: values.executor === 'codex' ? values.profile : null, ...(values.executor === 'claude' ? { claudeSettings: values.claudeSettings || '继承用户设置' } : {}), dataDirectory: directory };
+      // --global 只看个人配置，接入前也能用；否则按项目配置覆盖后的最终值核对。
+      const project = options.global ? null : await projectFor(directory, root);
+      return learningDoctor(directory, project, { root: project?.root });
     }
     if (action === 'schedule') {
-      if (subaction === 'preview') return schedulePreview(directory, root, fileURLToPath(import.meta.url));
-      if (subaction === 'install') return installSchedule(directory, root, fileURLToPath(import.meta.url));
+      if (subaction === 'preview') return schedulePreview(directory, root, cliPath());
+      if (subaction === 'install') return installSchedule(directory, root, cliPath());
       if (subaction === 'remove') return removeSchedule(directory, root);
     }
   }

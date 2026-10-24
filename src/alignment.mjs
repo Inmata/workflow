@@ -17,6 +17,10 @@ const DOC_EXTENSIONS = new Set(['.md', '.txt', '.rst', '.adoc']);
 const TOOL_FILES = new Set(['package.json', 'Makefile', 'makefile', 'pyproject.toml', 'Cargo.toml', 'go.mod']);
 const SKIP_DIRS = new Set(['.git', 'node_modules', 'bin', 'obj', 'dist', 'build', 'work', 'releases', 'release-staging', 'backups', 'vendor', '.vs', '.idea', 'coverage', 'target', 'tmp', '.workflow']);
 const DECISION_STATUS = new Set(['pending', 'accepted-project', 'accepted-workflow', 'accepted-change', 'rejected']);
+// 结构建议只有采纳改动、拒绝或暂缓三种结论；accepted-project/accepted-workflow 只用于差异。
+const FINDING_STATUS = new Set(['pending', 'accepted-change', 'rejected']);
+const DECISION_HEADING = '## 待裁决差异';
+const FINDING_HEADING = '## 结构建议';
 const MAX_FILES = 300;
 const MAX_DEPTH = 4;
 const CHECK_BUDGET_MS = 150;
@@ -118,24 +122,53 @@ export async function scanAlignment(directory, root, options = {}) {
   return { status: 'scanned', projectId: project.projectId, docPath, files, skipped: output.skipped, truncated: output.truncated };
 }
 
-// 文档是权威：Lead 可能直接写表格而不经过 decide/suggest，待办数量以文档为准并与 state 合并。
-function pendingRows(text, heading) {
-  const ids = new Set();
-  if (!text) return ids;
+// 小节正文范围：到下一个二级标题或管理区结束标记为止。
+function sectionRange(text, heading) {
   const start = text.indexOf(heading);
-  if (start < 0) return ids;
-  const next = text.indexOf('\n## ', start + heading.length);
-  const body = text.slice(start, next < 0 ? text.length : next);
-  for (const line of body.split('\n')) {
+  if (start < 0) return null;
+  const bodyStart = start + heading.length;
+  const ends = [text.indexOf('\n## ', bodyStart), text.indexOf('\n' + END, bodyStart)].filter(index => index >= 0);
+  return [bodyStart, ends.length ? Math.min(...ends) : text.length];
+}
+const rowId = cells => { const id = cells[1]; return id && id !== 'ID' && !/^:?-+:?$/.test(id) ? id : null; };
+// 表格行 ID → 状态列（倒数第二个分隔单元）。待办数量以文档为准并与 state 合并；状态不一致单独报告。
+function rowStatuses(text, heading) {
+  const rows = new Map();
+  const range = text && sectionRange(text, heading);
+  if (!range) return rows;
+  for (const line of text.slice(...range).split('\n')) {
     if (!line.startsWith('|')) continue;
     const cells = line.split('|').map(cell => cell.trim());
-    if (cells.length < 4) continue;
-    const id = cells[1];
-    if (!id || id === 'ID' || /^-+$/.test(id)) continue;
-    if (cells[cells.length - 2] !== 'pending') continue;
-    ids.add(id);
+    if (cells.length < 4 || !rowId(cells)) continue;
+    rows.set(rowId(cells), cells[cells.length - 2]);
   }
-  return ids;
+  return rows;
+}
+// 表格状态与 decide 登记的状态不一致：多半是手改了表格，或写了协议外的状态值。
+function mismatches(rows, recorded, allowed) {
+  const output = [];
+  for (const [id, status] of rows) {
+    const index = recorded.get(id)?.status || '未登记';
+    if (status === index || (status === 'pending' && index === '未登记')) continue;
+    output.push({ id, document: status, index, ...(allowed.has(status) ? {} : { invalid: true }) });
+  }
+  return output;
+}
+// 目录 mtime 只说明有增删或改名；重新列目录，只有出现未收录的候选资料才算过期。
+async function addedEntries(root, item, known, docPath) {
+  const relative = item.path === '.' ? '' : item.path;
+  const depth = relative ? relative.split('/').length : 0;
+  const entries = await readdir(path.join(root, relative), { withFileTypes: true }).catch(() => []);
+  for (const entry of entries) {
+    const child = relative ? `${relative}/${entry.name}` : entry.name;
+    if (entry.isFile() && candidate(entry.name) && child !== docPath && !known.files.has(child)) return true;
+    if (entry.isDirectory() && !SKIP_DIRS.has(entry.name) && depth < MAX_DEPTH && !known.directories.has(child)) {
+      const output = { files: [], directories: [], skipped: [], limit: 2, truncated: false };
+      await walk(root, child, depth + 1, output).catch(() => {});
+      if (output.files.some(file => file.path !== docPath)) return true;
+    }
+  }
+  return false;
 }
 
 async function inspect(project, options = {}) {
@@ -156,16 +189,23 @@ async function inspect(project, options = {}) {
     else if (info.size !== file.size) changed.push({ path: file.path, reason: 'size' });
     else if (Math.abs(info.mtimeMs - file.mtimeMs) > 1) changed.push({ path: file.path, reason: 'mtime' });
   }
+  const known = { files: new Set((alignment.files || []).map(file => file.path)), directories: new Set((alignment.directories || []).map(item => item.path)) };
   for (const item of alignment.directories || []) {
+    if (Date.now() > deadline) break;
     const info = await lstat(path.join(project.root, item.path)).catch(() => null);
-    if (!info) { directoryChanged.push(item.path); continue; }
-    if (Math.abs(info.mtimeMs - item.mtimeMs) > 1) directoryChanged.push(item.path);
+    // 目录整体消失时，其中文件已计入 missing；这里只记录出现新资料的目录。
+    if (!info || Math.abs(info.mtimeMs - item.mtimeMs) <= 1) continue;
+    if (await addedEntries(project.root, item, known, alignment.docPath)) directoryChanged.push(item.path);
   }
   const doc = await readText(path.join(project.root, alignment.docPath));
+  const decisionRows = rowStatuses(doc, DECISION_HEADING), findingRows = rowStatuses(doc, FINDING_HEADING);
+  const recordedDecisions = new Map((alignment.decisions || []).map(item => [item.id, item]));
+  const recordedFindings = new Map((alignment.findings || []).map(item => [item.id, item]));
   const decisions = new Set((alignment.decisions || []).filter(item => item.status === 'pending').map(item => item.id));
-  for (const item of pendingRows(doc, '## 待裁决差异')) decisions.add(item);
+  for (const [id, status] of decisionRows) if (status === 'pending') decisions.add(id);
   const findings = new Set((alignment.findings || []).filter(item => item.status === 'pending').map(item => item.id));
-  for (const item of pendingRows(doc, '## 结构建议')) findings.add(item);
+  for (const [id, status] of findingRows) if (status === 'pending') findings.add(id);
+  const mismatch = [...mismatches(decisionRows, recordedDecisions, DECISION_STATUS), ...mismatches(findingRows, recordedFindings, FINDING_STATUS)];
   return {
     path: alignment.docPath,
     exists: true,
@@ -177,6 +217,7 @@ async function inspect(project, options = {}) {
     directoryChanged: directoryChanged.slice(0, CHECK_MAX_CHANGES),
     pendingDecisions: decisions.size,
     pendingFindings: findings.size,
+    mismatch: mismatch.slice(0, CHECK_MAX_CHANGES),
   };
 }
 
@@ -230,13 +271,21 @@ async function refreshDirectory(alignment, target, relative) {
 }
 
 
+// 只改差异与建议两个小节里该 ID 的状态列；手改过或写错的状态也一并纠正为登记值。
 function resolvePending(text, item) {
-  return text.split('\n').map(line => {
-    if (!line.startsWith('|') || lineKey(line) !== item.id) return line;
-    const cells = line.split('|');
-    if (cells[cells.length - 2]?.trim() === 'pending') cells[cells.length - 2] = ' ' + item.status + ' ';
-    return cells.join('|');
-  }).join('\n');
+  for (const heading of [DECISION_HEADING, FINDING_HEADING]) {
+    const range = sectionRange(text, heading);
+    if (!range) continue;
+    const body = text.slice(...range).split('\n').map(line => {
+      if (!line.startsWith('|') || lineKey(line) !== item.id) return line;
+      const cells = line.split('|');
+      if (cells.length < 4) return line;
+      cells[cells.length - 2] = ' ' + item.status + ' ';
+      return cells.join('|');
+    }).join('\n');
+    text = text.slice(0, range[0]) + body + text.slice(range[1]);
+  }
+  return text;
 }
 async function updateAlignment(directory, root, input, action) {
   const target = await canonical(root);
@@ -263,8 +312,12 @@ async function updateAlignment(directory, root, input, action) {
     }
     if (action === 'decide' && !decisions.length) fail('INPUT', '需要 decisions');
     if (action === 'suggest' && !findings.length) fail('INPUT', '需要 findings');
+    const findingIds = new Set([...(project.alignment?.findings || []).map(i => i.id), ...rowStatuses(output, FINDING_HEADING).keys()]);
     for (const item of decisions) {
-      if (!item?.id || !DECISION_STATUS.has(item.status)) fail('INPUT', '裁决状态无效');
+      if (!item?.id) fail('INPUT', '裁决需要 id');
+      const finding = findingIds.has(item.id);
+      const allowed = finding ? FINDING_STATUS : DECISION_STATUS;
+      if (!allowed.has(item.status)) fail('INPUT', `${item.id} 的裁决状态 ${JSON.stringify(item.status)} 无效：${finding ? '结构建议' : '差异'}只能用 ${[...allowed].join('、')}`);
       output = resolvePending(output, item);
       output = replaceSection(output, '## 已裁决记录', item.id + ' ' + item.status + '：' + (item.reason || '未填写理由'));
     }
@@ -274,6 +327,7 @@ async function updateAlignment(directory, root, input, action) {
     }
     const tx = await writeDocuments(directory, state, save, project, [{ path: relative, baseline: input.baseline, content: output, reason: '项目对齐 ' + action, responsibility: 'Lead', evidence: input.evidence || ['task:' + task.taskId] }], { taskId: task.taskId, sessionId: session.sessionId });
     session.revision++;
+    session.revisionReason = '项目对齐 ' + action;
     if (tx.status !== 'applied') return { status: tx.status, transactionId: tx.transactionId, files: tx.files };
     const alignment = project.alignment;
     alignment.docPath = relative; alignment.docFingerprint = digest(output);

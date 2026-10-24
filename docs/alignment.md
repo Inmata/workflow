@@ -61,7 +61,7 @@ docs/plans 或 docs/archive 下的历史计划（当前任务直接相关除外�
 （状态：pending / accepted-project / accepted-workflow / accepted-change / rejected）
 ## 结构建议
 | ID | 问题 | 位置 | 建议改法 | 状态 |
-（状态：pending / accepted / rejected）
+（状态：pending / accepted-change / rejected）
 ## 已裁决记录
 - 日期、ID、双方理由、决定、复核条件
 
@@ -76,7 +76,7 @@ docs/plans 或 docs/archive 下的历史计划（当前任务直接相关除外�
 - 两种做法的实际影响
 - 你的建议及理由
 
-我选择后，把结果写进"已裁决记录"，并把该条状态改为对应值。
+我选择后，用 `project align decide` 登记（它同时更新表格状态和"已裁决记录"），不要手改表格里的状态列。
 待裁决项已保存在表格里，可以跨回合回答：本回合没问完或我没回答，
 下一回合继续问或 decide，不要求一个回合内处理完。
 计划模式下只扫描、提问和起草，不写文件；回到可写模式后再 apply/decide。Codex 的 Plan 协作模式不在 hook 中报 plan，插件按活动任务声明的 `permissions.mode=plan` 提示，Lead 须如实声明。
@@ -89,7 +89,7 @@ docs/plans 或 docs/archive 下的历史计划（当前任务直接相关除外�
 ### 5. 结构建议（只报告，不改）
 发现文档过期、重复、职责重叠、缺索引、链接失效时，
 写进"结构建议"，不要直接修改、重命名或移动任何文件。
-我批准后，才在后续任务里执行修改，并把状态改为 accepted。
+我批准后，才在后续任务里执行修改，并用 decide 把状态登记为 accepted-change（拒绝为 rejected）。结构建议不能用 accepted-project / accepted-workflow，decide 会拒绝并列出合法值。
 
 ### 6. 写作规则
 - 只写能从文件确认的事实；找不到写「未找到」，不推断。
@@ -172,11 +172,12 @@ hook 在 SessionStart 和 UserPromptSubmit 返回的 context 中包含：
   "missing": [],
   "directoryChanged": [],
   "pendingDecisions": 2,
-  "pendingFindings": 1
+  "pendingFindings": 1,
+  "mismatch": []
 }
 ```
 
-Lead 还会得到 `alignmentGuide` 路径。`exists=false` 表示尚未对齐；`stale=true` 表示索引中的文件大小、mtime 或所在目录变化，需要只重读变化文件和新增资料；待裁决数量提醒 Lead 不要遗忘未决差异。`pendingDecisions`/`pendingFindings` 以对齐文档中的表格为准（Lead 直接写表格也算），再与本机索引状态合并，因此绕过 `decide`/`suggest` 也不会漏掉待办。旧项目没有索引字段时按未对齐处理，不报错。hook 只读状态和对齐文档，不自动写项目文件。
+Lead 还会得到 `alignmentGuide` 路径。`exists=false` 表示尚未对齐；`stale=true` 表示索引中的文件大小、mtime 或所在目录变化，需要只重读变化文件和新增资料；待裁决数量提醒 Lead 不要遗忘未决差异。`pendingDecisions`/`pendingFindings` 以对齐文档中的表格为准（Lead 直接写表格也算），再与本机索引状态合并，因此绕过 `decide`/`suggest` 也不会漏掉待办。`mismatch` 列出表格状态与 decide 登记值不一致的行（`document` 是表格里的值，`index` 是登记值，`invalid: true` 表示表格里的值不是合法状态），多半是手改了表格：按用户的裁决重新 decide，decide 会把表格状态纠正为登记值。目录 mtime 变化时会重新列目录，只有出现未收录的候选资料（文档、脚本、工具链文件）才计入 `directoryChanged`；新增图片等其他文件或目录被删除不算。旧项目没有索引字段时按未对齐处理，不报错。hook 只读状态和对齐文档，不自动写项目文件。
 
 ## 边界
 
