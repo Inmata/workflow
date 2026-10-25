@@ -4,7 +4,7 @@ import path from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { applyKnowledge, inspectKnowledge } from '../src/knowledge.mjs';
 import { readState } from '../src/store.mjs';
-import { deliver, emit, event, fixture, git, identity, start } from './helpers.mjs';
+import { assertRoundCheck, deliver, emit, event, fixture, git, identity, start } from './helpers.mjs';
 
 test('V03 临时本地 Git 远端：指定提交 push、快进 pull、查看为 operation-only，用户未提交文件保留', async () => {
   const f = await fixture({ git: true });
@@ -42,7 +42,7 @@ test('V12 反证修订旧经验、快照可追溯、下一任务读到新条件�
   assert.equal(tx.status, 'applied');
   assert.equal(await readFile(tx.files[0].snapshot, 'utf8'), old);
   await deliver(f, { status: 'updated', transactionIds: [tx.transactionId] });
-  assert.deepEqual(await event(f, 'Stop'), {});
+  assertRoundCheck(await event(f, 'Stop'));
   await emit(f, { action: 'task-end' });
   f.turnId = 'followup-turn';
   f.taskId = 'followup-task';

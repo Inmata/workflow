@@ -7,7 +7,8 @@ import { getContext } from '../src/context.mjs';
 import { applyKnowledge, createPending, inspectKnowledge, recoverTransaction } from '../src/knowledge.mjs';
 import { alignmentStatus, applyAlignment, decideAlignment, scanAlignment, suggestAlignment } from '../src/alignment.mjs';
 import { handleHook } from '../src/hooks.mjs';
-import { gateMissing, taskKey } from '../src/protocol.mjs';
+import { gateReport, taskKey } from '../src/protocol.mjs';
+import { checkSpecs } from '../src/spec.mjs';
 import { AGENTS, doctor, install, uninstall } from '../src/install.mjs';
 import { capture, feedback, migrateCandidates, reviseKnowledge, selectKnowledge } from '../src/learning.mjs';
 import { learningConfig, projectFor, setLearningConfig, setLearningEnabled } from '../src/learning-config.mjs';
@@ -48,7 +49,8 @@ const help = {
     'project align scan|status --root <目录> [--max-files N]',
     'project align apply|decide|suggest --root <目录> --input <JSON文件>',
     'context --role lead|worker|reviewer [--project <目录>] [--session <sessionId>]',
-    'task show --task <taskId> [--project <目录>]（只读查看分流、工作包账本与门禁缺项）',
+    'task show --task <taskId> [--project <目录>]（只读查看分流、工作包账本、变更条数与门禁缺项）',
+    'spec check [--project <目录>] [--ref <提交>]（只读检查 .spec 管辖文件是否漂移；有发现时退出码 1）',
     'signal --input <JSON文件> | --base64 <UTF-8 JSON>',
     'knowledge inspect --path <资料路径> [--project <目录>]',
     'knowledge apply --input <JSON文件>', 'knowledge recover --transaction <id> [--project <目录>]',
@@ -66,21 +68,22 @@ const help = {
 };
 // --path is a document-only option; it is never used to construct shell commands.
 allowed.add('path');
-for (const key of ['global', 'now', 'query', 'run', 'version', 'task']) allowed.add(key);
+for (const key of ['global', 'now', 'query', 'run', 'version', 'task', 'ref']) allowed.add(key);
 // 只读：返回任务账本与当前门禁缺项，不改变状态。
 async function showTask(state, root, taskId) {
   const resolved = await resolveProject(state, root);
   if (!resolved) fail('PROJECT', '当前目录没有有效项目绑定');
   const task = state.tasks[taskKey(resolved.project.projectId, taskId)];
   if (!task) fail('TASK', '任务不存在或不属于当前项目');
-  const { taskId: id, goal, parentTaskId, route = null, lifecycle, packages = {}, validation = null, waivers = [], finalRef = null } = task;
-  return { taskId: id, goal, parentTaskId, route, lifecycle, packages: Object.values(packages), validation, waivers, finalRef, gateMissing: lifecycle === 'active' ? gateMissing(state, task, finalRef) : [], note: '门禁核对声明记录一致性，不证明审查或测试真实发生' };
+  const { taskId: id, goal, parentTaskId, route = null, lifecycle, packages = {}, validation = null, waivers = [], finalRef = null, changes = [] } = task;
+  const gate = lifecycle === 'active' ? gateReport(state, task, finalRef) : { missing: [], findings: [] };
+  return { taskId: id, goal, parentTaskId, route, lifecycle, packages: Object.values(packages), validation, waivers, finalRef, changes: changes.length, gateMissing: gate.missing, specFindings: gate.findings, note: '门禁核对声明记录一致性，不证明审查或测试真实发生' };
 }
 async function main() {
   const { options, commands } = argumentsFor(process.argv.slice(2));
   const [command, action, subaction] = commands;
   if (options.help || !command) return help;
-  const positional = (command === 'project' && action === 'align') || (command === 'learning' && ['config', 'schedule'].includes(action)) ? 3 : ['project', 'knowledge', 'pending', 'learning', 'task'].includes(command) ? 2 : 1;
+  const positional = (command === 'project' && action === 'align') || (command === 'learning' && ['config', 'schedule'].includes(action)) ? 3 : ['project', 'knowledge', 'pending', 'learning', 'task', 'spec'].includes(command) ? 2 : 1;
   if (commands.length > positional) fail('ARGUMENT', '命令后存在多余的位置参数');
   const agent = options.agent || 'codex';
   if (!AGENTS.includes(agent)) fail('AGENT', `未知宿主 ${agent}；支持 ${AGENTS.join('/')}`);
@@ -98,6 +101,13 @@ async function main() {
   if (command === 'task' && action === 'show') {
     if (!options.task) fail('ARGUMENT', 'task show 需要 --task');
     return showTask(await readState(directory), root, options.task);
+  }
+  // 只读：不需要项目绑定，CI 里也能直接运行。
+  if (command === 'spec' && action === 'check') {
+    if (options.ref !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_.\/~^@{}-]{0,199}$/.test(options.ref)) fail('ARGUMENT', '--ref 不是有效的提交引用');
+    const result = checkSpecs(path.resolve(root), { ref: options.ref });
+    if (!result.ok) process.exitCode = 1;
+    return result;
   }
   if (command === 'project') {
     if (action === 'onboard') { if (!options.root) fail('ARGUMENT', 'onboard 需要明确 --root'); if (options['enable-learning'] && options['skip-learning']) fail('ARGUMENT', '--enable-learning 与 --skip-learning 不能同时使用'); return onboardProject(directory, options.root, { coexistenceMode: options['coexistence-mode'], skipLearning: options['skip-learning'], enableLearning: options['enable-learning'] }); }

@@ -6,7 +6,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { emptyState, readState } from '../src/store.mjs';
 import { acceptSignal, openTurn, taskKey } from '../src/protocol.mjs';
 import { codexQuestionFeature, doctor } from '../src/install.mjs';
-import { cli, emit, event, fixture, start, temporary } from './helpers.mjs';
+import { cli, emit, event, fixture, git, start, temporary } from './helpers.mjs';
 
 const delegated = (f, extra = {}) => emit(f, { action: 'task-start', goal: '分工任务', route: 'delegated', permissions: { mode: 'write', allowedPaths: ['README.md'] }, ...extra });
 const packages = (f, items, extra = {}) => emit(f, { action: 'packages', packages: items, ...extra });
@@ -14,6 +14,21 @@ const ready = [
   { packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'abc123' },
   { packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', reviewedRef: 'abc123', verdict: 'PASS' },
 ];
+// 有 .spec 的 git 项目：search 管辖 src/search.mjs，初始提交后无漂移。
+async function specProject() {
+  const f = await fixture({ git: true });
+  await mkdir(path.join(f.project, '.spec', 'search'), { recursive: true });
+  await mkdir(path.join(f.project, 'src'));
+  await writeFile(path.join(f.project, '.spec', 'search', 'spec.md'), '---\ntitle: 搜索\ncode:\n  - src/search.mjs\n---\n# 搜索\n');
+  await writeFile(path.join(f.project, 'src', 'search.mjs'), 'export const v = 1;\n');
+  git(f.project, ['add', '-A']);
+  git(f.project, ['commit', '-q', '-m', 'init']);
+  return f;
+}
+async function driftCommit(f, value = 2) {
+  await writeFile(path.join(f.project, 'src', 'search.mjs'), `export const v = ${value};\n`);
+  git(f.project, ['commit', '-q', '-am', 'change search']);
+}
 
 test('报告内存实验（synthetic）：父任务有活动子任务时 task-end 被拒，missing 含子任务', () => {
   const state = emptyState();
@@ -228,4 +243,135 @@ test('会话结束挂起的分工任务，新会话入口仍附账本并标出 s
   assert.equal(context.ledger.lifecycle, 'suspended');
   assert.deepEqual(context.ledger.packages, ['w1 worker dispatched - - 0']);
   assert.doesNotMatch(context.instruction, /在途/);
+});
+
+test('spec 漂移进入门禁：lead-direct 与无 route 都检查，operation-only 不检查；被拒时状态整体回滚', async () => {
+  for (const route of ['lead-direct', undefined, 'operation-only']) {
+    const f = await specProject();
+    await emit(f, { action: 'task-start', goal: '改搜索', permissions: { mode: 'write', allowedPaths: [] }, ...(route ? { route } : {}) });
+    await driftCommit(f);
+    const ended = await emit(f, { action: 'task-end', validation: { ref: 'HEAD', evidence: ['npm test'] } });
+    if (route === 'operation-only') { assert.equal(ended.result.accepted, true, JSON.stringify(ended.result)); continue; }
+    assert.equal(ended.result.reason, 'GATE');
+    assert.deepEqual(ended.result.missing, ['spec:search']);
+    assert.equal(ended.result.findings[0].kind, 'drift');
+    assert.match(ended.result.message, /Spec-OK/);
+    const task = (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
+    assert.equal(task.lifecycle, 'active');
+    assert.equal(task.validation, undefined);
+  }
+});
+
+test('spec 缺项不能豁免（类别和完整条目都返回 WAIVER），Spec-OK 空提交放行后结束', async () => {
+  const f = await specProject();
+  await emit(f, { action: 'task-start', goal: '重构搜索', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  await driftCommit(f);
+  for (const step of ['spec', 'spec:search']) {
+    const ended = await emit(f, { action: 'task-end', waivers: [{ step, reason: '纯重构' }] });
+    assert.equal(ended.result.reason, 'WAIVER');
+  }
+  git(f.project, ['commit', '-q', '--allow-empty', '-m', 'spec: search 无需更新', '-m', '重命名内部变量', '--trailer', 'Spec-OK: search']);
+  const ended = await emit(f, { action: 'task-end' });
+  assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
+});
+
+test('旧任务里记录的 spec 豁免也不抵扣；spec-check 可豁免', async () => {
+  const f = await specProject();
+  await emit(f, { action: 'task-start', goal: '改搜索', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  await driftCommit(f);
+  // 绕过输入校验直接写入状态，模拟历史数据。
+  const file = path.join(f.directory, 'state.json');
+  const state = JSON.parse(await readFile(file, 'utf8'));
+  state.tasks[taskKey(f.projectId, f.taskId)].waivers = [{ step: 'spec', reason: '旧数据' }];
+  await writeFile(file, JSON.stringify(state));
+  assert.deepEqual((await emit(f, { action: 'task-end' })).result.missing, ['spec:search']);
+
+  // 检查不了时（这里用不存在的 finalRef 触发 git 失败）报 spec-check:git，可写理由豁免。
+  const g = await specProject();
+  await emit(g, { action: 'task-start', goal: '改搜索', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  let ended = await emit(g, { action: 'task-end', finalRef: 'no-such-ref' });
+  assert.deepEqual(ended.result.missing, ['spec-check:git']);
+  ended = await emit(g, { action: 'task-end', finalRef: 'no-such-ref', waivers: [{ step: 'spec-check', reason: '版本只在远端' }] });
+  assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
+});
+
+test('delegated 门禁同时列出 spec 缺项；task show 显示 spec 发现与变更条数', async () => {
+  const f = await specProject();
+  await delegated(f);
+  await driftCommit(f);
+  const change = { summary: '搜索结果改为分页', reason: '用户追加要求', packages: ['w1'] };
+  assert.equal((await packages(f, ready, { change, validation: { ref: 'HEAD', evidence: ['npm test'] } })).result.accepted, true);
+  assert.equal((await packages(f, [{ packageId: 'w1', note: '已同步' }], { change: { summary: '只改文案', reason: '细节' } })).result.accepted, true);
+  assert.equal((await packages(f, [{ packageId: 'w1' }], { change: { summary: '' } })).result.reason, 'INPUT');
+  const ended = await emit(f, { action: 'task-end' });
+  assert.deepEqual(ended.result.missing, ['spec:search']);
+  const shown = JSON.parse(cli(['task', 'show', '--task', f.taskId, '--project', f.project, '--state-dir', f.directory]).stdout);
+  assert.deepEqual(shown.gateMissing, ['spec:search']);
+  assert.equal(shown.specFindings[0].code, 'src/search.mjs');
+  assert.equal(shown.changes, 2);
+  const task = (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
+  assert.deepEqual(task.changes.map(c => c.summary), ['搜索结果改为分页', '只改文案']);
+  const output = await event(f, 'SessionStart', { source: 'compact' });
+  assert.equal(JSON.parse(output.hookSpecificOutput.additionalContext.slice('workflow 入口：'.length)).ledger.changes, 2);
+});
+
+test('回合结束核对：有缺项挡一次并列出缺项，不改任务状态；同回合与 stop_hook_active 放行', async () => {
+  const f = await specProject();
+  await emit(f, { action: 'task-start', goal: '改搜索', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  await driftCommit(f);
+  const key = taskKey(f.projectId, f.taskId);
+  const before = (await readState(f.directory)).tasks[key];
+  assert.deepEqual(await event(f, 'Stop', { stop_hook_active: true }), {});
+  const blocked = await event(f, 'Stop');
+  assert.equal(blocked.decision, 'block');
+  assert.match(blocked.reason, /spec:search/);
+  assert.deepEqual(await event(f, 'Stop'), {});
+  assert.deepEqual((await readState(f.directory)).tasks[key], before);
+  // 新用户回合重新核对一次。
+  f.turnId = 'turn-2';
+  await event(f, 'UserPromptSubmit');
+  assert.equal((await event(f, 'Stop')).decision, 'block');
+});
+
+test('回合结束核对：在途包、waiting-user、operation-only 路线、子角色会话、已结束任务都放行；已记豁免照常抵扣', async () => {
+  const f = await fixture();
+  await delegated(f);
+  await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched' }]);
+  assert.deepEqual(await event(f, 'Stop'), {});
+  await packages(f, [{ packageId: 'w1', status: 'consumed', deliveredRef: 'abc' }]);
+  const blocked = await event(f, 'Stop');
+  assert.match(blocked.reason, /review:w1, validation/);
+
+  const g = await fixture();
+  await start(g);
+  await event(g, 'PostToolUse', { tool_name: 'request_user_input', tool_input: { questions: [] }, tool_response: {} });
+  assert.deepEqual(await event(g, 'Stop'), {});
+
+  const h = await fixture();
+  await emit(h, { action: 'task-start', goal: '查看', route: 'operation-only', permissions: { mode: 'read-only', allowedPaths: [] } });
+  assert.deepEqual(await event(h, 'Stop'), {});
+  assert.equal((await emit(h, { action: 'task-end' })).result.accepted, true);
+  h.turnId = 'turn-2';
+  await event(h, 'UserPromptSubmit');
+  assert.deepEqual(await event(h, 'Stop'), {});
+
+  const w = await fixture({ autoOwner: true });
+  const worker = { ...w, sessionId: 'worker-session', turnId: 'worker-turn' };
+  await event(worker, 'UserPromptSubmit');
+  await emit(worker, { action: 'role-claim', role: 'worker', packageId: 'w1' });
+  assert.deepEqual(await event(worker, 'Stop'), {});
+
+  // validation 已在早先 task-end 中豁免并记入任务（这里由完整记录提供），Stop 不再列出。
+  const v = await fixture();
+  await delegated(v);
+  await packages(v, ready);
+  const reason = (await event(v, 'Stop')).reason;
+  assert.match(reason, /validation/);
+  const file = path.join(v.directory, 'state.json');
+  const state = JSON.parse(await readFile(file, 'utf8'));
+  state.tasks[taskKey(v.projectId, v.taskId)].waivers = [{ step: 'validation', reason: '用户人工验收' }];
+  await writeFile(file, JSON.stringify(state));
+  v.turnId = 'turn-2';
+  await event(v, 'UserPromptSubmit');
+  assert.match((await event(v, 'Stop')).reason, /已无缺项/);
 });

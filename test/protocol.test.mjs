@@ -5,19 +5,19 @@ import { readFile, writeFile } from 'node:fs/promises';
 import { readState } from '../src/store.mjs';
 import { taskKey } from '../src/protocol.mjs';
 import { createPending } from '../src/knowledge.mjs';
-import { deliver, emit, event, fixture, identity, start } from './helpers.mjs';
+import { assertRoundCheck, deliver, emit, event, fixture, identity, start } from './helpers.mjs';
 
-test('交付不要求复盘，重复 Stop、重启、跨 turn 与压缩均不补偿', async () => {
+test('交付不要求复盘：Stop 每回合最多挡一次提醒 task-end，重启、跨 turn 与压缩不补偿经验', async () => {
   const f = await fixture();
   await start(f);
   assert.equal((await deliver(f)).result.accepted, true);
-  assert.deepEqual(await event(f, 'Stop'), {});
+  assertRoundCheck(await event(f, 'Stop'));
   assert.deepEqual(await event(f, 'Stop'), {});
   const persisted = await readState(f.directory);
   assert.equal(persisted.tasks[taskKey(f.projectId, f.taskId)].repairIssued, false);
   f.turnId = 'turn-2';
   await event(f, 'UserPromptSubmit');
-  assert.deepEqual(await event(f, 'Stop'), {});
+  assertRoundCheck(await event(f, 'Stop'));
   await start(f);
   await deliver(f, null, 'delivery-2');
   const beforeCompact = await identity(f);
@@ -25,18 +25,23 @@ test('交付不要求复盘，重复 Stop、重启、跨 turn 与压缩均不补
   assert.deepEqual(await event(f, 'PostCompact'), {});
   await event(f, 'SessionStart', { source: 'compact' });
   assert.deepEqual(await identity(f), beforeCompact);
+  // 压缩不开新回合，本回合已挡过。
   assert.deepEqual(await event(f, 'Stop'), {});
   assert.equal((await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)].repairIssued, false);
   assert.equal((await emit(f, { action: 'task-end' })).result.accepted, true);
 });
-test('V03/V08 unknown、operation-only、executing、waiting-user 均不补偿', async () => {
+test('V03/V08 未绑定任务、operation-only、waiting-user 不核对；executing 挡一次', async () => {
   const f = await fixture();
   assert.deepEqual(await event(f, 'Stop'), {});
   await start(f);
-  for (const phase of ['operation-only', 'executing', 'waiting-user', 'unknown']) {
+  for (const phase of ['operation-only', 'waiting-user']) {
     await emit(f, { action: 'phase', phase });
     assert.deepEqual(await event(f, 'Stop', { last_assistant_message: '这里是否已经完成？' }), {});
   }
+  await emit(f, { action: 'phase', phase: 'executing' });
+  assertRoundCheck(await event(f, 'Stop'));
+  await emit(f, { action: 'phase', phase: 'unknown' });
+  assert.deepEqual(await event(f, 'Stop'), {});
   assert.equal((await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)].repairIssued, false);
 });
 test('V06 有理由无新经验和可定位待办放行，伪造 updated 拒绝且不改变阶段', async () => {
@@ -44,7 +49,7 @@ test('V06 有理由无新经验和可定位待办放行，伪造 updated 拒绝�
   await start(f);
   const invalid = await deliver(f, { status: 'updated', transactionIds: ['fake'] });
   assert.equal(invalid.result.accepted, false);
-  assert.deepEqual(await event(f, 'Stop'), {});
+  assertRoundCheck(await event(f, 'Stop'));
   await deliver(f, { status: 'no-new-learning', reason: '已有资料完整承接' });
   assert.deepEqual(await event(f, 'Stop'), {});
   const pending = await createPending(f.directory, { ...await identity(f), reason: '证据尚缺', evidence: ['test:原始记录'] });
@@ -84,13 +89,13 @@ test('V02 不同 session/turn 不消费当前回执或 Stop 预算', async () =>
   assert.deepEqual(await event(f, 'Stop', { session_id: 'other-session' }), {});
   assert.deepEqual(await event(f, 'Stop', { turn_id: 'other-turn' }), {});
   assert.equal((await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)].repairIssued, false);
-  assert.deepEqual(await event(f, 'Stop'), {});
+  assertRoundCheck(await event(f, 'Stop'));
 });
 test('pending-only 兼容字段不再为无经验交付制造待办', async () => {
   const f = await fixture({ coexistenceMode: 'pending-only' });
   await start(f);
   await deliver(f);
-  assert.deepEqual(await event(f, 'Stop'), {});
+  assertRoundCheck(await event(f, 'Stop'));
   const state = await readState(f.directory);
   assert.equal(state.tasks[taskKey(f.projectId, f.taskId)].repairIssued, false);
   assert.equal(Object.values(state.pending).filter(p => p.kind === 'knowledge-pending').length, 0);

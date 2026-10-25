@@ -4,7 +4,7 @@ import path from 'node:path';
 import { link, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { applyKnowledge, createPending, inspectKnowledge, recoverTransaction, safeDocument } from '../src/knowledge.mjs';
 import { readState } from '../src/store.mjs';
-import { deliver, event, fixture, identity, start } from './helpers.mjs';
+import { assertRoundCheck, deliver, event, fixture, identity, start } from './helpers.mjs';
 
 const candidate = (taskId, id = 'finding-1') => ({ id, taskId, workPackage: 'A1', conditions: '当前隔离项目', finding: '资料缺少已核实前置条件', recommendation: '补写条件并引用证据', evidence: ['test:已核实的输入'] });
 async function input(f, changes, candidates = [candidate(f.taskId)]) {
@@ -24,7 +24,7 @@ test('V06 真实事务保存前快照，updated 引用事务后放行', async ()
   assert.equal(await readFile(tx.files[0].snapshot, 'utf8'), original);
   const result = await deliver(f, { status: 'updated', transactionIds: [tx.transactionId] });
   assert.equal(result.result.accepted, true);
-  assert.deepEqual(await event(f, 'Stop'), {});
+  assertRoundCheck(await event(f, 'Stop'));
 });
 test('V11 用户编辑指纹冲突不覆盖，保留候选和待办', async () => {
   const f = await fixture();

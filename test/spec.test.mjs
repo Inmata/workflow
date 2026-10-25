@@ -1,0 +1,148 @@
+// spec 漂移检查：真实 git 仓库，覆盖原型的 14 个场景、id 重名和原型修过的三个问题。
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import path from 'node:path';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { checkSpecs, codeList } from '../src/spec.mjs';
+import { cli, git, temporary } from './helpers.mjs';
+
+const spec = (code, body = '说明') => `---\ntitle: t\ncode:\n${code.map(c => `  - ${c}`).join('\n')}\nrelated:\n  - docs/x.md\n---\n# t\n${body}\n`;
+async function put(root, file, text) {
+  await mkdir(path.dirname(path.join(root, file)), { recursive: true });
+  await writeFile(path.join(root, file), text);
+}
+async function commit(root, files, message, extra = []) {
+  for (const [file, text] of Object.entries(files)) await put(root, file, text);
+  git(root, ['add', '-A']);
+  git(root, ['commit', '-q', '-m', message, ...extra]);
+  return git(root, ['rev-parse', 'HEAD']);
+}
+const ack = (root, ids) => git(root, ['commit', '-q', '--allow-empty', '-m', 'spec ok', '-m', '行为不变', '--trailer', `Spec-OK: ${ids}`]);
+// a、b 两个 spec 共享 src/shared.mjs。
+async function repo() {
+  const root = path.join(await temporary('spec-'), 'repo');
+  await mkdir(root);
+  git(root, ['init', '-q', '-b', 'main']);
+  await commit(root, {
+    'src/a.mjs': 'a1\n', 'src/shared.mjs': 's1\n', 'src/b.mjs': 'b1\n',
+    '.spec/a/spec.md': spec(['src/a.mjs', 'src/shared.mjs']),
+    '.spec/group/b/spec.md': spec(['src/b.mjs', 'src/shared.mjs']),
+  }, 'init');
+  return root;
+}
+const kinds = result => result.findings.map(f => `${f.id}:${f.code}:${f.kind}`).sort();
+
+test('场景 1-3：初始通过；改代码不改 spec 报漂移；更新 spec 后通过（回归：^<commit> 不能放在 -- 之后）', async () => {
+  const root = await repo();
+  assert.deepEqual(checkSpecs(root), { ok: true, ref: 'HEAD', findings: [] });
+  const changed = await commit(root, { 'src/a.mjs': 'a2\n' }, 'change a');
+  const drift = checkSpecs(root);
+  assert.equal(drift.ok, false);
+  assert.deepEqual(drift.findings, [{ id: 'a', spec: '.spec/a/spec.md', code: 'src/a.mjs', kind: 'drift', commits: [changed] }]);
+  // 排除项若被当成路径，spec 版本不会被排除，这里会继续报漂移。
+  await commit(root, { '.spec/a/spec.md': spec(['src/a.mjs', 'src/shared.mjs'], '更新') }, 'update spec');
+  assert.equal(checkSpecs(root).ok, true);
+});
+
+test('场景 4-7：内容提交带 Spec-OK 通过；之后连改两次报 2 个提交；空提交放行后通过；放行后再改又报漂移', async () => {
+  const root = await repo();
+  await commit(root, { 'src/a.mjs': 'a2\n' }, 'refactor a', ['--trailer', 'Spec-OK: a']);
+  assert.equal(checkSpecs(root).ok, true);
+  const first = await commit(root, { 'src/a.mjs': 'a3\n' }, 'c1');
+  const second = await commit(root, { 'src/a.mjs': 'a4\n' }, 'c2');
+  assert.deepEqual(checkSpecs(root).findings[0].commits, [second, first]);
+  ack(root, 'a');
+  assert.equal(checkSpecs(root).ok, true);
+  await commit(root, { 'src/a.mjs': 'a5\n' }, 'c3');
+  assert.deepEqual(kinds(checkSpecs(root)), ['a:src/a.mjs:drift']);
+});
+
+test('场景 8-10：只放行另一个 id 仍报漂移（回归：按 id 匹配，不按路径）；共享文件只放行一个节点，另一个报漂移；两个都处理后通过', async () => {
+  const root = await repo();
+  await commit(root, { 'src/a.mjs': 'a2\n' }, 'change a');
+  ack(root, 'b');
+  assert.deepEqual(kinds(checkSpecs(root)), ['a:src/a.mjs:drift']);
+  ack(root, 'a');
+  assert.equal(checkSpecs(root).ok, true);
+  await commit(root, { 'src/shared.mjs': 's2\n' }, 'change shared');
+  ack(root, 'a');
+  assert.deepEqual(kinds(checkSpecs(root)), ['b:src/shared.mjs:drift']);
+  await commit(root, { '.spec/group/b/spec.md': spec(['src/b.mjs', 'src/shared.mjs'], '共享改动') }, 'update b');
+  assert.equal(checkSpecs(root).ok, true);
+  // 一个 trailer 写多个 id，用逗号分隔。
+  await commit(root, { 'src/shared.mjs': 's3\n' }, 'change shared again');
+  ack(root, 'a, b');
+  assert.equal(checkSpecs(root).ok, true);
+});
+
+test('场景 11：未提交改动报 uncommitted-drift（回归：porcelain 首行前导空格不能被 trim）；spec 一起改则不报；检查非 HEAD 不看工作区', async () => {
+  const root = await repo();
+  await put(root, 'src/a.mjs', 'dirty\n');
+  // 只有一个改动时它就是首行，状态位是前导空格 " M"。
+  assert.deepEqual(kinds(checkSpecs(root)), ['a:src/a.mjs:uncommitted-drift']);
+  assert.equal(checkSpecs(root, { ref: 'main' }).ok, true);
+  await put(root, '.spec/a/spec.md', spec(['src/a.mjs', 'src/shared.mjs'], '同步'));
+  assert.equal(checkSpecs(root).ok, true);
+});
+
+test('场景 12：分支上改代码、主干上改 spec 后合并，报漂移', async () => {
+  const root = await repo();
+  git(root, ['checkout', '-q', '-b', 'feature']);
+  const changed = await commit(root, { 'src/a.mjs': 'feature\n' }, 'feature change');
+  git(root, ['checkout', '-q', 'main']);
+  await commit(root, { '.spec/a/spec.md': spec(['src/a.mjs', 'src/shared.mjs'], '主干') }, 'main spec');
+  git(root, ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', 'merge', '-q', '--no-ff', '-m', 'merge', 'feature']);
+  const result = checkSpecs(root);
+  assert.deepEqual(kinds(result), ['a:src/a.mjs:drift']);
+  assert.ok(result.findings[0].commits.includes(changed));
+});
+
+test('场景 13：被管辖文件改名报 missing；检查历史版本时按该版本的树判断', async () => {
+  const root = await repo();
+  const before = git(root, ['rev-parse', 'HEAD']);
+  await rename(path.join(root, 'src/a.mjs'), path.join(root, 'src/renamed.mjs'));
+  git(root, ['add', '-A']);
+  git(root, ['commit', '-q', '-m', 'rename', '--trailer', 'Spec-OK: a']);
+  assert.deepEqual(kinds(checkSpecs(root)), ['a:src/a.mjs:missing']);
+  assert.equal(checkSpecs(root, { ref: before }).ok, true);
+});
+
+test('场景 14：浅克隆拒绝检查，返回 shallow', async () => {
+  const root = await repo();
+  await commit(root, { 'src/a.mjs': 'a2\n' }, 'second');
+  const clone = path.join(path.dirname(root), 'shallow');
+  git(path.dirname(root), ['clone', '-q', '--depth', '1', `file://${root.replaceAll('\\', '/')}`, clone]);
+  const result = checkSpecs(clone);
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'shallow');
+});
+
+test('id 重名报 duplicate-id；没有 .spec 跳过；不是 git 仓库返回 git', async () => {
+  const root = await repo();
+  await commit(root, { '.spec/other/a/spec.md': spec(['src/b.mjs']) }, 'dup');
+  const result = checkSpecs(root);
+  assert.deepEqual(result.findings, [{ id: 'a', spec: ['.spec/a/spec.md', '.spec/other/a/spec.md'], code: null, kind: 'duplicate-id', commits: [] }]);
+  const plain = await temporary('spec-plain-');
+  assert.deepEqual(checkSpecs(plain), { ok: true, ref: 'HEAD', skipped: 'no-spec', findings: [] });
+  await put(plain, '.spec/a/spec.md', spec(['x.mjs']));
+  assert.equal(checkSpecs(plain).error, 'git');
+});
+
+test('frontmatter 解析：块列表、行内列表、引号与注释；其他字段忽略', () => {
+  assert.deepEqual(codeList('---\nhue: 3\ncode:\n  - "src/a b.mjs"\n  - ./src/c.mjs # 注释\nrelated:\n  - docs/x.md\n---\n'), ['src/a b.mjs', 'src/c.mjs']);
+  assert.deepEqual(codeList('---\ncode: [src/a.mjs, \'src/b.mjs\']\n---\n'), ['src/a.mjs', 'src/b.mjs']);
+  assert.deepEqual(codeList('# 没有 frontmatter\ncode:\n  - a\n'), []);
+});
+
+test('spec check 命令：有漂移退出码 1 并输出 findings；--ref 指定版本', async () => {
+  const root = await repo();
+  const base = git(root, ['rev-parse', 'HEAD']);
+  await commit(root, { 'src/a.mjs': 'a2\n' }, 'change');
+  const drift = cli(['spec', 'check', '--project', root]);
+  assert.equal(drift.status, 1);
+  assert.equal(JSON.parse(drift.stdout).findings[0].kind, 'drift');
+  const old = cli(['spec', 'check', '--project', root, '--ref', base]);
+  assert.equal(old.status, 0, old.stdout);
+  assert.equal(JSON.parse(old.stdout).ref, base);
+  assert.equal(cli(['spec', 'check', '--project', root, '--ref', '-x']).status, 1);
+});

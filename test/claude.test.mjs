@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { handleHook } from '../src/hooks.mjs';
 import { mutate, readState } from '../src/store.mjs';
 import { doctor } from '../src/install.mjs';
-import { claudeEmit, claudeEvent, claudeStart, entry, fixture, identity } from './helpers.mjs';
+import { assertRoundCheck, claudeEmit, claudeEvent, claudeStart, entry, fixture, identity } from './helpers.mjs';
 
 test('Claude 入口无 turn_id 也建立 Lead 身份，并用宿主 prompt_id 作为回合标识', async () => {
   const f = await fixture({ claude: true });
@@ -41,12 +41,11 @@ test('Claude PostToolUse 从 stdout 消费 signal，完成交付和显式结束'
   assert.equal(Object.values(state.tasks)[0].lifecycle, 'complete');
 });
 
-test('Claude Stop 不因缺少经验处置阻止交付或追加模型轮次', async () => {
+test('Claude Stop 不因缺少经验处置阻止交付；活动任务挡一次提醒 task-end，stop_hook_active 时放行', async () => {
   const f = await fixture({ claude: true });
   await claudeStart(f);
   await claudeEmit(f, { action: 'phase', phase: 'delivering', deliveryId: 'delivery-1' });
-  const stop = await claudeEvent(f, 'Stop', { stop_hook_active: false });
-  assert.deepEqual(stop, {});
+  assertRoundCheck(await claudeEvent(f, 'Stop', { stop_hook_active: false }));
   assert.deepEqual(await claudeEvent(f, 'Stop', { stop_hook_active: true }), {});
   const pending = Object.values((await readState(f.directory)).pending);
   assert.equal(pending.filter(item => item.kind === 'knowledge-pending').length, 0);

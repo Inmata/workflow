@@ -49,6 +49,7 @@ export function compactLedger(task) {
     route: task.route || null,
     packages: packages.map(p => [p.packageId, p.role, p.status, p.deliveredRef || '-', p.role === 'reviewer' ? `${p.verdict || '-'}@${p.reviews || '-'}:${p.reviewedRef || '-'}` : '-', p.attempts || 0].join(' ')),
     validation: task.validation ? task.validation.ref : null,
+    changes: task.changes?.length || 0,
   };
 }
 export async function projectContext(state, resolved, role = 'lead', sessionId, options = {}) {

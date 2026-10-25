@@ -199,7 +199,7 @@ export async function handleHook(directory, event, options = {}) {
           Object.assign(state, before);
           // 附当前 revision 与回合，代理据此直接重发，不必再猜状态。
           const current = state.sessions[sessionKey(project.projectId, event.session_id)];
-          result = { accepted: false, reason: error.code || 'INPUT', message: error.message, ...(error.missing ? { missing: error.missing } : {}), expectedRevision: current?.revision, turnId: current?.turnId };
+          result = { accepted: false, reason: error.code || 'INPUT', message: error.message, ...(error.missing ? { missing: error.missing } : {}), ...(error.findings ? { findings: error.findings } : {}), expectedRevision: current?.revision, turnId: current?.turnId };
         }
         return contextOutput(name, `workflow 回执：${JSON.stringify(result)}`);
       }

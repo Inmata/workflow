@@ -81,6 +81,12 @@ export async function start(f, permissions = { mode: 'write', allowedPaths: ['RE
   return result;
 }
 export const deliver = (f, disposition, deliveryId = 'delivery-1') => emit(f, { action: 'phase', phase: 'delivering', deliveryId, ...(disposition ? { disposition } : {}) });
+// 回合结束核对：活动任务未 task-end 时挡一次，提醒结束任务或说明剩余事项；从不要求补写经验。
+export function assertRoundCheck(output) {
+  assert.equal(output.decision, 'block', JSON.stringify(output));
+  assert.match(output.reason, /task-end/);
+  assert.doesNotMatch(output.reason, /经验|复盘/);
+}
 export function cli(args, options = {}) {
   return spawnSync(process.execPath, [entry, ...args], { encoding: 'utf8', windowsHide: true, timeout: 30000, cwd: root, ...options });
 }
