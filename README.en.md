@@ -230,9 +230,11 @@ Changes in each version are listed in GitHub Releases.
 
 ### How plans and specs work together
 
-1. Planning: write only the plan document; leave specs alone.
-2. Starting work on a planned feature: the Lead drafts the spec entries to change from the plan, creating a spec for a new feature and removing entries for a feature being dropped. Changes to spec text need your confirmation.
-3. Dispatch and review: the confirmed spec entries are the acceptance criteria; the Worker builds to them and the Reviewer checks them one by one.
+Still two steps: write the plan, you review it and say "go", implementation starts. Specs are not reviewed separately; they are part of the plan.
+
+1. Writing the plan: the plan ends with a "Spec impact" section listing which spec entries to create, change or remove, with the acceptance sentences as they will read afterwards; write "none" if no spec is affected.
+2. You review that section together with the plan. Saying "go" approves the plan and these spec changes together.
+3. Implementation: the Lead changes the specs as listed and hands them to Workers as acceptance criteria; the Reviewer checks them one by one. You are asked again only for spec changes the plan did not cover, or to change approved acceptance criteria.
 4. Wrap-up: the spec and the code are committed in the same task; if the spec was missed, task-end is blocked by the gate.
 5. Once the whole plan is done, archive it; it does not become a spec.
 
