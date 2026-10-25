@@ -232,7 +232,9 @@ Tests and the demo run in isolated directories under `workflow-tests/` in the sy
 
 ## Current status and limits
 
-Current version 0.4.2. It includes the collaboration rules, CLI, hook adapters for two hosts, persistent notes, graded knowledge, configuration and optional background review, as well as routing, the work package ledger, completion gates and role claims. Real-host acceptance records are in [0.3.0 acceptance](docs/acceptance.md#6-030-真实宿主验收). The installer tells copies apart by content digest.
+Current version 0.5.0. It includes the collaboration rules, CLI, hook adapters for two hosts, persistent notes, graded knowledge, configuration and optional background review, as well as routing, the work package ledger, completion gates, role claims and spec drift checks. Real-host acceptance records are in [0.3.0 acceptance](docs/acceptance.md#6-030-真实宿主验收). The installer tells copies apart by content digest.
+
+Changes in 0.5.0: important features can have a long-lived description in `.spec/<id>/spec.md` whose `code:` list names the files it governs. At `task-end` the plugin checks git history for governed files that changed without the spec being updated, and the task cannot end until that is handled (update the spec, or make an empty `Spec-OK` commit; see the [usage guide](docs/usage.md#spec-检查)). If Lead ends a turn without sending `task-end`, Stop blocks once and lists what is missing. Worker deliveries gain a "documentation impact" line, and Reviewer checks against the spec. Projects without `.spec` behave as in 0.4.2 apart from the Stop reminder; the AGENTS managed block is unchanged, so re-onboarding is not needed.
 
 Whether a host actually runs hooks, how context behaves after compaction, and what external coding agents can resume all change with Codex / Codeg / Claude Code versions. `doctor --agent <host>` checks the registration and copy integrity for that host; confirm the host side with `/hooks` and callbacks in a real session.
 
