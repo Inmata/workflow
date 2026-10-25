@@ -137,6 +137,20 @@ Rarely in daily use. These are maintenance actions:
 
 `disable` only disables one project and removes the managed block only if it was not hand-edited. `remove` also deletes the scheduled task, local state records and the data directory; the alignment file and `.workflow/` in the project are listed but not deleted. `uninstall` only removes this plugin's own handlers from that host; other plugins, release copies, project files and lessons are all kept.
 
+None of the three commands rolls back work already done. What each one deletes and keeps:
+
+| Content | `disable` | `remove` | `uninstall` |
+| --- | --- | --- | --- |
+| Project files changed by tasks, Git commits | Kept | Kept | Kept |
+| Formal lessons (`.workflow/knowledge/` in the project) | Kept | Kept | Kept |
+| Alignment file (`docs/WORKFLOW-ALIGNMENT.md`), `.spec/` | Kept | Kept | Kept |
+| `AGENTS.md` managed block | Removed if not hand-edited | Removed if not hand-edited | Kept |
+| Local materials not yet reviewed (`inbox/` in the data directory) | Kept | **Deleted** | Kept |
+| Local binding, recorded decisions, learning switch, scheduled task | Disabled, records kept | Deleted | Kept |
+| Host hook registration | Kept | Kept | This plugin's handlers removed |
+
+Unreviewed materials live only on this machine, not in the project. To keep them, wait for the background review to process them, or use `disable` instead. The plugin never runs `git revert`, `git reset` or restores files; undo a task's changes with Git yourself.
+
 ## Upgrading
 
 Upgrading does not change project files, and leaves the bindings, alignment documents, notes and lessons of onboarded projects alone. Run it once on each computer, after finishing any task in progress (install refuses to upgrade while a task is active). The commands below assume this repository is at `D:\git-repo\workflow`; replace the path if yours differs.
@@ -212,6 +226,15 @@ Changes in each version are listed in GitHub Releases.
 - **Project alignment**: in the first session, the differences between project documents and workflow defaults are written to a fixed file; you decide each real difference, and the file is updated incrementally when the index goes stale.
 - **Knowledge transactions**: a snapshot is saved before writing, failures leave a pending item, and your hand edits are never overwritten.
 - **Task signals**: task-start / phase / task-end are driven by hooks and session identity; normal use never builds them by hand.
+- **spec**: `.spec/<id>/spec.md` records how a feature behaves now and its acceptance criteria, covering only what is already implemented. A plan (such as a version plan under `docs/plans/`) records what you intend to change; the two are not mixed.
+
+### How plans and specs work together
+
+1. Planning: write only the plan document; leave specs alone.
+2. Starting work on a planned feature: the Lead drafts the spec entries to change from the plan, creating a spec for a new feature and removing entries for a feature being dropped. Changes to spec text need your confirmation.
+3. Dispatch and review: the confirmed spec entries are the acceptance criteria; the Worker builds to them and the Reviewer checks them one by one.
+4. Wrap-up: the spec and the code are committed in the same task; if the spec was missed, task-end is blocked by the gate.
+5. Once the whole plan is done, archive it; it does not become a spec.
 
 The role method text is in the [common method](docs/workflow.md); the three roles are in `docs/roles/lead.md`, `worker.md` and `reviewer.md`. Protocol fields and the state machine are in [protocol v1](docs/design/protocol.md).
 

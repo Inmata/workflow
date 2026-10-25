@@ -135,6 +135,20 @@ node bin/workflow.mjs project align status --root "D:/你的项目"
 
 `disable` 只停用单个项目，管理区没被手改才撤下；`remove` 在此基础上删除计划任务、本机状态记录和数据目录，项目里的对齐文件与 `.workflow/` 只列出不删除；`uninstall` 只移除该宿主上本插件自己的 handler，其他插件、发布副本、项目资料和经验全部保留。
 
+三个命令都不回退已经做过的工作，下表是各自删什么、留什么：
+
+| 内容 | `disable` | `remove` | `uninstall` |
+| --- | --- | --- | --- |
+| 任务里改过的项目文件、Git 提交 | 保留 | 保留 | 保留 |
+| 正式经验（项目内 `.workflow/knowledge/`） | 保留 | 保留 | 保留 |
+| 对齐文件（`docs/WORKFLOW-ALIGNMENT.md`）、`.spec/` | 保留 | 保留 | 保留 |
+| `AGENTS.md` 管理区 | 未手改时撤下 | 未手改时撤下 | 保留 |
+| 本机还没复盘的材料（数据目录 `inbox/`） | 保留 | **删除** | 保留 |
+| 本机绑定、裁决登记、学习开关、计划任务 | 停用，记录保留 | 删除 | 保留 |
+| 宿主 hooks 注册 | 保留 | 保留 | 撤销本插件的 |
+
+没复盘的材料只存在本机，不在项目里。要保留就先等后台复盘处理完，或改用 `disable`。插件不会自动执行 `git revert`、`git reset` 或还原文件；要撤销某次任务的改动，用 Git 自己处理。
+
 ## 升级
 
 升级不改项目文件，不动已接入项目的绑定、对齐文档、材料和经验。每台电脑各执行一次，先结束正在进行的任务（有活动任务时安装会拒绝升级）。以下命令假设本仓库在 `D:\git-repo\workflow`，路径不同时替换成实际目录。
@@ -210,6 +224,15 @@ node bin/workflow.mjs project onboard --root "D:/你的项目"
 - **项目对齐**：首次会话把项目资料与 workflow 默认的差异写成固定文件；真实差异逐条由你裁决，索引过期时增量更新。
 - **知识事务**：写入前存快照，失败留待办，不覆盖你的手改。
 - **任务信号**：task-start / phase / task-end 由 hook 与会话身份驱动，正常使用不必手工构造。
+- **spec**：`.spec/<id>/spec.md` 记录某个功能现在的行为和验收条件，只写已经实现的部分。计划（如 `docs/plans/` 下的版本计划）写打算怎么改，两者不混用。
+
+### 计划和 spec 怎么配合
+
+1. 计划阶段：只写计划文档，不动 spec。
+2. 开工实施计划中的某个功能：Lead 按计划起草要改的 spec 条目，新功能新建 spec，要删的功能删掉对应条目。改 spec 正文要你确认。
+3. 派工和审查：确认后的 spec 条目就是验收标准，Worker 照着做，Reviewer 逐条核对。
+4. 收尾：spec 和代码在同一任务里提交；漏改 spec 时 task-end 被门禁挡住。
+5. 计划全部做完后归档，不转成 spec。
 
 角色方法正文在[公共方法](docs/workflow.md)，三个角色分别在 `docs/roles/lead.md`、`worker.md`、`reviewer.md`。协议字段和状态机见[协议 v1](docs/design/protocol.md)。
 
