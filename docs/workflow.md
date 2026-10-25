@@ -38,7 +38,7 @@ Lead、Worker、Reviewer 按职责分配，依据用户已确认的安排、当�
 
 Worker 随正常交付回报稳定 ID、事件 ID、适用条件、发现和证据；Reviewer 随正常审查核对事实、反例及过时条件。Lead 按[经验学习](learning.md)将值得保留的短材料写入本机 inbox，后台在额度与权限内整理。简单任务由 Lead 完成；不为经验另开角色或强制造条目。
 
-项目事实优先放已有 README、spec、实现说明和计划，保持名称和路径；当前任务确有缺口才补写。明确区分批准需求、草案、预期、当前实现和进度：spec 要求 500、实现 100，记录差距，不能把要求改成 100 或宣称 500 已实现。未集成分支的事实附分支/版本条件。项目资料缺失可接入，不创建空 LESSONS、空架构目录或必填文档套件。
+项目事实优先放已有 README、spec、实现说明和计划，保持名称和路径；当前任务确有缺口才补写。明确区分批准需求、草案、预期、当前实现和进度：spec 要求 500、实现 100，记录差距，不能把要求改成 100 或宣称 500 已实现。未集成分支的事实附分支/版本条件。项目资料缺失可接入，不创建空 LESSONS、空架构目录或必填文档套件。重要功能的长期说明放 `.spec/<id>/spec.md`，用 `code:` 列出管辖文件，派工和审查都引用它；建立条件见 [Lead 指引](roles/lead.md#spec)。
 
 任务开始或范围变化时先检索适用经验，区分成熟度、重要性与状态；高重要性不代表已验证，也不能越过当前用户要求。明确纠正或已验证失败引用旧知识 ID，立即停止默认召回，后台再判断条件差异、修订或替代。保留证据、原因和版本；新结论不继承旧结论的成功等级。没有新材料无需触发学习。
 
@@ -58,4 +58,4 @@ Worker 随正常交付回报稳定 ID、事件 ID、适用条件、发现和证�
 
 ## 收尾
 
-按[协议](design/protocol.md)声明 task-start（附 `route`：`operation-only`、`lead-direct` 或 `delegated`）和明确阶段；提问先 waiting-user，完成后 task-end。分工任务只在三个节点用一次批量 `packages` 信号记账：派发、消费结果、审查结论；不记录等待过程。`delegated` 任务的 task-end 核对：全部包为终态，每个 worker 包有 `verdict=PASS` 且 `reviewedRef` 等于其最终 `deliveredRef` 的 reviewer 包，验证记录 `validation.ref` 等于集成后版本；父任务还不能有活动子任务。缺项返回 `GATE` 与 `missing`，状态不变；确不适用的步骤用 `waivers:[{step, reason}]` 显式豁免并留记录。门禁核对的是 Lead 声明记录的一致性，不证明审查或测试真实发生；`lead-direct`、`operation-only` 不设门禁，关键行为一行也要审仍由 Lead 判断。Stop 不阻断知识处置、不追加复盘轮次。用户中断时撤销票据、挂起业务任务并释放会话归属，下次显式 task-start 才恢复。待办按事务独立保存，其他事务成功不能将它清除。复盘的时间、批次与每日限额见[经验学习](learning.md)，业务停止限制见[验证约定](references/validation.md#停止限制)。
+按[协议](design/protocol.md)声明 task-start（附 `route`：`operation-only`、`lead-direct` 或 `delegated`）和明确阶段；提问先 waiting-user，完成后 task-end。分工任务只在三个节点用一次批量 `packages` 信号记账：派发、消费结果、审查结论；不记录等待过程。`delegated` 任务的 task-end 核对：全部包为终态，每个 worker 包有 `verdict=PASS` 且 `reviewedRef` 等于其最终 `deliveredRef` 的 reviewer 包，验证记录 `validation.ref` 等于集成后版本；父任务还不能有活动子任务。项目有 `.spec` 时，`lead-direct`、`delegated` 和未声明 route 的任务还要通过 spec 检查：被管辖文件改了而 spec 没跟着更新，缺项 `spec:<id>`，只能靠更新 spec 或 `Spec-OK` 空提交消除，不能豁免；检查不了时报 `spec-check:<原因>`，可以豁免。缺项返回 `GATE` 与 `missing`，状态不变；确不适用的步骤用 `waivers:[{step, reason}]` 显式豁免并留记录。门禁核对的是 Lead 声明记录的一致性，不证明审查或测试真实发生；`operation-only` 不设门禁，`lead-direct` 只查 spec，关键行为一行也要审仍由 Lead 判断。Stop 做一次回合结束核对：活动任务没发 task-end、没有在途包也不在等待用户时，挡一次并列出缺项，要求补齐后 task-end 或向用户说明未完成项；同一回合最多挡一次，不阻断知识处置、不追加复盘轮次。用户中断时撤销票据、挂起业务任务并释放会话归属，下次显式 task-start 才恢复。待办按事务独立保存，其他事务成功不能将它清除。复盘的时间、批次与每日限额见[经验学习](learning.md)，业务停止限制见[验证约定](references/validation.md#停止限制)。

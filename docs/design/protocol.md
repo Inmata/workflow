@@ -23,13 +23,30 @@
 | task-start | goal；permissions；可选 parentTaskId、route | 建立/显式接续任务；恢复 suspended，保留原权限；route 只能首次声明或补声明，不可改 |
 | phase | phase；delivering 时 deliveryId | 更新明确阶段，可随带 disposition |
 | disposition | deliveryId；disposition | 处置当前交付 |
-| packages | packages[1-50]；可选 validation | 批量 upsert 工作包账本；回执可带 `repairLimit` |
+| packages | packages[1-50]；可选 validation、change | 批量 upsert 工作包账本；change 追加到 `task.changes`；回执可带 `repairLimit` |
 | role-claim | role=worker\|reviewer；可选 packageId | 委派子会话声明角色；不再计入 Lead，入口改注入对应角色上下文 |
 | task-end | 可选 finalRef、validation、waivers | 通过门禁后结束任务；未完知识保留待办 |
 
-`route` 为 `operation-only`、`lead-direct`、`delegated`。工作包字段：`packageId`、`role`（worker/reviewer）、`status`（dispatched/delivered/consumed/canceled/failed/waived）、`handle`（宿主 task_id）、`worktree`、`baseRef`、`deliveredRef`、`dependsOn[]`、`note`；reviewer 包另有 `reviews`（被审 packageId）、`reviewedRef`、`verdict`（PASS/FIX/BLOCKED）。新包必须给 role 与 status，已有包只更新给出的字段。`attempts` 由插件计：已交付或已消费的包重新 dispatched 加一，超过 2 时回执带 `repairLimit:true` 和 `repairLimitPackages`，只提示 Lead 裁决，不拒绝。`consumed` 表示 Lead 已读过结果。`validation` 为 `{ref, evidence[]}`。账本存于 `task.packages`，旧任务没有该字段视为空，状态文件仍为 `schemaVersion=2`。
+`route` 为 `operation-only`、`lead-direct`、`delegated`。工作包字段：`packageId`、`role`（worker/reviewer）、`status`（dispatched/delivered/consumed/canceled/failed/waived）、`handle`（宿主 task_id）、`worktree`、`baseRef`、`deliveredRef`、`dependsOn[]`、`note`；reviewer 包另有 `reviews`（被审 packageId）、`reviewedRef`、`verdict`（PASS/FIX/BLOCKED）。新包必须给 role 与 status，已有包只更新给出的字段。`attempts` 由插件计：已交付或已消费的包重新 dispatched 加一，超过 2 时回执带 `repairLimit:true` 和 `repairLimitPackages`，只提示 Lead 裁决，不拒绝。`consumed` 表示 Lead 已读过结果。`validation` 为 `{ref, evidence[]}`。`change` 为 `{summary, reason, packages[]}`，记录中途细节变更，插件补 `at` 后追加，不覆盖历史。账本存于 `task.packages`、`task.changes`，旧任务没有该字段视为空，状态文件仍为 `schemaVersion=2`。
 
-task-end 门禁：父任务有 active 子任务（`parentTaskId`）时列 `child:<id>`。仅 `route=delegated` 再核对：每包终态（`terminal:<id>`）；每个未取消/未豁免的 worker 包，存在 `reviews` 指向它、`verdict=PASS` 且 `reviewedRef` 等于其 `deliveredRef` 的 reviewer 包（`review:<id>`）；存在 validation，给了 finalRef 时 `validation.ref` 必须相同（`validation`）。`waivers:[{step, reason}]` 的 step 可写完整条目或类别（`review`、`validation`、`terminal`、`child`），累计记入任务。缺项返回 `{accepted:false, reason:'GATE', missing:[...]}`，状态整体回滚。未声明 route 的旧任务接受并附 `warning:'route-missing'`；delegated 通过时附 `gate:'declared-records-consistent'`。门禁只核对声明记录的一致性，不证明审查或测试真实发生。`task show --task <id>` 只读查看账本和当前缺项。
+task-end 门禁：父任务有 active 子任务（`parentTaskId`）时列 `child:<id>`。除 `operation-only` 外（含未声明 route 的旧任务）都做 spec 检查（见下文），有问题的 spec 各列一条 `spec:<id>`，检查不了时列 `spec-check:<原因>`。仅 `route=delegated` 再核对：每包终态（`terminal:<id>`）；每个未取消/未豁免的 worker 包，存在 `reviews` 指向它、`verdict=PASS` 且 `reviewedRef` 等于其 `deliveredRef` 的 reviewer 包（`review:<id>`）；存在 validation，给了 finalRef 时 `validation.ref` 必须相同（`validation`）。`waivers:[{step, reason}]` 的 step 可写完整条目或类别（`review`、`validation`、`terminal`、`child`、`spec-check`），累计记入任务；step 为 `spec` 或 `spec:<id>` 返回 `WAIVER`，已记录的同类旧豁免也不抵扣。缺项返回 `{accepted:false, reason:'GATE', missing:[...], findings?}`，消息附 spec 发现说明，状态整体回滚。未声明 route 的旧任务接受并附 `warning:'route-missing'`；delegated 通过时附 `gate:'declared-records-consistent'`。门禁只核对声明记录的一致性，不证明审查或测试真实发生。`task show --task <id>` 只读查看账本、`changes` 条数、`gateMissing` 和 `specFindings`。
+
+## spec 检查
+
+spec 位于 `.spec/<id>/spec.md`，`<id>` 为目录名，可嵌套，`.spec` 内不得重名。frontmatter 的 `code:` 只列具体文件（不写目录或通配），`related:` 只供阅读；其他字段忽略。格式与 [SpexCode](https://github.com/shuxueshuxue/spexcode) 一致，检测由 workflow 自己实现。
+
+对每个 spec 的每个 `code:` 文件，从检查版本（finalRef，缺省 `HEAD`）往回看：
+
+| kind | 条件 |
+| --- | --- |
+| `drift` | 有修改该文件的提交，既不是任何一版 spec.md 的祖先，也没有被放行；`commits` 列出这些提交 |
+| `uncommitted-drift` | 只在检查 `HEAD` 时判断：工作区里该文件有未提交改动而 spec.md 没有 |
+| `missing` | 被管辖文件在检查版本中不存在 |
+| `duplicate-id` | `.spec` 内两个目录同名 |
+
+放行用提交信息的 `Spec-OK: <id>[, <id>]` trailer，按 id 匹配：写在空提交（单父且树与父提交相同）上覆盖它可达的全部祖先；写在内容提交上只豁免该提交。每次从 git 历史现算，不保存哈希。浅克隆返回 `error:'shallow'`，git 不可用或超时（10 秒）返回 `error:'git'`，门禁中显示为 `spec-check:<原因>`；没有 `.spec` 目录时 `skipped:'no-spec'`，不报缺项。git 调用不经 shell，参数逐个传入并带 `--literal-pathspecs`。
+
+`spec check --project <root> [--ref <commit>]` 只读输出 `{ok, ref, findings:[{id, spec, code, kind, commits}], error?, skipped?}`，有发现或检查失败时退出码为 1。
 
 role-claim 的 taskId 填工作包所属的 Lead 任务 ID（仅作标识，不绑定任务）；只能在会话没有自己的活动任务时发出，同一会话不能改声明其他角色；声明后该会话的 task-start、packages、task-end 等业务信号返回 `ROLE`。宿主内置子代理的事件带 `agent_id`（Claude Agent 工具、Codex spawn_agent 均实测，`session_id` 与父会话相同），整体放行，不开回合。
 
@@ -49,16 +66,21 @@ packages 的 `handle` 填宿主委派 ID（Codeg task_id）时，委派状态查
 
 | 输入状态 | 动作 |
 | --- | --- |
-| 未绑定、未知、executing、waiting-user、operation-only、缺身份 | 放行 |
-| delivering，有有效处置 | 放行 |
-| delivering，未提供处置或 stop_hook_active=true | 直接放行，不生成经验待办、不增加模型轮次 |
+| 未绑定、缺身份、子角色会话、已中断 | 放行 |
+| stop_hook_active=true，或本回合已挡过（`session.stopBlockedTurn` 等于当前 turnId） | 放行 |
+| phase 为 waiting-user 或 operation-only | 放行 |
+| 绑定任务不是 active，或 route=operation-only | 放行 |
+| 有 dispatched 工作包 | 放行 |
+| 其余（Lead 的活动任务尚未 task-end） | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：有门禁缺项时列出缺项，要求补齐后 task-end 或向用户说明未完成项；无缺项时提醒发 task-end |
 | Interrupt | 增 interruptEpoch、撤销票据、挂起任务、保存 business-incomplete、释放会话归属 |
 | SessionEnd | 同中断保存；不把业务标为完成，不续跑业务 |
 | PreCompact/PostCompact/compact SessionStart | 保存/恢复既有身份；预算不变 |
 
+回合结束核对只读：不改任务状态，不替 Lead 发 task-end，不生成经验待办；缺项计算与 task-end 门禁相同，已记录的 waivers 照常抵扣，`spec-check:<原因>` 不计入。核对出错（状态损坏、锁超时等）时放行。宿主把 reason 作为续轮提示注入：Codex 以 `<hook_prompt>` 用户消息、Claude Code 以 Stop hook 反馈续一轮，续轮不触发 UserPromptSubmit，第二次 Stop 带 `stop_hook_active:true`。插件只认已记录的内容：没发 task-start 或未记进工作包的工作查不到，hook 未执行时也不生效。
+
 PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输出的 compact SessionStart 入口承载。同一回合的既有票据、修订号和任务预算保持不变，真实宿主是否触发该入口另行验收。
 
-`repairIssued` 只保留兼容，不再驱动 Stop 阻断。用户后续发言只建立新的未知回合，不恢复旧业务；context 最多提示一项知识待办，`pending list` 可查看全部。恢复业务通过显式 task-start，保持原权限。后台复盘另按配置计时、计批次和每日启动次数；业务返修与诊断限制独立。
+`repairIssued` 只保留兼容，不驱动 Stop 阻断。用户后续发言只建立新的未知回合，不恢复旧业务；context 最多提示一项知识待办，`pending list` 可查看全部。恢复业务通过显式 task-start，保持原权限。后台复盘另按配置计时、计批次和每日启动次数；业务返修与诊断限制独立。
 
 ## 知识事务
 
