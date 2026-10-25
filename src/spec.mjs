@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 const GIT_TIMEOUT = 10000;
 const MAX_DEPTH = 8;
 class CheckError extends Error {
-  constructor(reason) { super(reason); this.reason = reason; }
+  constructor(reason, detail) { super(reason); this.reason = reason; this.detail = detail; }
 }
 // 不经 shell、参数逐个传入；路径按字面匹配，文件名里的 * ? 不会被当成通配。
 function git(root, args, { input, allowFail = false } = {}) {
@@ -15,7 +15,9 @@ function git(root, args, { input, allowFail = false } = {}) {
   // 只去掉末尾换行：porcelain 首行的前导空格是状态位，不能 trim。
   if (result.status === 0) return result.stdout.replace(/[\r\n]+$/, '');
   if (allowFail && result.status !== null && !result.error) return null;
-  throw new CheckError('git');
+  // 附上 git 的第一行报错，例如沙箱用户不是仓库所有者时的 dubious ownership。
+  const detail = (result.stderr || result.error?.message || '').split(/\r?\n/).find(line => line.trim())?.trim();
+  throw new CheckError('git', detail);
 }
 function unquote(value) {
   let text = value.trim();
@@ -113,7 +115,7 @@ export function checkSpecs(root, { ref } = {}) {
       }
     }
   } catch (error) {
-    if (error instanceof CheckError) return { ok: false, ref: label, error: error.reason, findings };
+    if (error instanceof CheckError) return { ok: false, ref: label, error: error.reason, ...(error.detail ? { detail: error.detail } : {}), findings };
     throw error;
   }
   return { ok: findings.length === 0, ref: label, findings };

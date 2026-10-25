@@ -142,3 +142,27 @@ node bin/workflow.mjs learning schedule remove --root $pilotRoot --state-dir $wo
 ```
 
 2026-10-23 结论：第 1~4 项通过；第 5 项收益对照经用户决定取消，不作为发布条件。据此发布 0.3.0。`docs/research/` 的调研报告按约定不入库，需要时手动拷贝。
+
+## 7. 0.5.0 真实宿主验收
+
+2026-10-25，本机从 0.4.1 升级到 0.5.0（0.4.2 已提交但本机未安装），安装前备份了状态和两个宿主的配置。两个模拟仓库从同一初始提交建立并接入：`drift-sim` 给 Codex，`drift-sim-claude` 给 Claude。每个仓库有 `.spec/calc/spec.md`，`code:` 管辖 `src/calc.mjs`。
+
+| 步骤 | 操作 | Codex（Codeg 顶层，真实宿主验证） | Claude（Codeg Claude ACP，claude-sonnet-5.5，真实宿主验证） |
+| --- | --- | --- | --- |
+| 1 | 改 `src/calc.mjs` 不改 spec，发 task-end | GATE，missing 含 `spec:calc`，findings 为 drift 并列出该提交 | 同 |
+| 2 | 用 waivers 豁免 `spec:calc` | 拒绝：“spec 漂移不能豁免：更新 spec，或用 Spec-OK 空提交写明理由” | 同 |
+| 3 | 更新 spec 后 task-end | accepted（rev 3） | 同 |
+| 4 | 再改代码，做 `Spec-OK: calc` 空提交 | 空提交前报 drift，之后 ok，accepted（rev 5） | 同 |
+| 5 | 门禁无缺项但不发 task-end 就结束回合 | Stop 挡一次，提示“任务 sim-t3 门禁已无缺项但仍为 active……”；续轮发 task-end accepted（rev 7） | 同 |
+
+Stop 只挡一次的证据（Claude transcript）：只有 1 条 `hook_blocking_error` 和 1 条 isMeta 的 “Stop hook feedback”；2 条 `stop_hook_summary` 分别是挡下和 task-end 后的第二次 Stop（放行）；全程只有一个 promptId，续轮没有产生新的用户回合。Codex 侧提示以 `<hook_prompt>` 注入，同样没有新回合；第二次 Stop 放行没有单独观测。
+
+Worker 与 Reviewer（drift-sim）：Codex Worker 包 w-mul 增加 `mul` 和测试，同步更新 spec，交付行“文档影响：calc：已更新”，deliveredRef a1c34fb。Claude Reviewer 只读审查，按 spec 验收逐条核对（`sub` 只能由代码推断，原本就没有测试），核实文档影响申报属实，spec check `ok:true`，结论 ACCEPT。Reviewer 另报文件头注释没提乘法、`sub` 缺测试，这两条不阻塞。
+
+环境偏差：
+
+- 用 clone 建第二个模拟仓库时，onboard 因复制来的 AGENTS 管理区报 blocked，这是预期的保护；改用 `git archive` 从初始提交重建后接入。
+- Codex 沙箱里 `.git` 只读，提交需要提权；沙箱用户不是仓库所有者，git 报 dubious ownership，spec check 只返回 `error:"git"`。之后 spec check 在 `detail` 里附上 git 的第一行报错。Worker 用 `GIT_CONFIG_*` 环境变量临时设置 `safe.directory`，没有改全局配置。
+- 模拟仓库的 `npm test`（`node --test test/`）在 Node 24.19 报 Cannot find module，与 workflow 无关，用 `node --test` 代替。
+
+结论：0.5.0 的 spec 门禁、不可豁免、Spec-OK 放行、Stop 回合结束核对、Worker 文档影响申报和 Reviewer 对照 spec 核对，在两个宿主上都通过。

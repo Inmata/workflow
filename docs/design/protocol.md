@@ -44,9 +44,9 @@ spec 位于 `.spec/<id>/spec.md`，`<id>` 为目录名，可嵌套，`.spec` 内
 | `missing` | 被管辖文件在检查版本中不存在 |
 | `duplicate-id` | `.spec` 内两个目录同名 |
 
-放行用提交信息的 `Spec-OK: <id>[, <id>]` trailer，按 id 匹配：写在空提交（单父且树与父提交相同）上覆盖它可达的全部祖先；写在内容提交上只豁免该提交。每次从 git 历史现算，不保存哈希。浅克隆返回 `error:'shallow'`，git 不可用或超时（10 秒）返回 `error:'git'`，门禁中显示为 `spec-check:<原因>`；没有 `.spec` 目录时 `skipped:'no-spec'`，不报缺项。git 调用不经 shell，参数逐个传入并带 `--literal-pathspecs`。
+放行用提交信息的 `Spec-OK: <id>[, <id>]` trailer，按 id 匹配：写在空提交（单父且树与父提交相同）上覆盖它可达的全部祖先；写在内容提交上只豁免该提交。每次从 git 历史现算，不保存哈希。浅克隆返回 `error:'shallow'`，git 不可用或超时（10 秒）返回 `error:'git'`，并在 `detail` 附 git 的第一行报错（例如沙箱用户不是仓库所有者时的 dubious ownership），门禁中显示为 `spec-check:<原因>`；没有 `.spec` 目录时 `skipped:'no-spec'`，不报缺项。git 调用不经 shell，参数逐个传入并带 `--literal-pathspecs`。
 
-`spec check --project <root> [--ref <commit>]` 只读输出 `{ok, ref, findings:[{id, spec, code, kind, commits}], error?, skipped?}`，有发现或检查失败时退出码为 1。
+`spec check --project <root> [--ref <commit>]` 只读输出 `{ok, ref, findings:[{id, spec, code, kind, commits}], error?, detail?, skipped?}`，有发现或检查失败时退出码为 1。
 
 role-claim 的 taskId 填工作包所属的 Lead 任务 ID（仅作标识，不绑定任务）；只能在会话没有自己的活动任务时发出，同一会话不能改声明其他角色；声明后该会话的 task-start、packages、task-end 等业务信号返回 `ROLE`。宿主内置子代理的事件带 `agent_id`（Claude Agent 工具、Codex spawn_agent 均实测，`session_id` 与父会话相同），整体放行，不开回合。
 

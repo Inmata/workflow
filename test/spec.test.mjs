@@ -125,7 +125,10 @@ test('id 重名报 duplicate-id；没有 .spec 跳过；不是 git 仓库返回 
   const plain = await temporary('spec-plain-');
   assert.deepEqual(checkSpecs(plain), { ok: true, ref: 'HEAD', skipped: 'no-spec', findings: [] });
   await put(plain, '.spec/a/spec.md', spec(['x.mjs']));
-  assert.equal(checkSpecs(plain).error, 'git');
+  const failed = checkSpecs(plain);
+  assert.equal(failed.error, 'git');
+  // 带上 git 的原始报错，方便判断是不是仓库、所有权等环境问题。
+  assert.match(failed.detail, /not a git repository/i);
 });
 
 test('frontmatter 解析：块列表、行内列表、引号与注释；其他字段忽略', () => {
