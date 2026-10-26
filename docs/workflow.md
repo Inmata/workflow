@@ -1,6 +1,6 @@
 # 公共工作方法
 
-项目首次明确接入后，Lead 读取本文件和[Lead 指引](roles/lead.md)。实施工作包只附本文件、[Worker 指引](roles/worker.md)和直接项目资料；审查工作包改附[Reviewer 指引](roles/reviewer.md)。验证或实际失败时读[验证约定](references/validation.md)，需要复杂交付时读[报告约定](references/reports.md)，Codeg 交接或接续时读[适配说明](adapters/codeg.md)。
+项目首次明确接入后，Lead 读取本文件和[Lead 指引](roles/lead.md)。实施工作包只附本文件、[Worker 指引](roles/worker.md)、直接项目资料和包内列出的相关技能；审查工作包改附[Reviewer 指引](roles/reviewer.md)。验证或实际失败时读[验证约定](references/validation.md)，需要复杂交付时读[报告约定](references/reports.md)，Codeg 交接或接续时读[适配说明](adapters/codeg.md)。
 
 Lead、Worker、Reviewer 按职责分配，依据用户已确认的安排、当前可用工具和任务需要选择智能体；不按客户端或模型名称固定角色。主会话承担 Lead，受委派会话按工作包承担 Worker 或 Reviewer；同一种智能体可在独立会话中承担不同角色。hook 安装参数只选择宿主接入方式，自动接入的支持范围见 [README](../README.md#角色与接入支持)。
 
@@ -54,8 +54,8 @@ Worker 随正常交付回报稳定 ID、事件 ID、适用条件、发现和证�
 2. Codeg MCP `ask_user_question`，与宿主模式无关；
 3. 普通文本编号问题。
 
-三种都先声明 waiting-user。插件能识别前两种工具调用；文本提问由 Lead 显式发 phase 信号，插件不读问号或关键词猜测。每次最多 4 个问题，对应工具上限。可持久保存的待决项（如对齐表格）允许跨回合回答。各宿主各模式下的可用工具见[Codeg 适配](adapters/codeg.md#宿主能力表)。
+三种都先声明 waiting-user。插件能识别前两种工具调用；文本提问由 Lead 显式发 phase 信号，插件不读问号或关键词猜测。每次最多 4 个问题，对应工具上限。可持久保存的待决项（如对齐表格）允许跨回合回答。用户没回答、只回答了一部分或回答跑题时，未答的问题不由 Lead 代选默认值：受影响的动作暂停，下一回合重新提问，或在汇报里列为待决；独立工作继续。各宿主各模式下的可用工具见[Codeg 适配](adapters/codeg.md#宿主能力表)。
 
 ## 收尾
 
-按[协议](design/protocol.md)声明 task-start（附 `route`：`operation-only`、`lead-direct` 或 `delegated`）和明确阶段；提问先 waiting-user，完成后 task-end。分工任务只在三个节点用一次批量 `packages` 信号记账：派发、消费结果、审查结论；不记录等待过程。`delegated` 任务的 task-end 核对：全部包为终态，每个 worker 包有 `verdict=PASS` 且 `reviewedRef` 等于其最终 `deliveredRef` 的 reviewer 包，验证记录 `validation.ref` 等于集成后版本；父任务还不能有活动子任务。项目有 `.spec` 时，`lead-direct`、`delegated` 和未声明 route 的任务还要通过 spec 检查：被管辖文件改了而 spec 没跟着更新，缺项 `spec:<id>`，只能靠更新 spec 或 `Spec-OK` 空提交消除，不能豁免；检查不了时报 `spec-check:<原因>`，可以豁免。缺项返回 `GATE` 与 `missing`，状态不变；确不适用的步骤用 `waivers:[{step, reason}]` 显式豁免并留记录。门禁核对的是 Lead 声明记录的一致性，不证明审查或测试真实发生；`operation-only` 不设门禁，`lead-direct` 只查 spec，关键行为一行也要审仍由 Lead 判断。Stop 做一次回合结束核对：活动任务没发 task-end、没有在途包也不在等待用户时，挡一次并列出缺项，要求补齐后 task-end 或向用户说明未完成项；同一回合最多挡一次，不阻断知识处置、不追加复盘轮次。用户中断时撤销票据、挂起业务任务并释放会话归属，下次显式 task-start 才恢复。待办按事务独立保存，其他事务成功不能将它清除。复盘的时间、批次与每日限额见[经验学习](learning.md)，业务停止限制见[验证约定](references/validation.md#停止限制)。
+按[协议](design/protocol.md)声明 task-start（附 `route`：`operation-only`、`lead-direct` 或 `delegated`）和明确阶段；提问先 waiting-user，完成后 task-end。分工任务只在三个节点用一次批量 `packages` 信号记账：派发、消费结果、审查结论；不记录等待过程。`delegated` 任务的 task-end 核对：全部包为终态，每个 worker 包有 `verdict=PASS` 且 `reviewedRef` 等于其最终 `deliveredRef` 的 reviewer 包，验证记录 `validation.ref` 等于集成后版本；父任务还不能有活动子任务。项目有 `.spec` 时，`lead-direct`、`delegated` 和未声明 route 的任务还要通过 spec 检查：被管辖文件改了而 spec 没跟着更新，缺项 `spec:<id>`，只能靠更新 spec 或 `Spec-OK` 空提交消除，不能豁免；检查不了时报 `spec-check:<原因>`，可以豁免。缺项返回 `GATE` 与 `missing`，状态不变；确不适用的步骤用 `waivers:[{step, reason}]` 显式豁免并留记录。门禁核对的是 Lead 声明记录的一致性，不证明审查或测试真实发生；`operation-only` 不设门禁，`lead-direct` 只查 spec，关键行为一行也要审仍由 Lead 判断。Stop 做一次回合结束核对：活动任务有在途包且不在等待用户时，挡一次要求继续有界等待结果或向用户说明暂停原因；没有在途包、没发 task-end 也不在等待用户时，挡一次并列出缺项，要求补齐后 task-end 或向用户说明未完成项；同一回合最多挡一次，不阻断知识处置、不追加复盘轮次。用户中断时撤销票据、挂起业务任务并释放会话归属，下次显式 task-start 才恢复。待办按事务独立保存，其他事务成功不能将它清除。复盘的时间、批次与每日限额见[经验学习](learning.md)，业务停止限制见[验证约定](references/validation.md#停止限制)。

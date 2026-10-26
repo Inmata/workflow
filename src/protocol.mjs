@@ -194,9 +194,15 @@ export function acceptSignal(state, payload) {
       if (previous?.lifecycle === 'active') fail('TASK', '先明确结束当前任务，不能更换 ID 重置预算');
     }
     if (!task) {
+      // 新任务三项必填，缺哪项直接点名；mode 写在顶层而非 permissions 里也指出来。
+      if (typeof payload.goal !== 'string' || !payload.goal.trim()) fail('INPUT', '新任务缺少 goal（一句话目标，顶层字段）；完整格式：{action:"task-start", taskId, goal, route, permissions:{mode:"write|read-only|plan", allowedPaths:[...]}}');
       textField(payload.goal, 'goal');
       const permissions = payload.permissions;
-      if (!permissions || !['write', 'read-only', 'plan'].includes(permissions.mode) || !Array.isArray(permissions.allowedPaths) || permissions.allowedPaths.some(p => typeof p !== 'string')) fail('PERMISSION', '任务需明确 mode 与 allowedPaths');
+      if (!permissions || !['write', 'read-only', 'plan'].includes(permissions.mode) || !Array.isArray(permissions.allowedPaths) || permissions.allowedPaths.some(p => typeof p !== 'string')) {
+        const misplaced = ['mode', 'allowedPaths'].filter(field => Object.hasOwn(payload, field));
+        const detail = !permissions ? '缺少 permissions 对象' : !['write', 'read-only', 'plan'].includes(permissions.mode) ? 'permissions.mode 须为 write、read-only 或 plan' : 'permissions.allowedPaths 须为字符串数组（可为空数组）';
+        fail('PERMISSION', `任务需明确 mode 与 allowedPaths：${detail}${misplaced.length ? `；${misplaced.join('、')} 写在了顶层，应放进 permissions` : ''}`);
+      }
       task = { projectId: project.projectId, taskId: payload.taskId, goal: payload.goal, parentTaskId: payload.parentTaskId || null, route: payload.route || null, lifecycle: 'active', repairIssued: false, deliveries: {}, candidates: {}, packages: {}, permissions, createdAt: new Date().toISOString() };
       state.tasks[key] = task;
     } else {
@@ -270,7 +276,13 @@ export function stop(state, project, session, event = {}) {
   if (['waiting-user', 'operation-only'].includes(session.phase)) return {};
   const task = state.tasks[taskKey(project.projectId, session.taskId)];
   if (task?.lifecycle !== 'active' || task.route === 'operation-only') return {};
-  if (Object.values(task.packages || {}).some(item => item.status === 'dispatched')) return {};
+  // 有包在途也挡一次：Codeg 等宿主不会在子任务结束时唤醒父会话，Lead 收尾就再也收不到结果。
+  const inflight = Object.entries(task.packages || {}).filter(([, item]) => item.status === 'dispatched');
+  if (inflight.length) {
+    session.stopBlockedTurn = session.turnId;
+    const list = inflight.map(([id, item]) => item.handle ? `${id}(${item.handle})` : id).join('、');
+    return { decision: 'block', reason: `workflow 回合结束核对：任务 ${task.taskId} 仍有 ${inflight.length} 个工作包在途（${list}）。宿主不会在子任务结束时唤醒本会话，结束回合就收不到结果。二选一：用有界等待（Codeg get_delegation_status 批量传入在途 task_id、wait_ms 60000，轮间调用 check_user_feedback）继续等到终态或 blocked_on 再收结果；或者向用户说明为什么暂停、何时由谁接续。` };
+  }
   let missing;
   try {
     // 没法检查（git 失败、浅克隆）不算缺项；其余照常核对。

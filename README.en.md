@@ -47,6 +47,8 @@ node bin/workflow.mjs doctor --agent codex
 
 If you only use Claude Code, only the Claude adapter is needed.
 
+When Claude Code runs as Lead inside Codeg in auto mode, the classifier may block delegation. Allow `mcp__codeg-mcp__delegate_to_agent`, `mcp__codeg-mcp__get_delegation_status`, `mcp__codeg-mcp__cancel_delegation` and `mcp__codeg-mcp__check_user_feedback` in the permission settings, or use a mode that asks each time (see [Codeg handoff](docs/adapters/codeg.md#接续)).
+
 `install` does four things: it copies the current source into a release copy named by its digest (`releases/<version>-<digest>`), points the fixed `current` entry at that copy, registers this plugin's events in the host config (`hooks.json` for Codex, `settings.json` for Claude), and records the install transaction. Hook commands only contain the `current` path, so the path stays the same across upgrades and host trust is only needed once. Old copies are kept for rollback. It does **not** write host trust, change projects or commit to Git.
 
 `doctor` reports four separate things:
@@ -257,7 +259,17 @@ Tests and the demo run in isolated directories under `workflow-tests/` in the sy
 
 ## Current status and limits
 
-Current version 0.5.1. It includes the collaboration rules, CLI, hook adapters for two hosts, persistent notes, graded knowledge, configuration and optional background review, as well as routing, the work package ledger, completion gates, role claims and spec drift checks. Real-host acceptance records are in [0.3.0 acceptance](docs/acceptance.md#6-030-真实宿主验收). The installer tells copies apart by content digest.
+Current version 0.6.0. It includes the collaboration rules, CLI, hook adapters for two hosts, persistent notes, graded knowledge, configuration and optional background review, as well as routing, the work package ledger, completion gates, role claims and spec drift checks. Real-host acceptance records are in [0.3.0 acceptance](docs/acceptance.md#6-030-真实宿主验收). The installer tells copies apart by content digest.
+
+Changes in 0.6.0:
+
+- The Lead no longer ends its turn right after dispatching. With packages in flight, Stop blocks once and asks the Lead to keep collecting results in the same turn with a bounded wait (batched `get_delegation_status`, `wait_ms` 60000, `check_user_feedback` between rounds), or to tell you why it is pausing. Codeg does not wake the main session when a child task finishes.
+- Signals should be written to a UTF-8 JSON file and sent with `signal --input`. `--base64` stays for compatibility; long strings may be redacted by the host. When `task-start` lacks goal or permissions, or puts mode/allowedPaths at the top level, the receipt names the problem.
+- Specs record only implemented behaviour. The post-change acceptance sentences from the plan's "spec impact" section travel in the work packages and govern during implementation; specs are updated at integration. A "spec impact" section the Lead adds afterwards needs your confirmation first.
+- UI flow: before dispatching, the Lead confirms the approach and which local design skills to use. Work then proceeds step by step with your confirmation: baseline screenshots, HTML wireframes (2–3 layouts per region), then hi-fi. Hi-fi uses the project's own UI technology first (for example a temporary WPF window using the existing theme), with HTML as fallback. Image generation is only for direction exploration in from-scratch or restyle work. Each step is time-boxed, and switching medium or method needs confirmation.
+- Work packages gain a "related skills" field. When the Lead reports something as satisfied, it says whether it was verified or inferred. If the plan or reference material exists only in uncommitted changes, the Lead suggests committing before dispatch.
+
+After upgrading, reinstall the hosts. The AGENTS block is unchanged, so re-onboarding is not needed.
 
 Changes in 0.5.1: rule documents only; code behaviour is unchanged. Plans end with a "spec impact" section, and saying "执行" (execute) approves those spec changes together with the plan, so the flow stays two steps, plan then execute (see [How plans and specs work together](#how-plans-and-specs-work-together)). After upgrading, reinstall the hosts; re-onboarding is not needed.
 

@@ -333,11 +333,16 @@ test('回合结束核对：有缺项挡一次并列出缺项，不改任务状�
   assert.equal((await event(f, 'Stop')).decision, 'block');
 });
 
-test('回合结束核对：在途包、waiting-user、operation-only 路线、子角色会话、已结束任务都放行；已记豁免照常抵扣', async () => {
+test('回合结束核对：在途包挡一次要求继续等待；waiting-user、operation-only 路线、子角色会话、已结束任务都放行；已记豁免照常抵扣', async () => {
   const f = await fixture();
   await delegated(f);
-  await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched' }]);
+  await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched', handle: 'task-abc' }]);
+  const waiting = await event(f, 'Stop');
+  assert.equal(waiting.decision, 'block');
+  assert.match(waiting.reason, /1 个工作包在途（w1\(task-abc\)）.*wait_ms 60000.*说明为什么暂停/);
   assert.deepEqual(await event(f, 'Stop'), {});
+  f.turnId = 'turn-2';
+  await event(f, 'UserPromptSubmit');
   await packages(f, [{ packageId: 'w1', status: 'consumed', deliveredRef: 'abc' }]);
   const blocked = await event(f, 'Stop');
   assert.match(blocked.reason, /review:w1, validation/);
@@ -374,4 +379,17 @@ test('回合结束核对：在途包、waiting-user、operation-only 路线、�
   v.turnId = 'turn-2';
   await event(v, 'UserPromptSubmit');
   assert.match((await event(v, 'Stop')).reason, /已无缺项/);
+});
+
+test('task-start 字段错误时回执点名缺项与放错位置的字段', async () => {
+  const f = await fixture();
+  const noGoal = await emit(f, { action: 'task-start', route: 'delegated', permissions: { mode: 'write', allowedPaths: [] } });
+  assert.equal(noGoal.result.reason, 'INPUT');
+  assert.match(noGoal.result.message, /缺少 goal.*permissions:\{mode/);
+  const misplaced = await emit(f, { action: 'task-start', goal: '改搜索', route: 'delegated', mode: 'write', allowedPaths: [] });
+  assert.equal(misplaced.result.reason, 'PERMISSION');
+  assert.match(misplaced.result.message, /缺少 permissions 对象.*mode、allowedPaths 写在了顶层/);
+  const badMode = await emit(f, { action: 'task-start', goal: '改搜索', route: 'delegated', permissions: { mode: 'edit', allowedPaths: [] } });
+  assert.match(badMode.result.message, /permissions\.mode 须为 write、read-only 或 plan/);
+  assert.equal((await emit(f, { action: 'task-start', goal: '改搜索', route: 'delegated', permissions: { mode: 'write', allowedPaths: [] } })).result.accepted, true);
 });

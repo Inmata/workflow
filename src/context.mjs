@@ -7,10 +7,13 @@ import { selectKnowledge } from './learning.mjs';
 
 export { PRODUCT_ROOT } from './entry.mjs';
 // 信号只认单条直接调用；给出可照抄的模板，避免代理自拼变量、cd 或 && 组合导致信号被丢弃。
+// 推荐 --input：base64 长串会被宿主的密钥脱敏改写成占位符，信号随之变成无效 JSON。
 export function signalUsage(cli = cliPath()) {
+  const entry = cli.replaceAll('\\', '/');
   return {
-    command: `node "${cli.replaceAll('\\', '/')}" signal --base64 <UTF-8 JSON 的 base64>`,
-    rule: '整条命令只能是这一次直接调用：不加 cd、&&、;、管道、重定向或变量赋值（如 $wf=...）；JSON 取当前 identity 加 action、signalId 等字段。',
+    command: `node "${entry}" signal --input <UTF-8 JSON 文件>`,
+    fallback: `node "${entry}" signal --base64 <UTF-8 JSON 的 base64>`,
+    rule: '先用文件工具把 JSON 写进临时文件（如项目外的临时目录），再单独直接调用：不加 cd、&&、;、管道、重定向或变量赋值（如 $wf=...）；JSON 取当前 identity 加 action、signalId 等字段。--base64 仅作兼容，长串可能被宿主脱敏破坏。',
   };
 }
 // 后台学习会真实调用模型，接入不自动授权；Lead 在对齐后补问一次，并把完整命令交给用户或在授权后直接执行。
@@ -59,7 +62,7 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   const pending = Object.values(state.pending).filter(p => p.projectId === project.projectId && p.kind === 'knowledge-pending' && p.status === 'open').slice(0, 1);
   const identity = session && !session.interrupted ? { schemaVersion: 1, projectId: project.projectId, sessionId, taskId: session.taskId, turnId: session.turnId, ticket: session.ticket, interruptEpoch: session.interruptEpoch, expectedRevision: session.revision } : null;
   const instructions = {
-    lead: '首次或范围变化时读公共方法和 Lead 指引。新业务 task-start 并声明 route（identity.taskId 为空时由 Lead 自拟 taskId，如 task-<简短英文>；续接已有任务沿用原 ID），提问前 waiting-user，派发/消费/审查结论用 packages 批量记录（派发时 handle 填委派 ID），交付后 task-end。明确纠正、失败原因或已验证方法出现时，按 learningGuide 用 knowledge capture 保存短材料；没有新材料直接交付。任务开始或范围变化用 knowledge select 检索适用经验，详细条目按需读取。当前用户要求优先于历史经验。若当前会话是受委派的工作包（任务给出 packageId 与 worker/reviewer 角色），不按 Lead 行事：先用 `node <cli> signal --base64 <identity 加 action=role-claim、role、packageId、signalId 的 JSON>` 声明角色，再读对应角色指引。',
+    lead: '首次或范围变化时读公共方法和 Lead 指引。新业务 task-start 并声明 route（identity.taskId 为空时由 Lead 自拟 taskId，如 task-<简短英文>；续接已有任务沿用原 ID），提问前 waiting-user，派发/消费/审查结论用 packages 批量记录（派发时 handle 填委派 ID），交付后 task-end。明确纠正、失败原因或已验证方法出现时，按 learningGuide 用 knowledge capture 保存短材料；没有新材料直接交付。任务开始或范围变化用 knowledge select 检索适用经验，详细条目按需读取。当前用户要求优先于历史经验。若当前会话是受委派的工作包（任务给出 packageId 与 worker/reviewer 角色），不按 Lead 行事：先用 `node <cli> signal --input <identity 加 action=role-claim、role、packageId、signalId 的 JSON 文件>` 声明角色，再读对应角色指引。',
     worker: '先读公共方法和 Worker 指引。只读工作包直接资料，必要的直接依赖可读；按阶段或范围变化说明【目标】和最小读取范围。不加载 Lead 调度，不递归创建代理，不发 task-start/packages。协作需要 workflow 身份而当前没有时，停止寻找并报告 Lead。复用有效证据；补测先说明具体缺口、最小测试和判定标准，由 Lead 裁定。发现随正常交付回报。',
     reviewer: '先读公共方法、Reviewer 指引和工作包指定范围。只读审查，不改源码、测试或配置，不递归创建代理，不发 task-start/packages。没有 workflow 身份时，停止寻找并报告 Lead。复用与待审版本匹配的证据；必要补测先说明具体缺口、最小测试和判定标准，由 Lead 裁定。完成即交回。',
   };

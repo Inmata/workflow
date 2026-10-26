@@ -22,7 +22,7 @@ Claude Code 事件没有 `turn_id`，用宿主 `prompt_id` 关联一次用户输
 | SessionStart | 注入 Lead 入口上下文；`source=compact` 时保留既有任务与预算 |
 | UserPromptSubmit | 开新回合（新票据），注入 Lead 入口上下文 |
 | PostToolUse | 只在命令是直接调用本插件 `signal` 时读取 stdout 中的信号并返回回执 |
-| Stop | 放行，不要求经验处置或追加复盘轮次 |
+| Stop | 回合结束核对：有在途包时挡一次要求继续等待或说明暂停；无在途包而任务未 task-end 时挡一次列出缺项；不要求经验处置或追加复盘轮次 |
 | StopFailure | 按中断保存：撤销票据、保留任务待办，不自动续跑 |
 | SessionEnd | 保存未完成任务待办，票据失效 |
 | PreCompact / PostCompact | 只记录观测，不输出上下文 |
@@ -59,6 +59,8 @@ Claude Code 的 Bash `tool_response` 把命令输出放在 `stdout`。只认 std
 | auto 模式分类器与插件命令 | 2026-10-23 auto 下 `signal --base64`、`signal --input`、`context`、`knowledge capture`、`project align scan/apply` 均放行（CLI 两轮、Codeg Claude ACP 一轮，hook 记录 permission_mode=auto）；分类器只审模型发起的工具调用，hook 本身照常执行。历史记录中 `install`（改宿主配置）被拒 1 次；同形式的 document-learning `signal` 曾被拒，故放行不是保证 | 实测 + 记录 |
 | auto 模式下 Codeg MCP 提问 | 可能被分类器拒绝；设置了禁用 `AskUserQuestion` 的规则时，会被判为绕过规则。此时改用普通文本编号提问，并先发 waiting-user | 记录 |
 | 命令被分类器拒绝时 | 不重试、不换写法绕过；向用户说明哪条记录没写入，下一回合用当前 identity 补发 | 约定 |
+| auto 模式下 Codeg 委派 | `delegate_to_agent` 可能被分类器拒绝（记录：委派 codex 被拒）；需要委派时请用户放行委派相关工具，见 [Codeg 接续](codeg.md#接续) | 记录 |
+| 信号载荷脱敏 | 长 base64 串可能被宿主当作密钥脱敏成占位符，信号随之变成无效 JSON（记录：Codeg Claude ACP Lead 会话）；推荐先写 JSON 文件再 `signal --input` | 记录 |
 | 运行中追加消息 / 暂停 / 取消 / 中断恢复 / 批量 wait（Codeg 委派） | 见 [Codeg 能力表](codeg.md#宿主能力表) | — |
 
 插件据此：带 `agent_id` 的事件整体放行；Codeg 委派子会话按工作包 `role-claim`；`AskUserQuestion` 与 Codeg MCP 名称都置 waiting-user。若某路径 PostToolUse 实际不触发，Lead 显式发 waiting-user。

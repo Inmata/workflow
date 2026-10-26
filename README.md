@@ -45,6 +45,8 @@ node bin/workflow.mjs doctor --agent codex
 
 只用 Claude Code 时，只需安装 Claude 适配。
 
+Claude Code 在 Codeg 中以 auto 模式担任 Lead 时，分类器可能拦截委派。请在权限设置中放行 `mcp__codeg-mcp__delegate_to_agent`、`mcp__codeg-mcp__get_delegation_status`、`mcp__codeg-mcp__cancel_delegation` 和 `mcp__codeg-mcp__check_user_feedback`，或改用逐次确认的权限模式（见 [Codeg 接续](docs/adapters/codeg.md#接续)）。
+
 `install` 会做四件事：把当前源码复制成一份带摘要的发布副本（`releases/<version>-<digest>`）、把固定入口 `current` 指向它、在宿主配置里注册本插件的事件（Codex 写 `hooks.json`，Claude 写 `settings.json`）、记录安装事务。hook 命令只包含 `current` 路径，所以升级后路径不变，宿主信任只需做一次；旧副本保留作回滚。它**不会**写宿主信任、不会改项目、不会提交 Git。
 
 `doctor` 看的是四项不同的事，不要混为一谈：
@@ -255,7 +257,17 @@ npm run demo
 
 ## 当前状态与限制
 
-当前版本 0.5.1，包含协作规则、CLI、两种宿主的 hooks 适配、持久材料、分级知识、配置与可选后台复盘，以及分流、工作包账本、完成门禁、角色声明和 spec 漂移检查；真实宿主验收记录见 [0.3.0 验收](docs/acceptance.md#6-030-真实宿主验收)。安装器用内容摘要区分副本。
+当前版本 0.6.0，包含协作规则、CLI、两种宿主的 hooks 适配、持久材料、分级知识、配置与可选后台复盘，以及分流、工作包账本、完成门禁、角色声明和 spec 漂移检查；真实宿主验收记录见 [0.3.0 验收](docs/acceptance.md#6-030-真实宿主验收)。安装器用内容摘要区分副本。
+
+0.6.0 的变化：
+
+- Lead 派完工作包后不再自行结束：有在途包时 Stop 挡一次，要求在同一回合用有界等待（`get_delegation_status` 批量、`wait_ms` 60000，轮间 `check_user_feedback`）收结果，或向用户说明为什么暂停（Codeg 不会在子任务结束时唤醒主会话）。
+- 信号推荐先写 UTF-8 JSON 文件再 `signal --input`；`--base64` 仅作兼容，长串可能被宿主脱敏而失效。`task-start` 缺 goal、permissions 或把 mode/allowedPaths 写在顶层时，回执点名缺项。
+- spec 只写已实现的行为；计划“spec 影响”里的改后验收句子随工作包下发，实施期间以包内验收为准，集成时再改 spec。事后补写的“spec 影响”需先经你确认。
+- UI 流程改为：派工前先和你确认思路和选用的本机设计技能；然后按“基准截图 → HTML 线框（每个局部 2～3 种布局）→ 高保真”逐步确认。高保真优先用项目自身界面技术（如 WPF 临时窗口套现有主题），做不了时用 HTML；生图只用于从零设计或换风格的方向探索；每步限时，换介质或方法要先确认。
+- 工作包新增“相关技能”字段；Lead 报告“已满足”时注明是核实过还是推断；计划或参照资料只在未提交改动里时，派工前提示先提交。
+
+升级后重装宿主即可，AGENTS 管理区未变，不需要重新接入。
 
 0.5.1 的变化：只改规则文档，代码行为不变。计划末尾加“spec 影响”一节，你说“执行”即同时批准其中的 spec 改动，流程仍是“计划 → 执行”两步（见[计划和 spec 怎么配合](#计划和-spec-怎么配合)）。升级后重装宿主即可，不需要重新接入。
 

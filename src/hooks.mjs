@@ -116,8 +116,8 @@ export async function isSignalInvocation(event, entry = path.join(PRODUCT_ROOT, 
 function isComposedSignal(event) {
   if (!['Bash', 'exec_command', 'PowerShell', 'powershell', 'pwsh'].includes(event.tool_name)) return false;
   const raw = signalCommand(event);
-  // 入口可能藏在变量里（$wf=...; node $wf signal），命令里同时出现本插件入口和 signal --base64 就回执。
-  return typeof raw === 'string' && /workflow\.mjs/.test(raw) && /\bsignal\s+--base64\b/.test(raw);
+  // 入口可能藏在变量里（$wf=...; node $wf signal），命令里同时出现本插件入口和 signal --input/--base64 就回执。
+  return typeof raw === 'string' && /workflow\.mjs/.test(raw) && /\bsignal\s+--(?:base64|input)\b/.test(raw);
 }
 export async function handleHook(directory, event, options = {}) {
   try {
@@ -183,7 +183,7 @@ export async function handleHook(directory, event, options = {}) {
         }
         if (nearMiss) {
           const usage = signalUsage();
-          return contextOutput(name, `workflow 未接受：signal 须单独直接调用，本次命令含组合、变量或不是本插件入口。${usage.rule} 请用当前 identity 按此格式重发：${usage.command}`);
+          return contextOutput(name, `workflow 未接受：signal 须单独直接调用，本次命令含组合、变量或不是本插件入口。${usage.rule} 请用当前 identity 按此格式重发：${usage.command}（兼容写法 ${usage.fallback}）`);
         }
         if (!signalInvocation) return {};
         const signals = extractSignals(event.tool_response);

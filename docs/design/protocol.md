@@ -14,13 +14,13 @@
 
 ## 信号
 
-`signal --input <JSON> | --base64 <UTF-8 JSON>` 只输出 `{workflow_signal: payload}`。仅 PostToolUse 在当前 shell 调用确实执行本安装副本的 `signal` 子命令后接受。解析限定 `tool_response` 的已知结构（直接 JSON、文本行、`output`、MCP `content[].text`），最多三层包装；不扫描文档、聊天、transcript 或任意嵌套键。其他插件命名空间不接受。混入多个不同信号拒绝。
+`signal --input <JSON> | --base64 <UTF-8 JSON>` 只输出 `{workflow_signal: payload}`。推荐 `--input`：先用文件工具写 UTF-8 JSON 文件再调用；长 base64 串可能被宿主当作密钥脱敏成占位符，解码后不是有效 JSON。仅 PostToolUse 在当前 shell 调用确实执行本安装副本的 `signal` 子命令后接受。解析限定 `tool_response` 的已知结构（直接 JSON、文本行、`output`、MCP `content[].text`），最多三层包装；不扫描文档、聊天、transcript 或任意嵌套键。其他插件命名空间不接受。混入多个不同信号拒绝。
 
 所有信号字段：`schemaVersion:1`、`projectId`、`sessionId`、`turnId`、`taskId`、`ticket`、`interruptEpoch`、`expectedRevision`、`signalId`、`action`。新任务的 `taskId` 由 Lead 自拟（入口 identity 中为 null），不能为空。身份/票据/epoch/revision 必须匹配。重复 signalId 仅在同一 session、turn、task 下重放已接受回执；不重放 Stop 的阻断决定。signalId 相同而正文不同拒绝。
 
 | action | 附加字段 | 结果 |
 | --- | --- | --- |
-| task-start | goal；permissions；可选 parentTaskId、route | 建立/显式接续任务；恢复 suspended，保留原权限；route 只能首次声明或补声明，不可改 |
+| task-start | goal（顶层）；permissions:{mode, allowedPaths}；可选 parentTaskId、route | 建立/显式接续任务；恢复 suspended，保留原权限；route 只能首次声明或补声明，不可改。新任务缺 goal 或 permissions 时回执点名缺项，mode/allowedPaths 写在顶层时指出应放进 permissions |
 | phase | phase；delivering 时 deliveryId | 更新明确阶段，可随带 disposition |
 | disposition | deliveryId；disposition | 处置当前交付 |
 | packages | packages[1-50]；可选 validation、change | 批量 upsert 工作包账本；change 追加到 `task.changes`；回执可带 `repairLimit` |
@@ -70,7 +70,7 @@ packages 的 `handle` 填宿主委派 ID（Codeg task_id）时，委派状态查
 | stop_hook_active=true，或本回合已挡过（`session.stopBlockedTurn` 等于当前 turnId） | 放行 |
 | phase 为 waiting-user 或 operation-only | 放行 |
 | 绑定任务不是 active，或 route=operation-only | 放行 |
-| 有 dispatched 工作包 | 放行 |
+| 有 dispatched 工作包 | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：列出在途包与 handle，要求继续有界等待结果，或向用户说明暂停原因与接续方式（宿主不会在委派结束时唤醒 Lead） |
 | 其余（Lead 的活动任务尚未 task-end） | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：有门禁缺项时列出缺项，要求补齐后 task-end 或向用户说明未完成项；无缺项时提醒发 task-end |
 | Interrupt | 增 interruptEpoch、撤销票据、挂起任务、保存 business-incomplete、释放会话归属 |
 | SessionEnd | 同中断保存；不把业务标为完成，不续跑业务 |

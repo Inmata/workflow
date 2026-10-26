@@ -164,11 +164,12 @@ Lead 和 Worker 都可以在交付前运行它。git 调用沿用 `src/projects.
 触发条件（同时满足）：
 
 - 当前会话角色是 Lead，绑定的任务仍为 active，route 不是 `operation-only`；
-- 没有 dispatched 的工作包；
 - phase 不是 `waiting-user`；
 - `stop_hook_active` 不为 true，且本回合还没挡过。
 
-动作：按 `task-end` 门禁计算全部缺项（`child`、`terminal`、`review`、`validation`、`spec`，已记入任务的 waivers 照常抵扣）。有缺项时返回 `{decision: 'block', reason}`，`reason` 列出缺项，要求 Lead 二选一：补齐后发 `task-end`，或者向用户说明哪些还没完成。没有缺项但任务仍未结束时，同样挡一次，提醒发 `task-end`。
+有 dispatched 工作包时（0.6.0 起）：返回 `{decision: 'block', reason}`，列出在途包和 handle，要求 Lead 继续有界等待结果，或向用户说明暂停原因。Codeg 不会在委派结束时唤醒父会话，0.5.x 在此放行，Lead 结束回合后就收不到子任务结果。
+
+没有在途包时的动作：按 `task-end` 门禁计算全部缺项（`child`、`terminal`、`review`、`validation`、`spec`，已记入任务的 waivers 照常抵扣）。有缺项时返回 `{decision: 'block', reason}`，`reason` 列出缺项，要求 Lead 二选一：补齐后发 `task-end`，或者向用户说明哪些还没完成。没有缺项但任务仍未结束时，同样挡一次，提醒发 `task-end`。
 
 约束：
 
@@ -270,7 +271,7 @@ Lead 和 Worker 都可以在交付前运行它。git 调用沿用 `src/projects.
 | `bin/workflow.mjs` | `spec check` 子命令；`task show` 显示 spec 缺项和变更条数 |
 | `test/spec.test.mjs`（新） | 原型 14 个场景、id 重名、原型修过的三个问题 |
 | `test/gate.test.mjs` | spec 缺项、不可 waive、`spec-check` 可 waive、两种路线、无 `.spec` 跳过、回滚 |
-| `test/hooks.test.mjs`、`test/claude.test.mjs` | Stop 核对：有缺项挡一次；在途包、waiting-user、`stop_hook_active`、已挡过时放行；状态损坏时放行；不改任务状态 |
+| `test/hooks.test.mjs`、`test/claude.test.mjs` | Stop 核对：有缺项挡一次；在途包挡一次要求继续等待（0.6.0）；waiting-user、`stop_hook_active`、已挡过时放行；状态损坏时放行；不改任务状态 |
 | `docs/roles/*.md`、`docs/workflow.md` | 按上文改写 |
 | `docs/design/protocol.md` | 并入门禁、信号字段和命令说明 |
 | `docs/alignment.md` | 接入时提出 `.spec` 清单 |
