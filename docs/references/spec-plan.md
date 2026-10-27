@@ -1,6 +1,14 @@
 # spec 与计划
 
-Lead 建或改 spec、按计划实施、归档计划时读本页。命令与门禁细节见[协议](../design/protocol.md#spec-检查)。
+Lead 写计划、建或改 spec、按计划实施、归档计划时读本页。命令与门禁细节见[协议](../design/protocol.md#spec-检查)。
+
+## 计划交付
+
+写完计划向用户交付时，不光给技术方案，还要把执行分工一次对齐，避免用户说“开始实施”后再停下来反问一轮：
+
+1. **分流与分包**：明确建议 `lead-direct` 还是 `delegated`。若为 `lead-direct`，用一句话说明为何无需拆包、是否需要独立 Reviewer；若需要分工或独立审查，直接列出分了几个工作包，每包写清 `packageId`、角色（Worker / Reviewer）、负责范围（文件或模块）和串并行依赖，不为凑人数强拆耦合代码。
+2. **询问 Worker 与 Reviewer 通道**：未指定角色通道时，在计划交付末尾按[提问路径](../workflow.md#提问路径)请用户选定 Worker 用哪个智能体/通道、Reviewer 用哪个智能体/通道（如 `codeg:claude_code`、`codeg:codex`、`builtin:*`，或由 Lead 直接实施只配独立 Reviewer）；项目对齐或本会话已有约定时，写出将沿用的通道供用户确认或调整。
+3. **spec 影响**：计划末尾保留“spec 影响”一节（无影响写“无”），与分包、角色通道在同一次计划确认里拍板；实施时把选定通道写入 `task-start --channels`。
 
 ## spec
 

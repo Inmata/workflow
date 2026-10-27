@@ -234,8 +234,8 @@ Changes in each version are listed in GitHub Releases.
 
 Still two steps: write the plan, you review it and say "go", implementation starts. Specs are not reviewed separately; they are part of the plan.
 
-1. Writing the plan: the plan ends with a "Spec impact" section listing which spec entries to create, change or remove, with the acceptance sentences as they will read afterwards; write "none" if no spec is affected.
-2. You review that section together with the plan. Saying "go" approves the plan and these spec changes together.
+1. Writing the plan: propose the route (`lead-direct` or `delegated`); when splitting work or adding independent review, list how many work packages there are, each package's scope and dependencies, and ask which agent you want for Worker and Reviewer. End the plan with a "Spec impact" section listing which spec entries to create, change or remove, with the acceptance sentences as they will read afterwards; write "none" if no spec is affected.
+2. You review the package breakdown, role assignment and "Spec impact" together with the plan. Saying "go" approves all of them at once.
 3. Implementation: the Lead changes the specs as listed and hands them to Workers as acceptance criteria; the Reviewer checks them one by one. You are asked again only for spec changes the plan did not cover, or to change approved acceptance criteria.
 4. Wrap-up: the spec and the code are committed in the same task; if the spec was missed, task-end is blocked by the gate. The Lead also writes back to the plan what this task finished, where it deviated, and what remains; if task-start declared `plans` and the plan is untouched, the plugin reminds the Lead without blocking completion.
 5. Once the whole plan is done, the Lead proposes archiving it; after you confirm, it moves to the archive directory with a status line at the top, remaining items split into a short todo, and navigation, the alignment index and links fixed. It does not become a spec.
@@ -259,7 +259,17 @@ Tests and the demo run in isolated directories under `workflow-tests/` in the sy
 
 ## Current status and limits
 
-Current version 0.6.2. It includes the collaboration rules, CLI, hook adapters for two hosts, persistent notes, graded knowledge, configuration and optional background review, as well as routing, the work package ledger, completion gates, role claims and spec drift checks. Real-host acceptance records are in [0.3.0 acceptance](docs/acceptance.md#6-030-真实宿主验收). The installer tells copies apart by content digest.
+Current version 0.6.3. It includes the collaboration rules, CLI, hook adapters for two hosts, persistent notes, graded knowledge, configuration and optional background review, as well as routing, the work package ledger, completion gates, role claims and spec drift checks. Real-host acceptance records are in [0.3.0 acceptance](docs/acceptance.md#6-030-真实宿主验收). The installer tells copies apart by content digest.
+
+Changes in 0.6.3:
+
+- Slimmer rules and entry context: `docs/roles/lead.md` is trimmed to essentials plus a scenario table, with delegation, spec/plan and UI details moved to `docs/references/` on demand (43% smaller initial read for simple tasks). Subsequent turns in the same session get a compact entry prompt; `SessionStart` (including post-compaction), role changes and version upgrades restore the full entry.
+- One-call signals: `signal <action> --session --turn --id [fields]` fills in ticket and `expectedRevision` from local state so `lead-direct` tasks need only `task-start` and `task-end` without temp identity files. Structured fields such as `packages` pass a business-only JSON via `--input`; full-payload `signal --input` remains compatible.
+- Package breakdown and role prompt on plan delivery: when delivering a plan, the Lead lists the proposed work packages (count, scope and dependencies, or why splitting is unnecessary) and asks you to choose the Worker and Reviewer channels; in plan mode, ending a turn without asking triggers a one-time Stop reminder.
+- Local branch commits and blocking waits: local delivery/checkpoint commits scoped to `allowedPaths` on non-default branches are allowed by default so Git commit OIDs align reviews directly (committing to the default branch, `git push`, version bumps, tags and Releases still require explicit authorization). Codeg waits now use batched `wait_ms: 0` blocking calls instead of 60s polling loops that bloat context.
+- Lower hook and CLI overhead: removes duplicate `git rev-parse` calls across lock boundaries, duplicate Stop writes and eager imports of infrequent modules, cutting subprocess entry and Stop median latency by ~62%.
+
+After upgrading, reinstall the hosts. The AGENTS block is unchanged, so re-onboarding is not needed.
 
 Changes in 0.6.2:
 
@@ -281,7 +291,7 @@ After upgrading, reinstall the hosts. The AGENTS block is unchanged, so re-onboa
 Changes in 0.6.0:
 
 - The Lead no longer ends its turn right after dispatching. With packages in flight, Stop blocks once and asks the Lead to keep collecting results in the same turn with a bounded wait (batched `get_delegation_status`, `wait_ms` 60000, `check_user_feedback` between rounds), or to tell you why it is pausing. Codeg does not wake the main session when a child task finishes.
-- Common signals are one command each via subcommands (`signal task-start|task-end|phase|role-claim --session --turn --id ...`); the CLI fills in ticket and revision. Structured fields such as packages go in a UTF-8 JSON file passed with `--input`. The full-payload `signal --input` stays for compatibility; long `--base64` strings may be redacted by the host. When `task-start` lacks goal or permissions, or puts mode/allowedPaths at the top level, the receipt names the problem.
+- Signals should be written to a UTF-8 JSON file and sent with `signal --input`. `--base64` stays for compatibility; long strings may be redacted by the host. When `task-start` lacks goal or permissions, or puts mode/allowedPaths at the top level, the receipt names the problem.
 - Specs record only implemented behaviour. The post-change acceptance sentences from the plan's "spec impact" section travel in the work packages and govern during implementation; specs are updated at integration. A "spec impact" section the Lead adds afterwards needs your confirmation first.
 - UI flow: before dispatching, the Lead confirms the approach and which local design skills to use. Work then proceeds step by step with your confirmation: baseline screenshots, HTML wireframes (2–3 layouts per region), then hi-fi. Hi-fi uses the project's own UI technology first (for example a temporary WPF window using the existing theme), with HTML as fallback. Image generation is only for direction exploration in from-scratch or restyle work. Each step is time-boxed, and switching medium or method needs confirmation.
 - Work packages gain a "related skills" field. When the Lead reports something as satisfied, it says whether it was verified or inferred. If the plan or reference material exists only in uncommitted changes, the Lead suggests committing before dispatch.

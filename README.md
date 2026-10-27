@@ -232,8 +232,8 @@ node bin/workflow.mjs project onboard --root "D:/你的项目"
 
 还是两步：写计划，你核对后说“执行”，开始实施。spec 不单独核对，并进计划里一起看。
 
-1. 写计划：计划末尾有一节“spec 影响”，列出要新建、修改、删除哪些 spec 条目，以及改后的验收句子；不涉及 spec 时写“无”。
-2. 你核对计划时一起看这一节。说“执行”，就是计划和这些 spec 改动一起批准。
+1. 写计划：给出建议分流（`lead-direct` 还是 `delegated`）；需要分工或独立审查时，列出分几个工作包、每包的范围与依赖，并询问你指定哪个智能体担任 Worker 和 Reviewer。计划末尾有一节“spec 影响”，列出要新建、修改、删除哪些 spec 条目以及改后的验收句子；不涉及 spec 时写“无”。
+2. 你核对计划时把分包、角色指定和“spec 影响”一起确认。说“执行”，这些安排就一起批准。
 3. 实施：Lead 按这一节改 spec，作为验收交给 Worker，Reviewer 逐条核对。只有计划没写到的 spec 改动、或要改已批准的验收时，才会再问你。
 4. 收尾：spec 和代码在同一任务里提交；漏改 spec 时 task-end 被门禁挡住。Lead 同时在原计划里回写本任务完成了什么、偏离了什么、还剩什么；task-start 声明了 `plans` 而计划没动时，插件会提醒，但不挡结束。
 5. 计划全部做完后，Lead 提议归档，你确认后移入归档目录：开头标状态，剩余事项抽成短待办，导航、对齐索引和各处链接一并修好。不转成 spec。
@@ -257,7 +257,17 @@ npm run demo
 
 ## 当前状态与限制
 
-当前版本 0.6.2，包含协作规则、CLI、两种宿主的 hooks 适配、持久材料、分级知识、配置与可选后台复盘，以及分流、工作包账本、完成门禁、角色声明和 spec 漂移检查；真实宿主验收记录见 [0.3.0 验收](docs/acceptance.md#6-030-真实宿主验收)。安装器用内容摘要区分副本。
+当前版本 0.6.3，包含协作规则、CLI、两种宿主的 hooks 适配、持久材料、分级知识、配置与可选后台复盘，以及分流、工作包账本、完成门禁、角色声明和 spec 漂移检查；真实宿主验收记录见 [0.3.0 验收](docs/acceptance.md#6-030-真实宿主验收)。安装器用内容摘要区分副本。
+
+0.6.3 的变化：
+
+- 规则与入口减负：`docs/roles/lead.md` 收敛为要点加场景导航表，协作、spec 与计划、UI 设计拆到 `docs/references/` 按需读取（简单任务首读减少 43%）；同一会话普通后续回合改为短入口，`SessionStart`（含压缩恢复）、角色变更与版本升级恢复完整入口。
+- 一次调用信号：新增 `signal <action> --session --turn --id [字段]` 子命令，CLI 只读补齐票据与 `expectedRevision`，`lead-direct` 任务只需 `task-start` 与 `task-end` 两条命令，不必先写身份临时文件；`packages` 等结构化字段通过 `--input` 附业务 JSON，旧完整 payload 保持兼容。
+- 计划交付分包与选人：Lead 交付计划时列出工作包划分（几包、每包范围与依赖，或说明免拆包理由），并按提问路径请你指定 Worker 与 Reviewer 通道；处于计划阶段但未提问就收尾时，Stop 挡一次提醒补齐。
+- 分支本地 commit 与阻塞等待：非默认分支上按 `allowedPaths` 创建本地交付/检查点 commit 默认允许，直接用 Git commit OID 对齐版本（向默认分支直提、`git push`、改版本、打 tag 与发 Release 仍须显式授权）；Codeg 委派改为 `wait_ms: 0` 批量阻塞等待，不再按 60s 轮询涨上下文。
+- hook 与 CLI 降耗：消除锁内外重复 `git rev-parse`、Stop 重复落盘与低频模块静态加载，实测子进程入口与 Stop 中位数耗时降低约 62%。
+
+升级后重装宿主即可，AGENTS 管理区未变，不需要重新接入。
 
 0.6.2 的变化：
 
@@ -279,7 +289,7 @@ npm run demo
 0.6.0 的变化：
 
 - Lead 派完工作包后不再自行结束：有在途包时 Stop 挡一次，要求在同一回合用有界等待（`get_delegation_status` 批量、`wait_ms` 60000，轮间 `check_user_feedback`）收结果，或向用户说明为什么暂停（Codeg 不会在子任务结束时唤醒主会话）。
-- 常用信号用子命令一条命令发出（`signal task-start|task-end|phase|role-claim --session --turn --id ...`），CLI 自动补齐票据与 revision；packages 等结构化字段用 `--input` 附 UTF-8 JSON 文件。完整 payload 的 `signal --input` 保留兼容，`--base64` 长串可能被宿主脱敏而失效。`task-start` 缺 goal、permissions 或把 mode/allowedPaths 写在顶层时，回执点名缺项。
+- 信号推荐先写 UTF-8 JSON 文件再 `signal --input`；`--base64` 仅作兼容，长串可能被宿主脱敏而失效。`task-start` 缺 goal、permissions 或把 mode/allowedPaths 写在顶层时，回执点名缺项。
 - spec 只写已实现的行为；计划“spec 影响”里的改后验收句子随工作包下发，实施期间以包内验收为准，集成时再改 spec。事后补写的“spec 影响”需先经你确认。
 - UI 流程改为：派工前先和你确认思路和选用的本机设计技能；然后按“基准截图 → HTML 线框（每个局部 2～3 种布局）→ 高保真”逐步确认。高保真优先用项目自身界面技术（如 WPF 临时窗口套现有主题），做不了时用 HTML；生图只用于从零设计或换风格的方向探索；每步限时，换介质或方法要先确认。
 - 工作包新增“相关技能”字段；Lead 报告“已满足”时注明是核实过还是推断；计划或参照资料只在未提交改动里时，派工前提示先提交。

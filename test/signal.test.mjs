@@ -139,3 +139,15 @@ test('Stop 与显式 save 后未再改状态不重复落盘；中间 save 后继
     assert.equal(await readFile(stateFile, 'utf8'), broken);
   }
 });
+test('计划阶段入口提示分包与角色确认；未提问就 Stop 挡一次，调提问工具后 Stop 放行', async () => {
+  const f = await fixture();
+  const entryOut = await event({ ...f, turnId: 'plan-1' }, 'UserPromptSubmit', { permission_mode: 'plan' });
+  assert.match(entryOut.hookSpecificOutput.additionalContext, /分几个工作包.*Worker 与 Reviewer 通道/);
+  const blocked = await event({ ...f, turnId: 'plan-1' }, 'Stop');
+  assert.equal(blocked.decision, 'block');
+  assert.match(blocked.reason, /计划交付核对.*分几个包.*Worker 与 Reviewer 通道/);
+  assert.deepEqual(await event({ ...f, turnId: 'plan-1' }, 'Stop'), {});
+  await event({ ...f, turnId: 'plan-2' }, 'UserPromptSubmit', { permission_mode: 'plan' });
+  await event({ ...f, turnId: 'plan-2' }, 'PostToolUse', { tool_name: 'request_user_input', tool_input: { questions: [] }, tool_response: {} });
+  assert.deepEqual(await event({ ...f, turnId: 'plan-2' }, 'Stop'), {});
+});

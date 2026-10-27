@@ -80,6 +80,7 @@ packages 的 `handle` 填宿主委派 ID（Codeg task_id）时，委派状态查
 | 未绑定、缺身份、子角色会话、已中断 | 放行 |
 | stop_hook_active=true，或本回合已挡过（`session.stopBlockedTurn` 等于当前 turnId） | 放行 |
 | phase 为 waiting-user 或 operation-only | 放行 |
+| 计划阶段（`permission_mode=plan` 或活动任务 `permissions.mode=plan`）且尚未 waiting-user | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：提醒交付计划时列出工作包划分并询问用户指定 Worker 与 Reviewer 通道 |
 | 绑定任务不是 active，或 route=operation-only | 放行 |
 | 有 dispatched 工作包 | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：列出在途包与 handle。在途包全部是 `builtin:` 通道时，说明宿主会在子代理结束时通知本会话，只需向用户说明在等什么；否则要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明暂停原因与接续方式（Codeg 不会在委派结束时唤醒 Lead） |
 | 其余（Lead 的活动任务尚未 task-end） | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：有门禁缺项时列出缺项，要求补齐后 task-end 或向用户说明未完成项；无缺项时提醒发 task-end；任务关联的计划未改动时，同一 reason 附回写提醒 |

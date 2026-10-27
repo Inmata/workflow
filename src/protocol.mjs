@@ -353,12 +353,20 @@ export function acceptSignal(state, payload) {
 // 回合结束核对：Lead 没发 task-end 就收尾时，按门禁算一次缺项并挡下一轮。只读任务状态，只在 session 上记“本回合已挡”。
 // 经验采集独立于业务交付；Stop 从不启动复盘或要求补写经验。
 export function stop(state, project, session, event = {}) {
-  if (!session || session.role || session.interrupted || !session.taskId) return {};
+  if (!session || session.role || session.interrupted) return {};
   if (event.stop_hook_active === true || session.stopBlockedTurn === session.turnId) return {};
   // 提问等待用户、本回合声明为纯操作时不核对。
   if (['waiting-user', 'operation-only'].includes(session.phase)) return {};
-  const task = state.tasks[taskKey(project.projectId, session.taskId)];
-  if (task?.lifecycle !== 'active' || task.route === 'operation-only') return {};
+  const task = session.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
+  // 计划阶段没向用户提问确认分包与 Worker/Reviewer 通道就收尾时，挡一次提醒补齐（已调提问工具或发 waiting-user 的已在上方放行）。
+  if (session.permissionMode === 'plan' || (task?.lifecycle === 'active' && task.permissions?.mode === 'plan')) {
+    session.stopBlockedTurn = session.turnId;
+    return {
+      decision: 'block',
+      reason: 'workflow 计划交付核对：当前处于计划阶段但尚未向用户提问确认。若本回合在交付计划，请列出建议分流与工作包划分（分几个包、每包范围与依赖，或说明免拆包理由），并按提问路径请用户指定 Worker 与 Reviewer 通道（提问工具会自动记 waiting-user，文本提问先发 signal phase --phase waiting-user）；若本回合只是回答讨论而非交付计划，直接回复即可（本回合不再重复阻挡）。',
+    };
+  }
+  if (!task || task.lifecycle !== 'active' || task.route === 'operation-only') return {};
   // 有包在途也挡一次：Codeg 等宿主不会在子任务结束时唤醒父会话，Lead 收尾就再也收不到结果。
   const inflight = Object.entries(task.packages || {}).filter(([, item]) => item.status === 'dispatched');
   if (inflight.length) {

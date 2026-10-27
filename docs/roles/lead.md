@@ -8,7 +8,7 @@
 | --- | --- |
 | 简单任务（lead-direct、operation-only） | 本页“要点”即可 |
 | 派发 Worker/Reviewer | [协作](../references/delegation.md) |
-| 建或改 spec、按计划实施、归档计划 | [spec 与计划](../references/spec-plan.md) |
+| 写计划、建或改 spec、按计划实施、归档计划 | [spec 与计划](../references/spec-plan.md) |
 | UI 工作 | [UI 设计流程](../references/design.md) |
 | 故障诊断 | 本页“诊断” |
 
@@ -27,7 +27,7 @@
 
 ## 计划
 
-任务按计划实施时，task-start 用 `plans` 声明计划文件，集成后、task-end 前在原计划回写进度（完成条目、偏离及原因、剩余），回写路径列入 allowedPaths。计划做完或用户放弃时提议归档。细则见 [spec 与计划](../references/spec-plan.md#计划回写)。
+交付计划时，除方案与末尾“spec 影响”外，须给出建议分流（`lead-direct` 或 `delegated`）：需要分工或独立审查时，列出**分几个工作包、每包的修改范围与串并行依赖**，并在交付时按[提问路径](../workflow.md#提问路径)请用户指定 **Worker 与 Reviewer 分别用哪个智能体/通道**（已有约定时列出沿用项供确认）；单点简单任务说明为何 `lead-direct` 免拆包。按计划实施时，task-start 用 `plans` 声明计划文件、用 `channels` 记录选定通道，集成后、task-end 前回写进度；做完或放弃时提议归档。细则见 [spec 与计划](../references/spec-plan.md#计划交付)。
 
 ## 诊断
 
