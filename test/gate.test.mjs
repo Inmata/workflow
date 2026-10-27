@@ -339,7 +339,7 @@ test('回合结束核对：在途包挡一次要求继续等待；waiting-user�
   await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched', handle: 'task-abc' }]);
   const waiting = await event(f, 'Stop');
   assert.equal(waiting.decision, 'block');
-  assert.match(waiting.reason, /1 个工作包在途（w1\(task-abc\)）.*wait_ms 60000.*说明为什么暂停/);
+  assert.match(waiting.reason, /1 个工作包在途（w1\(task-abc\)）.*wait_ms: 0.*说明为什么暂停/);
   assert.deepEqual(await event(f, 'Stop'), {});
   f.turnId = 'turn-2';
   await event(f, 'UserPromptSubmit');

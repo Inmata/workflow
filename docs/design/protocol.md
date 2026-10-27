@@ -81,7 +81,7 @@ packages 的 `handle` 填宿主委派 ID（Codeg task_id）时，委派状态查
 | stop_hook_active=true，或本回合已挡过（`session.stopBlockedTurn` 等于当前 turnId） | 放行 |
 | phase 为 waiting-user 或 operation-only | 放行 |
 | 绑定任务不是 active，或 route=operation-only | 放行 |
-| 有 dispatched 工作包 | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：列出在途包与 handle。在途包全部是 `builtin:` 通道时，说明宿主会在子代理结束时通知本会话，只需向用户说明在等什么；否则要求继续有界等待结果，或向用户说明暂停原因与接续方式（Codeg 不会在委派结束时唤醒 Lead） |
+| 有 dispatched 工作包 | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：列出在途包与 handle。在途包全部是 `builtin:` 通道时，说明宿主会在子代理结束时通知本会话，只需向用户说明在等什么；否则要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明暂停原因与接续方式（Codeg 不会在委派结束时唤醒 Lead） |
 | 其余（Lead 的活动任务尚未 task-end） | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：有门禁缺项时列出缺项，要求补齐后 task-end 或向用户说明未完成项；无缺项时提醒发 task-end；任务关联的计划未改动时，同一 reason 附回写提醒 |
 | Interrupt | 增 interruptEpoch、撤销票据、挂起任务、保存 business-incomplete、释放会话归属 |
 | SessionEnd | 同中断保存；不把业务标为完成，不续跑业务 |

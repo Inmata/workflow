@@ -58,8 +58,7 @@ export function validateState(state) {
   if (state.installs !== undefined && (!state.installs || typeof state.installs !== 'object' || Array.isArray(state.installs))) fail('STATE', '状态 installs 损坏');
   return state;
 }
-export async function readState(directory) {
-  const raw = await readText(path.join(directory, 'state.json'));
+export function parseState(raw) {
   if (raw === null) return emptyState();
   let value;
   try { value = JSON.parse(raw); } catch { fail('STATE', '状态 JSON 损坏；保留原文件并停止维护'); }
@@ -71,6 +70,9 @@ export async function readState(directory) {
     }
   }
   return value;
+}
+export async function readState(directory) {
+  return parseState(await readText(path.join(directory, 'state.json')));
 }
 export async function withLock(directory, name, operation) {
   const locks = path.join(directory, 'locks');
@@ -118,19 +120,25 @@ export async function withLock(directory, name, operation) {
 }
 export async function mutate(directory, operation) {
   return withLock(directory, 'state', async () => {
-    const original = await readText(path.join(directory, 'state.json'));
-    const state = await readState(directory);
+    const file = path.join(directory, 'state.json');
+    const original = await readText(file);
+    const migrateV1 = Boolean(original && JSON.parse(original).schemaVersion === 1);
+    const state = parseState(original);
+    let lastSaved = null;
     const save = async () => {
-      if (original && JSON.parse(original).schemaVersion === 1) {
+      if (migrateV1) {
         const backup = path.join(directory, 'migrations', `v1-${digest(original)}.json`);
         if (await readText(backup) === null) await atomicWrite(backup, original);
       }
       state.revision += 1;
-      try { await writeJSON(path.join(directory, 'state.json'), state); }
+      const serialized = `${JSON.stringify(state, null, 2)}\n`;
+      try { await atomicWrite(file, serialized); }
       catch (error) { error.originalCode = error.code; error.code = 'STATE_WRITE_FAILED'; throw error; }
+      lastSaved = serialized;
     };
     const result = await operation(state, save);
-    await save();
+    // 已显式 save 过且后续未再改状态（如 Stop 先持久化预算再返回）时，不再重复落盘。
+    if (lastSaved === null || `${JSON.stringify(state, null, 2)}\n` !== lastSaved) await save();
     return result;
   });
 }

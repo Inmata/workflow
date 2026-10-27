@@ -2,21 +2,11 @@
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { fail, readState, stateDirectory } from '../src/store.mjs';
-import { enableProject, disableProject, attachWorktree, resolveProject, setOwner } from '../src/projects.mjs';
+import { resolveProject } from '../src/projects.mjs';
 import { getContext } from '../src/context.mjs';
-import { applyKnowledge, createPending, inspectKnowledge, recoverTransaction } from '../src/knowledge.mjs';
-import { alignmentStatus, applyAlignment, decideAlignment, scanAlignment, suggestAlignment } from '../src/alignment.mjs';
-import { handleHook } from '../src/hooks.mjs';
+import { handleHook, HOSTS as AGENTS } from '../src/hooks.mjs';
 import { gateReport, taskKey, unchangedPlans } from '../src/protocol.mjs';
-import { checkSpecs } from '../src/spec.mjs';
-import { AGENTS, doctor, install, uninstall } from '../src/install.mjs';
-import { capture, feedback, migrateCandidates, reviseKnowledge, selectKnowledge } from '../src/learning.mjs';
-import { learningConfig, projectFor, setLearningConfig, setLearningEnabled } from '../src/learning-config.mjs';
-import { acknowledgeNotices, learningStatus, recoverReview, reviewOnce } from '../src/review.mjs';
-import { installSchedule, removeSchedule, schedulePreview, tick } from '../src/scheduler.mjs';
-import { learningDoctor, onboardProject, removeProject } from '../src/onboard.mjs';
 import { cliPath } from '../src/entry.mjs';
-import { buildSignal } from '../src/signal.mjs';
 
 const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'max-files', 'skip-learning', 'enable-learning', 'help']);
 function argumentsFor(argv) {
@@ -74,6 +64,7 @@ for (const key of ['global', 'now', 'query', 'run', 'version', 'task', 'ref']) a
 // signal 便捷子命令的字段参数；身份字段（ticket、epoch、revision）不接受命令行传入，只从状态补齐。
 for (const key of ['turn', 'id', 'goal', 'route', 'mode', 'paths', 'plans', 'channels', 'parent', 'phase', 'delivery', 'package', 'final-ref']) allowed.add(key);
 async function structuredSignal(directory, root, action, options) {
+  const { buildSignal } = await import('../src/signal.mjs');
   const state = await readState(directory);
   const resolved = await resolveProject(state, root);
   if (!resolved) fail('PROJECT', '当前目录没有有效项目绑定');
@@ -108,9 +99,9 @@ async function main() {
     try { return await handleHook(directory, await inputJSON(options), { agent }); }
     catch { return { systemMessage: 'workflow 事件输入无效，已保守放行。' }; }
   }
-  if (command === 'install') return install(directory, { userDir: options['user-dir'], agent });
-  if (command === 'uninstall') return uninstall(directory, { agent });
-  if (command === 'doctor') return doctor(directory, options.project, { agent, userDir: options['user-dir'] });
+  if (command === 'install') return (await import('../src/install.mjs')).install(directory, { userDir: options['user-dir'], agent });
+  if (command === 'uninstall') return (await import('../src/install.mjs')).uninstall(directory, { agent });
+  if (command === 'doctor') return (await import('../src/install.mjs')).doctor(directory, options.project, { agent, userDir: options['user-dir'] });
   if (command === 'context') return getContext(directory, root, options.role || 'lead', options.session);
   if (command === 'task' && action === 'show') {
     if (!options.task) fail('ARGUMENT', 'task show 需要 --task');
@@ -119,18 +110,21 @@ async function main() {
   // 只读：不需要项目绑定，CI 里也能直接运行。
   if (command === 'spec' && action === 'check') {
     if (options.ref !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_.\/~^@{}-]{0,199}$/.test(options.ref)) fail('ARGUMENT', '--ref 不是有效的提交引用');
+    const { checkSpecs } = await import('../src/spec.mjs');
     const result = checkSpecs(path.resolve(root), { ref: options.ref });
     if (!result.ok) process.exitCode = 1;
     return result;
   }
   if (command === 'project') {
-    if (action === 'onboard') { if (!options.root) fail('ARGUMENT', 'onboard 需要明确 --root'); if (options['enable-learning'] && options['skip-learning']) fail('ARGUMENT', '--enable-learning 与 --skip-learning 不能同时使用'); return onboardProject(directory, options.root, { coexistenceMode: options['coexistence-mode'], skipLearning: options['skip-learning'], enableLearning: options['enable-learning'] }); }
-    if (action === 'remove') { if (!options.root) fail('ARGUMENT', 'remove 需要明确 --root'); return removeProject(directory, options.root); }
+    if (action === 'onboard') { if (!options.root) fail('ARGUMENT', 'onboard 需要明确 --root'); if (options['enable-learning'] && options['skip-learning']) fail('ARGUMENT', '--enable-learning 与 --skip-learning 不能同时使用'); return (await import('../src/onboard.mjs')).onboardProject(directory, options.root, { coexistenceMode: options['coexistence-mode'], skipLearning: options['skip-learning'], enableLearning: options['enable-learning'] }); }
+    if (action === 'remove') { if (!options.root) fail('ARGUMENT', 'remove 需要明确 --root'); return (await import('../src/onboard.mjs')).removeProject(directory, options.root); }
+    const { enableProject, disableProject, attachWorktree, setOwner } = await import('../src/projects.mjs');
     if (action === 'enable') { if (!options.root) fail('ARGUMENT', 'enable 需要明确 --root'); return enableProject(directory, options.root, { coexistenceMode: options['coexistence-mode'] }); }
     if (action === 'disable') { if (!options.root) fail('ARGUMENT', 'disable 需要明确 --root'); return disableProject(directory, options.root); }
     if (action === 'attach-worktree') { if (!options.project || !options.root) fail('ARGUMENT', '需要明确 --project ID 和 --root'); return attachWorktree(directory, options.project, options.root); }
     if (action === 'owner') return setOwner(directory, options.project);
     if (action === 'align') {
+      const { alignmentStatus, applyAlignment, decideAlignment, scanAlignment, suggestAlignment } = await import('../src/alignment.mjs');
       if (subaction === 'scan') return scanAlignment(directory, root, { maxFiles: options['max-files'] });
       if (subaction === 'status') return alignmentStatus(directory, root);
       if (subaction === 'apply') return applyAlignment(directory, root, await inputJSON(options));
@@ -139,15 +133,19 @@ async function main() {
     }
   }
   if (command === 'knowledge') {
+    const { capture, feedback, reviseKnowledge, selectKnowledge } = await import('../src/learning.mjs');
     if (action === 'capture') return capture(directory, await inputJSON(options));
     if (action === 'feedback') return feedback(directory, await inputJSON(options));
     if (action === 'revise') return reviseKnowledge(directory, root, await inputJSON(options));
     if (['select', 'explain'].includes(action)) return selectKnowledge(directory, root, { text: options.query || '', paths: options.path ? [options.path] : [], version: options.version });
+    const { applyKnowledge, inspectKnowledge, recoverTransaction } = await import('../src/knowledge.mjs');
     if (action === 'inspect') return inspectKnowledge(directory, root, options.path);
     if (action === 'apply') return applyKnowledge(directory, await inputJSON(options));
     if (action === 'recover') return recoverTransaction(directory, options.transaction, root);
   }
   if (command === 'learning') {
+    const { learningConfig, projectFor, setLearningConfig, setLearningEnabled } = await import('../src/learning-config.mjs');
+    const { installSchedule, removeSchedule, schedulePreview, tick } = await import('../src/scheduler.mjs');
     if (action === 'config') {
       if (subaction === 'get') return learningConfig(directory, options.global ? null : await projectFor(directory, root));
       if (subaction === 'set') {
@@ -157,8 +155,10 @@ async function main() {
         return result;
       }
     }
+    const { migrateCandidates } = await import('../src/learning.mjs');
     if (action === 'enable') { const result = await setLearningEnabled(directory, root, true); return { ...result, migration: await migrateCandidates(directory, root) }; }
     if (action === 'disable') return setLearningEnabled(directory, root, false);
+    const { acknowledgeNotices, learningStatus, recoverReview, reviewOnce } = await import('../src/review.mjs');
     if (action === 'status') return learningStatus(directory, root);
     if (action === 'migrate') return migrateCandidates(directory, root);
     if (action === 'acknowledge') return acknowledgeNotices(directory, root);
@@ -168,7 +168,7 @@ async function main() {
     if (action === 'doctor') {
       // --global 只看个人配置，接入前也能用；否则按项目配置覆盖后的最终值核对。
       const project = options.global ? null : await projectFor(directory, root);
-      return learningDoctor(directory, project, { root: project?.root });
+      return (await import('../src/onboard.mjs')).learningDoctor(directory, project, { root: project?.root });
     }
     if (action === 'schedule') {
       if (subaction === 'preview') return schedulePreview(directory, root, cliPath());
@@ -177,7 +177,7 @@ async function main() {
     }
   }
   if (command === 'pending') {
-    if (action === 'create') return createPending(directory, await inputJSON(options));
+    if (action === 'create') return (await import('../src/knowledge.mjs')).createPending(directory, await inputJSON(options));
     const state = await readState(directory);
     const resolved = await resolveProject(state, root);
     if (!resolved) return { pending: [] };

@@ -2,9 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { readState } from '../src/store.mjs';
+import { mutate, readState } from '../src/store.mjs';
 import { buildSignal } from '../src/signal.mjs';
 import { sessionKey } from '../src/protocol.mjs';
+import { resolveProject } from '../src/projects.mjs';
 import { cli, entry, event, fixture, start } from './helpers.mjs';
 
 // 便捷子命令：CLI 只读状态拼 payload，交给 PostToolUse 接受；返回 CLI 结果与 hook 回执。
@@ -116,3 +117,20 @@ test('同会话后续回合入口只给短指引；SessionStart 恢复完整入�
   assert.ok(resumed.signal.examples.length);
   assert.doesNotMatch(resumed.instruction, /入口与本会话上一回合相同/);
 });
+test('Stop 与显式 save 后未再改状态不重复落盘；中间 save 后继续改状态仍二次落盘；未注册目录零匹配返回 null', async () => {
+  const f = await fixture();
+  await start(f);
+  const r0 = (await readState(f.directory)).revision;
+  await event(f, 'Stop');
+  assert.equal((await readState(f.directory)).revision, r0 + 1);
+  await mutate(f.directory, async (state, save) => {
+    state.customStep = 1;
+    await save();
+    state.customStep = 2;
+  });
+  const after = await readState(f.directory);
+  assert.equal(after.revision, r0 + 3);
+  assert.equal(after.customStep, 2);
+  assert.equal(await resolveProject(after, path.dirname(f.directory)), null);
+});
+

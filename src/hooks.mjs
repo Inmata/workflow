@@ -147,12 +147,13 @@ export async function handleHook(directory, event, options = {}) {
       const { verifyRelease } = await import('./install.mjs');
       if (!await verifyRelease(existing.install)) return { systemMessage: 'workflow 发布副本指纹变化，维护不可用；已保守放行。' };
     }
-    const initial = await resolveProject(existing, event.cwd);
+    const probe = { identities: new Map() };
+    const initial = await resolveProject(existing, event.cwd, probe);
     if (!initial) return {};
     // 委派状态查询只读核对账本，不写状态：每次等待都落盘会放大锁竞争。
     if (name === 'PostToolUse' && delegationStatus) return delegationHint(existing, initial.project, event, turnId);
     return await mutate(directory, async (state, save) => {
-      const resolved = await resolveProject(state, event.cwd);
+      const resolved = await resolveProject(state, event.cwd, probe);
       if (!resolved) return {};
       const project = resolved.project;
       let session = state.sessions[sessionKey(project.projectId, event.session_id)];

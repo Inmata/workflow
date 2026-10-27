@@ -10,11 +10,12 @@ function git(directory, args) {
   return result.status === 0 ? result.stdout.trim() : null;
 }
 export async function identity(root) {
-  const common = git(root, ['rev-parse', '--path-format=absolute', '--git-common-dir']);
-  const top = git(root, ['rev-parse', '--show-toplevel']);
-  if ((common === null) !== (top === null) || (common === null && await hasGitBoundary(root))) {
+  const out = git(root, ['rev-parse', '--path-format=absolute', '--git-common-dir', '--show-toplevel']);
+  const lines = out ? out.split(/\r?\n/).filter(Boolean) : [];
+  if ((out !== null && lines.length !== 2) || (out === null && await hasGitBoundary(root))) {
     fail('GIT_UNAVAILABLE', 'Git 仓库身份暂不可用；请核对 Git 可用性、仓库访问和信任设置');
   }
+  const [common, top] = lines;
   return { directory: await directoryIdentity(root), gitCommon: common ? await canonical(common) : null, gitRoot: top ? await canonical(top) : null };
 }
 async function hasGitBoundary(root) {
@@ -29,19 +30,28 @@ async function hasGitBoundary(root) {
 export function identityEqual(a, b) {
   return JSON.stringify(a.directory) === JSON.stringify(b.directory) && (a.gitCommon === null ? b.gitCommon === null : b.gitCommon !== null && samePath(a.gitCommon, b.gitCommon));
 }
-export async function resolveProject(state, cwd) {
-  const actual = await canonical(cwd);
-  const actualGit = git(actual, ['rev-parse', '--show-toplevel']);
-  const actualTop = actualGit ? await canonical(actualGit) : null;
+export async function resolveProject(state, cwd, probe = null) {
+  const actual = probe?.actual ?? await canonical(cwd);
+  if (probe) probe.actual = actual;
   const candidates = [];
   for (const project of Object.values(state.projects)) {
     if (!project.enabled) continue;
     for (const tree of project.worktrees) if (within(tree.root, actual)) candidates.push({ project, tree });
   }
+  // 未匹配任何已启用项目时直接返回，不为未接入目录拉起 git 子进程。
+  if (!candidates.length) return null;
   candidates.sort((a, b) => b.tree.root.length - a.tree.root.length);
+  let actualTop;
+  const topForActual = async () => {
+    if (actualTop !== undefined) return actualTop;
+    if (probe && Object.hasOwn(probe, 'actualTop')) return (actualTop = probe.actualTop);
+    const actualGit = git(actual, ['rev-parse', '--show-toplevel']);
+    actualTop = actualGit ? await canonical(actualGit) : null;
+    if (probe) probe.actualTop = actualTop;
+    return actualTop;
+  };
   for (const candidate of candidates) {
     const { project, tree } = candidate;
-    if (actualTop && !samePath(actualTop, tree.identity.gitRoot || tree.root)) continue;
     // Non-Git projects also stop inheritance at a nested .git boundary.
     let cursor = actual;
     let nested = false;
@@ -50,9 +60,19 @@ export async function resolveProject(state, cwd) {
       cursor = path.dirname(cursor);
     }
     if (nested) continue;
+    let current;
     try {
-      if (identityEqual(tree.identity, await identity(tree.root))) return { project, worktree: tree.root, cwd: actual };
-    } catch { /* Moved or inaccessible bindings are not inherited. */ }
+      if (probe?.identities?.has(tree.root)) current = probe.identities.get(tree.root);
+      else {
+        current = await identity(tree.root);
+        probe?.identities?.set(tree.root, current);
+      }
+    } catch { continue; /* Moved or inaccessible bindings are not inherited. */ }
+    if (!identityEqual(tree.identity, current)) continue;
+    // cwd 就是 worktree 根时 current.gitRoot 已由同一次 git rev-parse 给出，不再重跑。
+    const top = samePath(actual, tree.root) ? current.gitRoot : await topForActual();
+    if (top && !samePath(top, tree.identity.gitRoot || tree.root)) continue;
+    return { project, worktree: tree.root, cwd: actual };
   }
   return null;
 }

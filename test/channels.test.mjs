@@ -139,7 +139,7 @@ test('已审结论沿 supersedes 继承：接替包不能借新包号豁免；�
   assert.equal(waived.result.accepted, true, JSON.stringify(waived.result));
 });
 
-test('Stop 在途提示按通道区分：全为内置子代理时说明宿主会通知，含 Codeg 包时要求有界等待', async () => {
+test('Stop 在途提示按通道区分：全为内置子代理时说明宿主会通知，含 Codeg 包时要求阻塞等待', async () => {
   const f = await fixture();
   await delegated(f);
   await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched', handle: 'agent-x', channel: 'builtin:general-purpose' }]);

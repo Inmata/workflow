@@ -31,7 +31,7 @@
 
 ```text
 包 ID / 状态：packageId，delivered | blocked | failed
-deliveredRef：交付版本（commit 或冻结文件摘要）
+deliveredRef：交付版本（本包本地 commit OID；工作区非 Git 或包明确禁 commit 时填变更摘要）
 变化：不超过 5 行的改动摘要
 测试：命令与结论；失败/未执行项
 文档影响：<spec id | 用户可见文档路径>：已更新 | 未更新（原因）；无影响写“无：理由”
@@ -43,4 +43,4 @@ deliveredRef：交付版本（commit 或冻结文件摘要）
 
 FIX 沿用原 worktree、新基准和有效证据定向修复，最多连续两轮；已有复审授权交 Lead 接续。接新包/接手他人工作沿用明确指派，先确认原所有者停止。启动失败或中断按[Codeg 接续](../adapters/codeg.md#接续)，不猜测认证/余额，不自行升档、改全局配置或换工具。
 
-本地检查点只含本包修改且需对应提交授权；不自行 push、改版本或发布。满足完成条件立即交回。
+非默认分支上可按本包 `allowedPaths` 精确暂存并创建本地交付/检查点 commit；不向默认分支直接提交，不自行 push、改版本或发布。满足完成条件立即交回。

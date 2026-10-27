@@ -364,11 +364,11 @@ export function stop(state, project, session, event = {}) {
   if (inflight.length) {
     session.stopBlockedTurn = session.turnId;
     const list = inflight.map(([id, item]) => item.handle ? `${id}(${item.handle})` : id).join('、');
-    // 宿主内置子代理结束时会通知父会话，只需说明在等什么；其余（Codeg 或未填通道）必须同回合有界等待。
+    // 宿主内置子代理结束时会通知父会话，只需说明在等什么；其余（Codeg 或未填通道）必须同回合阻塞等待。
     const builtin = inflight.every(([, item]) => item.channel?.startsWith('builtin:'));
     const how = builtin
       ? '这些包由宿主内置子代理执行，结束时宿主会通知本会话：向用户说明在等哪些包、结果回来后做什么，再结束回合。'
-      : '宿主不会在子任务结束时唤醒本会话，结束回合就收不到结果。二选一：用有界等待（Codeg get_delegation_status 批量传入在途 task_id、wait_ms 60000，轮间调用 check_user_feedback）继续等到终态或 blocked_on 再收结果；或者向用户说明为什么暂停、何时由谁接续。';
+      : '宿主不会在子任务结束时唤醒本会话，结束回合就收不到结果。二选一：用阻塞等待（Codeg get_delegation_status 批量传入在途 task_id、wait_ms: 0；若 MCP 空闲超时断开而任务仍在运行则重调续等，等待期间不轮询、不跑无关命令）等到终态或 blocked_on 再收结果；或者向用户说明为什么暂停、何时由谁接续。';
     return { decision: 'block', reason: `workflow 回合结束核对：任务 ${task.taskId} 仍有 ${inflight.length} 个工作包在途（${list}）。${how}` };
   }
   let missing;
