@@ -7,7 +7,7 @@ import { getContext } from '../src/context.mjs';
 import { applyKnowledge, createPending, inspectKnowledge, recoverTransaction } from '../src/knowledge.mjs';
 import { alignmentStatus, applyAlignment, decideAlignment, scanAlignment, suggestAlignment } from '../src/alignment.mjs';
 import { handleHook } from '../src/hooks.mjs';
-import { gateReport, taskKey } from '../src/protocol.mjs';
+import { gateReport, taskKey, unchangedPlans } from '../src/protocol.mjs';
 import { checkSpecs } from '../src/spec.mjs';
 import { AGENTS, doctor, install, uninstall } from '../src/install.mjs';
 import { capture, feedback, migrateCandidates, reviseKnowledge, selectKnowledge } from '../src/learning.mjs';
@@ -77,7 +77,9 @@ async function showTask(state, root, taskId) {
   if (!task) fail('TASK', '任务不存在或不属于当前项目');
   const { taskId: id, goal, parentTaskId, route = null, lifecycle, packages = {}, validation = null, waivers = [], finalRef = null, changes = [] } = task;
   const gate = lifecycle === 'active' ? gateReport(state, task, finalRef) : { missing: [], findings: [] };
-  return { taskId: id, goal, parentTaskId, route, lifecycle, packages: Object.values(packages), validation, waivers, finalRef, changes: changes.length, gateMissing: gate.missing, specFindings: gate.findings, note: '门禁核对声明记录一致性，不证明审查或测试真实发生' };
+  const plans = (task.plans || []).map(plan => plan.path);
+  const planUnchanged = lifecycle === 'active' ? unchangedPlans(state, task) : [];
+  return { taskId: id, goal, parentTaskId, route, lifecycle, packages: Object.values(packages), validation, waivers, finalRef, changes: changes.length, gateMissing: gate.missing, specFindings: gate.findings, plans, planUnchanged, note: '门禁核对声明记录一致性，不证明审查或测试真实发生' };
 }
 async function main() {
   const { options, commands } = argumentsFor(process.argv.slice(2));

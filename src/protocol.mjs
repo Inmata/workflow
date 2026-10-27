@@ -1,3 +1,5 @@
+import path from 'node:path';
+import { readFileSync } from 'node:fs';
 import { digest, fail, id, SCHEMA_VERSION, WorkflowError } from './store.mjs';
 import { checkSpecs, describeFindings } from './spec.mjs';
 
@@ -132,6 +134,28 @@ export function upsertPackages(task, items) {
   }
   return repairLimit;
 }
+// 关联计划只作软提醒：task-start 记下计划文件摘要，结束时没变就提醒回写进度；不进 missing，不挡 task-end。
+function planInput(value) {
+  if (!Array.isArray(value) || !value.length || value.length > 10) fail('PLAN', 'plans 需为 1-10 项相对路径数组');
+  return value.map((item, index) => {
+    const relative = textField(item, `plans[${index}]`).replaceAll('\\', '/');
+    if (path.isAbsolute(relative) || /^[A-Za-z]:/.test(relative) || relative.split('/').includes('..')) fail('PLAN', `计划路径须为项目内相对路径：${item}`);
+    return relative;
+  });
+}
+function fileDigest(root, relative) {
+  try { return digest(readFileSync(path.join(root, relative))); } catch { return null; }
+}
+function planBaselines(root, plans) {
+  return plans.map(relative => ({ path: relative, digest: root ? fileDigest(root, relative) : null }));
+}
+// 内容未变才算没回写；文件不见了按已归档或改名处理，读不到基线时不提醒。
+export function unchangedPlans(state, task) {
+  const root = state.projects[task.projectId]?.root;
+  if (!root || !task.plans?.length) return [];
+  return task.plans.filter(plan => plan.digest && fileDigest(root, plan.path) === plan.digest).map(plan => plan.path);
+}
+const planReminder = paths => `关联计划 ${paths.join('、')} 自任务开始后没有改动：按 Lead 指引回写本任务完成的条目、偏离和剩余事项；确实不需要回写时在交付说明里写明理由。计划已全部完成时提议归档。`;
 // 门禁只核对 Lead 声明记录的一致性；插件看不到 Worker 真实产出，不证明审查或测试真实发生。
 export function gateMissing(state, task, finalRef) {
   return gateReport(state, task, finalRef).missing;
@@ -203,13 +227,21 @@ export function acceptSignal(state, payload) {
         const detail = !permissions ? '缺少 permissions 对象' : !['write', 'read-only', 'plan'].includes(permissions.mode) ? 'permissions.mode 须为 write、read-only 或 plan' : 'permissions.allowedPaths 须为字符串数组（可为空数组）';
         fail('PERMISSION', `任务需明确 mode 与 allowedPaths：${detail}${misplaced.length ? `；${misplaced.join('、')} 写在了顶层，应放进 permissions` : ''}`);
       }
+      const plans = payload.plans === undefined ? null : planInput(payload.plans);
       task = { projectId: project.projectId, taskId: payload.taskId, goal: payload.goal, parentTaskId: payload.parentTaskId || null, route: payload.route || null, lifecycle: 'active', repairIssued: false, deliveries: {}, candidates: {}, packages: {}, permissions, createdAt: new Date().toISOString() };
+      if (plans) task.plans = planBaselines(project.root, plans);
       state.tasks[key] = task;
     } else {
       if (!['active', 'suspended'].includes(task.lifecycle) && !Object.values(state.pending).some(p => p.projectId === project.projectId && p.taskId === payload.taskId && p.kind === 'knowledge-pending' && p.status === 'open')) fail('TASK', '已完成任务无待接续知识');
       // 接续时可补声明分流；已声明的分流不可更改，避免中途绕过门禁。
       if (payload.route && task.route && task.route !== payload.route) fail('ROUTE', '任务已声明其他分流');
       if (payload.route) task.route = payload.route;
+      // 计划同样只能首次或补声明；补声明时以当时内容为基线。
+      if (payload.plans !== undefined) {
+        const plans = planInput(payload.plans);
+        if (task.plans?.length && JSON.stringify(task.plans.map(p => p.path)) !== JSON.stringify(plans)) fail('PLAN', '任务已声明其他计划');
+        task.plans ||= planBaselines(project.root, plans);
+      }
       task.lifecycle = 'active';
     }
     session.taskId = payload.taskId;
@@ -249,6 +281,8 @@ export function acceptSignal(state, payload) {
       session.phase = 'unknown';
       if (!task.route) extra = { warning: 'route-missing' };
       else if (task.route === 'delegated') extra = { gate: 'declared-records-consistent' };
+      const stale = unchangedPlans(state, task);
+      if (stale.length) extra = { ...extra, planUnchanged: stale, reminder: planReminder(stale) };
     } else if (payload.action !== 'disposition') fail('ACTION', '未知信号动作');
     if (payload.action === 'disposition' || payload.disposition) {
       if (payload.deliveryId !== session.deliveryId || !task.deliveries[payload.deliveryId]) fail('DELIVERY', '交付身份不匹配');
@@ -292,7 +326,10 @@ export function stop(state, project, session, event = {}) {
   const reason = missing.length
     ? `workflow 回合结束核对：任务 ${task.taskId} 仍为 active，门禁缺项 ${missing.join(', ')}。二选一：补齐后发 task-end；或者向用户说明哪些还没完成、下一步是什么。不要只回复“已完成”。`
     : `workflow 回合结束核对：任务 ${task.taskId} 门禁已无缺项但仍为 active。工作已完成就发 task-end 结束任务；还没完成就向用户说明剩余事项。`;
-  return { decision: 'block', reason };
+  // 计划提醒附在已有的一次阻挡里，本身不新增阻挡。
+  let stale = [];
+  try { stale = unchangedPlans(state, task); } catch {}
+  return { decision: 'block', reason: stale.length ? `${reason} 另：${planReminder(stale)}` : reason };
 }
 export function interrupt(state, project, session) {
   if (!session || session.interrupted) return;

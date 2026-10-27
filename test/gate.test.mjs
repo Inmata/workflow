@@ -2,7 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { emptyState, readState } from '../src/store.mjs';
 import { acceptSignal, openTurn, taskKey } from '../src/protocol.mjs';
 import { codexQuestionFeature, doctor } from '../src/install.mjs';
@@ -392,4 +392,40 @@ test('task-start 字段错误时回执点名缺项与放错位置的字段', asy
   const badMode = await emit(f, { action: 'task-start', goal: '改搜索', route: 'delegated', permissions: { mode: 'edit', allowedPaths: [] } });
   assert.match(badMode.result.message, /permissions\.mode 须为 write、read-only 或 plan/);
   assert.equal((await emit(f, { action: 'task-start', goal: '改搜索', route: 'delegated', permissions: { mode: 'write', allowedPaths: [] } })).result.accepted, true);
+});
+
+test('关联计划软提醒：计划未改时 Stop 与 task-end 回执提醒回写，不进缺项也不挡 task-end；改过或已移走不提醒', async () => {
+  const f = await fixture();
+  await mkdir(path.join(f.project, 'docs'));
+  await writeFile(path.join(f.project, 'docs', 'plan.md'), '# 计划\n- [ ] 第一项\n');
+  const started = await emit(f, { action: 'task-start', goal: '按计划实施', route: 'lead-direct', plans: ['docs/plan.md'], permissions: { mode: 'write', allowedPaths: ['docs/plan.md'] } });
+  assert.equal(started.result.accepted, true, JSON.stringify(started.result));
+  const shown = JSON.parse(cli(['task', 'show', '--task', f.taskId, '--project', f.project, '--state-dir', f.directory]).stdout);
+  assert.deepEqual(shown.planUnchanged, ['docs/plan.md']);
+  assert.deepEqual(shown.gateMissing, []);
+  const blocked = await event(f, 'Stop');
+  assert.equal(blocked.decision, 'block');
+  assert.match(blocked.reason, /已无缺项.*关联计划 docs\/plan\.md 自任务开始后没有改动/);
+  // 计划不能改声明，可原样重复。
+  assert.equal((await emit(f, { action: 'task-start', plans: ['docs/other.md'] })).result.reason, 'PLAN');
+  const ended = await emit(f, { action: 'task-end' });
+  assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
+  assert.deepEqual(ended.result.planUnchanged, ['docs/plan.md']);
+  assert.match(ended.result.reminder, /回写/);
+
+  const g = await fixture();
+  await mkdir(path.join(g.project, 'docs'));
+  await writeFile(path.join(g.project, 'docs', 'plan.md'), '# 计划\n');
+  await writeFile(path.join(g.project, 'docs', 'done.md'), '# 旧计划\n');
+  await emit(g, { action: 'task-start', goal: 'x', route: 'lead-direct', plans: ['docs/plan.md', 'docs/done.md'], permissions: { mode: 'write', allowedPaths: [] } });
+  await writeFile(path.join(g.project, 'docs', 'plan.md'), '# 计划\n- [x] 第一项（abc123）\n');
+  await rm(path.join(g.project, 'docs', 'done.md'));
+  assert.doesNotMatch((await event(g, 'Stop')).reason, /关联计划/);
+  const done = await emit(g, { action: 'task-end' });
+  assert.equal(done.result.planUnchanged, undefined);
+
+  const h = await fixture();
+  for (const plans of [['../outside.md'], ['C:/x.md'], [], 'docs/plan.md']) {
+    assert.equal((await emit(h, { action: 'task-start', goal: 'x', plans, permissions: { mode: 'write', allowedPaths: [] } })).result.reason, 'PLAN');
+  }
 });

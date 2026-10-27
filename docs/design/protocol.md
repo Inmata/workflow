@@ -20,7 +20,7 @@
 
 | action | 附加字段 | 结果 |
 | --- | --- | --- |
-| task-start | goal（顶层）；permissions:{mode, allowedPaths}；可选 parentTaskId、route | 建立/显式接续任务；恢复 suspended，保留原权限；route 只能首次声明或补声明，不可改。新任务缺 goal 或 permissions 时回执点名缺项，mode/allowedPaths 写在顶层时指出应放进 permissions |
+| task-start | goal（顶层）；permissions:{mode, allowedPaths}；可选 parentTaskId、route、plans | 建立/显式接续任务；恢复 suspended，保留原权限；route 与 plans 只能首次声明或补声明，不可改（plans 改声明返回 `PLAN`）。新任务缺 goal 或 permissions 时回执点名缺项，mode/allowedPaths 写在顶层时指出应放进 permissions |
 | phase | phase；delivering 时 deliveryId | 更新明确阶段，可随带 disposition |
 | disposition | deliveryId；disposition | 处置当前交付 |
 | packages | packages[1-50]；可选 validation、change | 批量 upsert 工作包账本；change 追加到 `task.changes`；回执可带 `repairLimit` |
@@ -29,7 +29,9 @@
 
 `route` 为 `operation-only`、`lead-direct`、`delegated`。工作包字段：`packageId`、`role`（worker/reviewer）、`status`（dispatched/delivered/consumed/canceled/failed/waived）、`handle`（宿主 task_id）、`worktree`、`baseRef`、`deliveredRef`、`dependsOn[]`、`note`；reviewer 包另有 `reviews`（被审 packageId）、`reviewedRef`、`verdict`（PASS/FIX/BLOCKED）。新包必须给 role 与 status，已有包只更新给出的字段。`attempts` 由插件计：已交付或已消费的包重新 dispatched 加一，超过 2 时回执带 `repairLimit:true` 和 `repairLimitPackages`，只提示 Lead 裁决，不拒绝。`consumed` 表示 Lead 已读过结果。`validation` 为 `{ref, evidence[]}`。`change` 为 `{summary, reason, packages[]}`，记录中途细节变更，插件补 `at` 后追加，不覆盖历史。账本存于 `task.packages`、`task.changes`，旧任务没有该字段视为空，状态文件仍为 `schemaVersion=2`。
 
-task-end 门禁：父任务有 active 子任务（`parentTaskId`）时列 `child:<id>`。除 `operation-only` 外（含未声明 route 的旧任务）都做 spec 检查（见下文），有问题的 spec 各列一条 `spec:<id>`，检查不了时列 `spec-check:<原因>`。仅 `route=delegated` 再核对：每包终态（`terminal:<id>`）；每个未取消/未豁免的 worker 包，存在 `reviews` 指向它、`verdict=PASS` 且 `reviewedRef` 等于其 `deliveredRef` 的 reviewer 包（`review:<id>`）；存在 validation，给了 finalRef 时 `validation.ref` 必须相同（`validation`）。`waivers:[{step, reason}]` 的 step 可写完整条目或类别（`review`、`validation`、`terminal`、`child`、`spec-check`），累计记入任务；step 为 `spec` 或 `spec:<id>` 返回 `WAIVER`，已记录的同类旧豁免也不抵扣。缺项返回 `{accepted:false, reason:'GATE', missing:[...], findings?}`，消息附 spec 发现说明，状态整体回滚。未声明 route 的旧任务接受并附 `warning:'route-missing'`；delegated 通过时附 `gate:'declared-records-consistent'`。门禁只核对声明记录的一致性，不证明审查或测试真实发生。`task show --task <id>` 只读查看账本、`changes` 条数、`gateMissing` 和 `specFindings`。
+task-end 门禁：父任务有 active 子任务（`parentTaskId`）时列 `child:<id>`。除 `operation-only` 外（含未声明 route 的旧任务）都做 spec 检查（见下文），有问题的 spec 各列一条 `spec:<id>`，检查不了时列 `spec-check:<原因>`。仅 `route=delegated` 再核对：每包终态（`terminal:<id>`）；每个未取消/未豁免的 worker 包，存在 `reviews` 指向它、`verdict=PASS` 且 `reviewedRef` 等于其 `deliveredRef` 的 reviewer 包（`review:<id>`）；存在 validation，给了 finalRef 时 `validation.ref` 必须相同（`validation`）。`waivers:[{step, reason}]` 的 step 可写完整条目或类别（`review`、`validation`、`terminal`、`child`、`spec-check`），累计记入任务；step 为 `spec` 或 `spec:<id>` 返回 `WAIVER`，已记录的同类旧豁免也不抵扣。缺项返回 `{accepted:false, reason:'GATE', missing:[...], findings?}`，消息附 spec 发现说明，状态整体回滚。未声明 route 的旧任务接受并附 `warning:'route-missing'`；delegated 通过时附 `gate:'declared-records-consistent'`。门禁只核对声明记录的一致性，不证明审查或测试真实发生。`task show --task <id>` 只读查看账本、`changes` 条数、`gateMissing`、`specFindings`、`plans` 和 `planUnchanged`。
+
+计划软门禁：`plans` 为 1-10 项项目内相对路径（不含 `..`、不能是绝对路径），记入 `task.plans:[{path, digest}]`，digest 取声明时的文件内容摘要，文件不存在时为 null。收尾时内容摘要仍与基线相同的计划列为 `planUnchanged`；文件已不存在（按归档或改名处理）、基线为 null 时不列。它不进 `missing`、不需要豁免：task-end 照常接受，回执附 `planUnchanged` 与 `reminder`；Stop 只在已有的那一次阻挡里附上提醒，不新增阻挡。插件不判断计划是否做完，只看有没有回写。
 
 ## spec 检查
 
@@ -71,7 +73,7 @@ packages 的 `handle` 填宿主委派 ID（Codeg task_id）时，委派状态查
 | phase 为 waiting-user 或 operation-only | 放行 |
 | 绑定任务不是 active，或 route=operation-only | 放行 |
 | 有 dispatched 工作包 | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：列出在途包与 handle，要求继续有界等待结果，或向用户说明暂停原因与接续方式（宿主不会在委派结束时唤醒 Lead） |
-| 其余（Lead 的活动任务尚未 task-end） | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：有门禁缺项时列出缺项，要求补齐后 task-end 或向用户说明未完成项；无缺项时提醒发 task-end |
+| 其余（Lead 的活动任务尚未 task-end） | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：有门禁缺项时列出缺项，要求补齐后 task-end 或向用户说明未完成项；无缺项时提醒发 task-end；任务关联的计划未改动时，同一 reason 附回写提醒 |
 | Interrupt | 增 interruptEpoch、撤销票据、挂起任务、保存 business-incomplete、释放会话归属 |
 | SessionEnd | 同中断保存；不把业务标为完成，不续跑业务 |
 | PreCompact/PostCompact/compact SessionStart | 保存/恢复既有身份；预算不变 |

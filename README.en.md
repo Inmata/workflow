@@ -237,8 +237,8 @@ Still two steps: write the plan, you review it and say "go", implementation star
 1. Writing the plan: the plan ends with a "Spec impact" section listing which spec entries to create, change or remove, with the acceptance sentences as they will read afterwards; write "none" if no spec is affected.
 2. You review that section together with the plan. Saying "go" approves the plan and these spec changes together.
 3. Implementation: the Lead changes the specs as listed and hands them to Workers as acceptance criteria; the Reviewer checks them one by one. You are asked again only for spec changes the plan did not cover, or to change approved acceptance criteria.
-4. Wrap-up: the spec and the code are committed in the same task; if the spec was missed, task-end is blocked by the gate.
-5. Once the whole plan is done, archive it; it does not become a spec.
+4. Wrap-up: the spec and the code are committed in the same task; if the spec was missed, task-end is blocked by the gate. The Lead also writes back to the plan what this task finished, where it deviated, and what remains; if task-start declared `plans` and the plan is untouched, the plugin reminds the Lead without blocking completion.
+5. Once the whole plan is done, the Lead proposes archiving it; after you confirm, it moves to the archive directory with a status line at the top, remaining items split into a short todo, and navigation, the alignment index and links fixed. It does not become a spec.
 
 The role method text is in the [common method](docs/workflow.md); the three roles are in `docs/roles/lead.md`, `worker.md` and `reviewer.md`. Protocol fields and the state machine are in [protocol v1](docs/design/protocol.md).
 
@@ -259,7 +259,15 @@ Tests and the demo run in isolated directories under `workflow-tests/` in the sy
 
 ## Current status and limits
 
-Current version 0.6.0. It includes the collaboration rules, CLI, hook adapters for two hosts, persistent notes, graded knowledge, configuration and optional background review, as well as routing, the work package ledger, completion gates, role claims and spec drift checks. Real-host acceptance records are in [0.3.0 acceptance](docs/acceptance.md#6-030-真实宿主验收). The installer tells copies apart by content digest.
+Current version 0.6.1. It includes the collaboration rules, CLI, hook adapters for two hosts, persistent notes, graded knowledge, configuration and optional background review, as well as routing, the work package ledger, completion gates, role claims and spec drift checks. Real-host acceptance records are in [0.3.0 acceptance](docs/acceptance.md#6-030-真实宿主验收). The installer tells copies apart by content digest.
+
+Changes in 0.6.1:
+
+- Updating documents after a plan is done is now part of the rules: before task-end the Lead writes back to the plan what was finished, where it deviated, and what remains. When the whole plan is done, the Lead proposes archiving it; after you confirm, it follows fixed steps: move it to the archive directory, add a status line, split remaining items into a todo, fix navigation and links (see [How plans and specs work together](#how-plans-and-specs-work-together)).
+- Soft plan gate: task-start can declare related plans with `plans`. If a plan is still unchanged at wrap-up, Stop and the task-end receipt remind the Lead to write back, without blocking completion (see [usage](docs/usage.md#任务与回执)).
+- The Worker's "doc impact" line now covers user-facing docs such as the README and usage guide, and the Reviewer checks them too.
+
+After upgrading, reinstall the hosts. The AGENTS block is unchanged, so re-onboarding is not needed; tasks without `plans` behave as in 0.6.0.
 
 Changes in 0.6.0:
 

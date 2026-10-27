@@ -99,7 +99,11 @@ node "<本次hook提供的bin/workflow.mjs>" signal --input "<任务JSON文件>"
 
 旧交付处置保留兼容：`no-new-learning`、引用真实成功事务的 `updated`、引用已保存待办的 `pending-recovery`。新任务无需每次提交处置，Stop 不追加经验轮次。出现有据材料时按[经验学习](learning.md)采集，复盘由独立调度决定。
 
-完成后用新 signalId、当前 revision 发送 `action=task-end`，不以经验处置为前置。中断或 SessionEnd 将未完任务标为 suspended 并撤销票据，保留业务未完成记录；显式 task-start 才恢复。挂起任务不再以 active 永久挡住升级，未辨认的写事务仍需恢复。
+完成后用新 signalId、当前 revision 发送 `action=task-end`，不以经验处置为前置。
+
+按计划实施的任务在 task-start 加 `"plans": ["docs/plans/xxx.md"]`（项目内相对路径，1-10 项），插件记下当时的内容摘要。这是软门禁：计划到收尾仍未改动时，Stop 的那一次阻挡附上回写提醒，task-end 照常接受，回执带 `planUnchanged` 和 `reminder`；不进缺项，也不需要豁免。计划改过或已移走（归档）时不提醒。`task show` 显示 `plans` 与 `planUnchanged`。
+
+中断或 SessionEnd 将未完任务标为 suspended 并撤销票据，保留业务未完成记录；显式 task-start 才恢复。挂起任务不再以 active 永久挡住升级，未辨认的写事务仍需恢复。
 
 Lead 的活动任务结束回合时，Stop 会挡一次（等待用户、本回合已挡过时不挡）：有在途工作包时要求继续有界等待结果，或向用户说明为什么暂停；没有在途包而未发 task-end 时给出缺项，按提示补齐后发 task-end，或向用户说明还没完成的部分。
 
