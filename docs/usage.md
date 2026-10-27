@@ -75,7 +75,20 @@ node bin/workflow.mjs project align suggest --root "D:/已接入项目" --input 
 
 hook 提供 project/session/turn/ticket/interruptEpoch/expectedRevision。context 只读当前身份和最多一项本项目知识待办。每个新用户回合 phase=unknown；新业务创建稳定 taskId，后续回合/恢复显式沿用原 ID。跨会话接续也沿用任务预算和原权限。
 
-最小 task-start JSON（身份必须替换为本次 context 原值；signalId 每个新动作唯一）：
+常用动作用子命令，一条命令完成，不需要临时文件（`<sessionId>`、`<turnId>` 取本次入口的 identity；`--id` 是 signalId，每个新动作唯一，重试同一动作时命令保持不变）：
+
+```powershell
+node "<本次hook提供的bin/workflow.mjs>" signal task-start --session <sessionId> --turn <turnId> --id start-1 --task task-readme --route lead-direct --goal "本次已授权目标" --mode write --paths README.md,LESSONS.md
+node "<本次hook提供的bin/workflow.mjs>" signal task-end --session <sessionId> --turn <turnId> --id end-1
+```
+
+CLI 只读当前状态补齐 projectId、ticket、epoch 和 revision，输出信号，由当前 PostToolUse 接受；字段参数见[协议](design/protocol.md#信号)。packages、disposition 等结构化字段写进 UTF-8 JSON 文件，用 `--input` 附上（文件只放业务字段，不放身份字段）：
+
+```powershell
+node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-1 --input "<packages JSON文件>"
+```
+
+完整 payload 仍可用（兼容写法），身份必须替换为本次 context 原值：
 
 ```json
 {

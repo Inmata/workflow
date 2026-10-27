@@ -279,7 +279,7 @@ npm run demo
 0.6.0 的变化：
 
 - Lead 派完工作包后不再自行结束：有在途包时 Stop 挡一次，要求在同一回合用有界等待（`get_delegation_status` 批量、`wait_ms` 60000，轮间 `check_user_feedback`）收结果，或向用户说明为什么暂停（Codeg 不会在子任务结束时唤醒主会话）。
-- 信号推荐先写 UTF-8 JSON 文件再 `signal --input`；`--base64` 仅作兼容，长串可能被宿主脱敏而失效。`task-start` 缺 goal、permissions 或把 mode/allowedPaths 写在顶层时，回执点名缺项。
+- 常用信号用子命令一条命令发出（`signal task-start|task-end|phase|role-claim --session --turn --id ...`），CLI 自动补齐票据与 revision；packages 等结构化字段用 `--input` 附 UTF-8 JSON 文件。完整 payload 的 `signal --input` 保留兼容，`--base64` 长串可能被宿主脱敏而失效。`task-start` 缺 goal、permissions 或把 mode/allowedPaths 写在顶层时，回执点名缺项。
 - spec 只写已实现的行为；计划“spec 影响”里的改后验收句子随工作包下发，实施期间以包内验收为准，集成时再改 spec。事后补写的“spec 影响”需先经你确认。
 - UI 流程改为：派工前先和你确认思路和选用的本机设计技能；然后按“基准截图 → HTML 线框（每个局部 2～3 种布局）→ 高保真”逐步确认。高保真优先用项目自身界面技术（如 WPF 临时窗口套现有主题），做不了时用 HTML；生图只用于从零设计或换风格的方向探索；每步限时，换介质或方法要先确认。
 - 工作包新增“相关技能”字段；Lead 报告“已满足”时注明是核实过还是推断；计划或参照资料只在未提交改动里时，派工前提示先提交。

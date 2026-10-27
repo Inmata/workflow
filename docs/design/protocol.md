@@ -14,7 +14,12 @@
 
 ## 信号
 
-`signal --input <JSON> | --base64 <UTF-8 JSON>` 只输出 `{workflow_signal: payload}`。推荐 `--input`：先用文件工具写 UTF-8 JSON 文件再调用；长 base64 串可能被宿主当作密钥脱敏成占位符，解码后不是有效 JSON。仅 PostToolUse 在当前 shell 调用确实执行本安装副本的 `signal` 子命令后接受。解析限定 `tool_response` 的已知结构（直接 JSON、文本行、`output`、MCP `content[].text`），最多三层包装；不扫描文档、聊天、transcript 或任意嵌套键。其他插件命名空间不接受。混入多个不同信号拒绝。
+两种写法都只输出 `{workflow_signal: payload}`，CLI 不写状态：
+
+- 子命令（推荐）：`signal <action> --session <sessionId> --turn <turnId> --id <signalId> [字段参数]`。CLI 只读当前状态补齐 projectId、ticket、interruptEpoch、expectedRevision；`--task` 缺省用会话当前 taskId。字段参数：task-start 用 `--goal`、`--route`、`--mode`、`--paths a,b`、`--plans a,b`、`--channels worker=x,reviewer=y`、`--parent`；phase 用 `--phase`、`--delivery`；role-claim 用 `--role`、`--package`；task-end 用 `--final-ref`。packages、disposition 及 validation、waivers、change 等结构化字段放进 `--input <JSON 文件>`，该文件不能含身份字段或 taskId（返回 `INPUT`）。会话不存在返回 `IDENTITY`，turnId 不符或会话已中断返回 `STALE`，未知 action 返回 `ACTION`。同一 signalId 重试时 expectedRevision 取首次回执的值，正文不变即命中重放；读与写之间 revision 变化由 hook 以 `REVISION` 拒绝，不自动改成最新值。
+- 完整 payload（兼容）：`signal --input <JSON> | --base64 <UTF-8 JSON>`。推荐 `--input`：先用文件工具写 UTF-8 JSON 文件再调用；长 base64 串可能被宿主当作密钥脱敏成占位符，解码后不是有效 JSON。
+
+仅 PostToolUse 在当前 shell 调用确实执行本安装副本的 `signal` 子命令后接受。解析限定 `tool_response` 的已知结构（直接 JSON、文本行、`output`、MCP `content[].text`），最多三层包装；不扫描文档、聊天、transcript 或任意嵌套键。其他插件命名空间不接受。混入多个不同信号拒绝。
 
 所有信号字段：`schemaVersion:1`、`projectId`、`sessionId`、`turnId`、`taskId`、`ticket`、`interruptEpoch`、`expectedRevision`、`signalId`、`action`。新任务的 `taskId` 由 Lead 自拟（入口 identity 中为 null），不能为空。身份/票据/epoch/revision 必须匹配。重复 signalId 仅在同一 session、turn、task 下重放已接受回执；不重放 Stop 的阻断决定。signalId 相同而正文不同拒绝。
 
@@ -86,7 +91,7 @@ packages 的 `handle` 填宿主委派 ID（Codeg task_id）时，委派状态查
 
 PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输出的 compact SessionStart 入口承载。同一回合的既有票据、修订号和任务预算保持不变，真实宿主是否触发该入口另行验收。
 
-`repairIssued` 只保留兼容，不驱动 Stop 阻断。用户后续发言只建立新的未知回合，不恢复旧业务；context 最多提示一项知识待办，`pending list` 可查看全部。恢复业务通过显式 task-start，保持原权限。后台复盘另按配置计时、计批次和每日启动次数；业务返修与诊断限制独立。
+`repairIssued` 只保留兼容，不驱动 Stop 阻断。用户后续发言只建立新的未知回合，不恢复旧业务；context 最多提示一项知识待办，`pending list` 可查看全部；待办按事务独立保存，其他事务成功不能清除它。恢复业务通过显式 task-start，保持原权限。后台复盘另按配置计时、计批次和每日启动次数；业务返修与诊断限制独立。
 
 ## 知识事务
 

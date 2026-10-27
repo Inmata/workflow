@@ -116,8 +116,8 @@ export async function isSignalInvocation(event, entry = path.join(PRODUCT_ROOT, 
 function isComposedSignal(event) {
   if (!['Bash', 'exec_command', 'PowerShell', 'powershell', 'pwsh'].includes(event.tool_name)) return false;
   const raw = signalCommand(event);
-  // 入口可能藏在变量里（$wf=...; node $wf signal），命令里同时出现本插件入口和 signal --input/--base64 就回执。
-  return typeof raw === 'string' && /workflow\.mjs/.test(raw) && /\bsignal\s+--(?:base64|input)\b/.test(raw);
+  // 入口可能藏在变量里（$wf=...; node $wf signal），命令里同时出现本插件入口和 signal 的输入参数或子命令就回执。
+  return typeof raw === 'string' && /workflow\.mjs/.test(raw) && /\bsignal\s+(?:--(?:base64|input)\b|(?:task-start|task-end|phase|packages|role-claim|disposition)\s+--)/.test(raw);
 }
 export async function handleHook(directory, event, options = {}) {
   try {
@@ -172,7 +172,7 @@ export async function handleHook(directory, event, options = {}) {
         const upgraded = seenVersion && PRODUCT_VERSION && seenVersion !== PRODUCT_VERSION ? `workflow 插件已从 ${seenVersion} 升级到 ${PRODUCT_VERSION}：本会话早先读取的指引和命令可能已过时，请提醒用户开新会话；继续工作时以下面的入口为准。
 ` : '';
         // 已 role-claim 的委派会话注入对应角色的最小上下文，不再给 Lead 指引。
-        return contextOutput(name, `${upgraded}workflow 入口：${JSON.stringify(await projectContext(state, resolved, session?.role || 'lead', event.session_id, { directory, incremental: true }))}`);
+        return contextOutput(name, `${upgraded}workflow 入口：${JSON.stringify(await projectContext(state, resolved, session?.role || 'lead', event.session_id, { directory, incremental: true, full: name === 'SessionStart' || Boolean(upgraded) }))}`);
       }
       if (!session) return {};
       // Codex 严格核对 turn_id；Claude 的 prompt_id 只在入口事件保证存在，后续事件按当前回合关联。

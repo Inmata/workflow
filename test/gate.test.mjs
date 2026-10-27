@@ -121,7 +121,7 @@ test('压缩后 compact SessionStart 上下文含紧凑账本且不含结果正�
   const output = await event(f, 'SessionStart', { source: 'compact' });
   const context = JSON.parse(output.hookSpecificOutput.additionalContext.slice('workflow 入口：'.length));
   assert.equal(context.ledger.route, 'delegated');
-  assert.deepEqual(context.ledger.packages, ['w1 worker consumed abc123 - 0', 'r1 reviewer consumed - PASS@w1:abc123 0']);
+  assert.deepEqual(context.ledger.packages, ['w1 worker consumed abc123 - 0 - -', 'r1 reviewer consumed - PASS@w1:abc123 0 - -']);
   assert.ok(!output.hookSpecificOutput.additionalContext.includes('结果正文不应出现'));
 });
 
@@ -241,7 +241,7 @@ test('会话结束挂起的分工任务，新会话入口仍附账本并标出 s
   const output = await event(f, 'SessionStart', { source: 'resume', turn_id: 'turn-resume' });
   const context = JSON.parse(output.hookSpecificOutput.additionalContext.slice('workflow 入口：'.length));
   assert.equal(context.ledger.lifecycle, 'suspended');
-  assert.deepEqual(context.ledger.packages, ['w1 worker dispatched - - 0']);
+  assert.deepEqual(context.ledger.packages, ['w1 worker dispatched - - 0 - -']);
   assert.doesNotMatch(context.instruction, /在途/);
 });
 

@@ -33,7 +33,7 @@ export function openTurn(state, project, sessionId, turnId, { compact = false, e
     ticket: id('ticket'), interruptEpoch: session?.interruptEpoch || 0,
     revision: (session?.revision || 0) + 1, phase: 'unknown', interrupted: false,
     permissionMode: mode || 'unknown', eventId: eventId || null, lastSeenAt: new Date().toISOString(),
-    receipts: session?.receipts || {}, observed: session?.observed || {}, contextKey: session?.contextKey,
+    receipts: session?.receipts || {}, observed: session?.observed || {}, contextKey: session?.contextKey, briefed: session?.briefed,
     // role-claim 声明的子角色跨回合保留；未声明的会话按 Lead 处理。
     ...(session?.role ? { role: session.role, packageId: session.packageId || null } : {}),
   };

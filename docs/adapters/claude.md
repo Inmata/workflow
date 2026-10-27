@@ -60,7 +60,7 @@ Claude Code 的 Bash `tool_response` 把命令输出放在 `stdout`。只认 std
 | auto 模式下 Codeg MCP 提问 | 可能被分类器拒绝；设置了禁用 `AskUserQuestion` 的规则时，会被判为绕过规则。此时改用普通文本编号提问，并先发 waiting-user | 记录 |
 | 命令被分类器拒绝时 | 不重试、不换写法绕过；向用户说明哪条记录没写入，下一回合用当前 identity 补发 | 约定 |
 | auto 模式下 Codeg 委派 | `delegate_to_agent` 可能被分类器拒绝（记录：委派 codex 被拒）；需要委派时请用户放行委派相关工具，见 [Codeg 接续](codeg.md#接续) | 记录 |
-| 信号载荷脱敏 | 长 base64 串可能被宿主当作密钥脱敏成占位符，信号随之变成无效 JSON（记录：Codeg Claude ACP Lead 会话）；推荐先写 JSON 文件再 `signal --input` | 记录 |
+| 信号载荷脱敏 | 长 base64 串可能被宿主当作密钥脱敏成占位符，信号随之变成无效 JSON（记录：Codeg Claude ACP Lead 会话）；推荐常用动作用 `signal <action>` 子命令，结构化字段先写 JSON 文件再 `--input` | 记录 |
 | 运行中追加消息 / 暂停 / 取消 / 中断恢复 / 批量 wait（Codeg 委派） | 见 [Codeg 能力表](codeg.md#宿主能力表) | — |
 
 插件据此：带 `agent_id` 的事件整体放行，子代理调用本插件 signal 时只回一条“没有 workflow 身份、信号不记录”的说明；内置子代理结束时宿主会通知父会话，派给它的包填 `channel: builtin:<类型>`，Stop 不再要求有界等待。Codeg 委派子会话按工作包 `role-claim`；`AskUserQuestion` 与 Codeg MCP 名称都置 waiting-user。若某路径 PostToolUse 实际不触发，Lead 显式发 waiting-user。

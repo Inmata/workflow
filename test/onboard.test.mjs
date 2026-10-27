@@ -69,7 +69,7 @@ test('onboard → 对齐 → 裁决 → 启用学习 → remove 全流程无残�
   const injected = JSON.parse(opened.hookSpecificOutput.additionalContext.slice('workflow 入口：'.length));
   assert.equal(Object.hasOwn(injected, 'ownerSessionId'), false);
   assert.ok(injected.instruction.includes('--enable-learning'));
-  assert.ok(injected.version && injected.signal.command.includes('signal --input') && injected.signal.fallback.includes('signal --base64'));
+  assert.ok(injected.version && injected.signal.command.includes('signal <action> --session') && injected.signal.examples.some(e => e.includes('signal task-start')) && injected.signal.fallback.includes('signal --input') && injected.signal.fallback.includes('signal --base64'));
   assert.ok(injected.instruction.includes('learning doctor'));
   f.projectId = injected.projectId;
   await start(f, { mode: 'write', allowedPaths: ['docs/WORKFLOW-ALIGNMENT.md'] });
@@ -200,7 +200,10 @@ test('组合命令里的 signal 回执附模板；REVISION 拒绝附当前 revis
   await start(f);
   const composed = await event(f, 'PostToolUse', { tool_name: 'PowerShell', tool_input: { command: `$wf="${entry}"; node $wf signal --base64 e30=` }, tool_response: { output: '{}' } });
   const text = composed.hookSpecificOutput.additionalContext;
-  assert.ok(text.includes('workflow 未接受') && text.includes('signal --input <UTF-8 JSON 文件>') && text.includes('signal --base64 <UTF-8 JSON 的 base64>') && text.includes('变量赋值'));
+  assert.ok(text.includes('workflow 未接受') && text.includes('signal <action> --session') && text.includes('signal --input <完整 payload') && text.includes('变量赋值'));
+  // 子命令写法的组合命令同样回执。
+  const composedSub = await event(f, 'PostToolUse', { tool_name: 'Bash', tool_input: { command: `cd /x && node "${entry}" signal task-end --session s --turn t --id x` }, tool_response: { output: '{}' } });
+  assert.match(composedSub.hookSpecificOutput.additionalContext, /workflow 未接受/);
   // --input 写法的组合命令同样回执。
   const composedFile = await event(f, 'PostToolUse', { tool_name: 'PowerShell', tool_input: { command: `cd D:/x; node "${entry}" signal --input s.json` }, tool_response: { output: '{}' } });
   assert.match(composedFile.hookSpecificOutput.additionalContext, /workflow 未接受/);

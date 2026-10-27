@@ -16,6 +16,7 @@ import { acknowledgeNotices, learningStatus, recoverReview, reviewOnce } from '.
 import { installSchedule, removeSchedule, schedulePreview, tick } from '../src/scheduler.mjs';
 import { learningDoctor, onboardProject, removeProject } from '../src/onboard.mjs';
 import { cliPath } from '../src/entry.mjs';
+import { buildSignal } from '../src/signal.mjs';
 
 const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'max-files', 'skip-learning', 'enable-learning', 'help']);
 function argumentsFor(argv) {
@@ -51,7 +52,8 @@ const help = {
     'context --role lead|worker|reviewer [--project <目录>] [--session <sessionId>]',
     'task show --task <taskId> [--project <目录>]（只读查看分流、工作包账本、变更条数与门禁缺项）',
     'spec check [--project <目录>] [--ref <提交>]（只读检查 .spec 管辖文件是否漂移；有发现时退出码 1）',
-    'signal --input <JSON文件> | --base64 <UTF-8 JSON>',
+    'signal <task-start|phase|role-claim|task-end|packages> --session <id> --turn <id> --id <signalId> [--task <id>] [--goal --route --mode --paths a,b --plans a,b --channels worker=x,reviewer=y --parent | --phase --delivery | --role --package | --final-ref] [--input <补充字段 JSON>]（推荐：身份由本机状态补齐）',
+    'signal --input <JSON文件> | --base64 <UTF-8 JSON>（完整 payload，兼容写法）',
     'knowledge inspect --path <资料路径> [--project <目录>]',
     'knowledge apply --input <JSON文件>', 'knowledge recover --transaction <id> [--project <目录>]',
     'knowledge capture|feedback|revise --input <JSON文件> [--root <项目>]',
@@ -69,6 +71,16 @@ const help = {
 // --path is a document-only option; it is never used to construct shell commands.
 allowed.add('path');
 for (const key of ['global', 'now', 'query', 'run', 'version', 'task', 'ref']) allowed.add(key);
+// signal 便捷子命令的字段参数；身份字段（ticket、epoch、revision）不接受命令行传入，只从状态补齐。
+for (const key of ['turn', 'id', 'goal', 'route', 'mode', 'paths', 'plans', 'channels', 'parent', 'phase', 'delivery', 'package', 'final-ref']) allowed.add(key);
+async function structuredSignal(directory, root, action, options) {
+  const state = await readState(directory);
+  const resolved = await resolveProject(state, root);
+  if (!resolved) fail('PROJECT', '当前目录没有有效项目绑定');
+  // 便捷写法不读 stdin：没有 --input/--base64 就只用命令行字段。
+  const extra = options.input || options.base64 ? await inputJSON(options) : {};
+  return { workflow_signal: buildSignal(state, resolved, action, options, extra) };
+}
 // 只读：返回任务账本与当前门禁缺项，不改变状态。
 async function showTask(state, root, taskId) {
   const resolved = await resolveProject(state, root);
@@ -85,13 +97,13 @@ async function main() {
   const { options, commands } = argumentsFor(process.argv.slice(2));
   const [command, action, subaction] = commands;
   if (options.help || !command) return help;
-  const positional = (command === 'project' && action === 'align') || (command === 'learning' && ['config', 'schedule'].includes(action)) ? 3 : ['project', 'knowledge', 'pending', 'learning', 'task', 'spec'].includes(command) ? 2 : 1;
+  const positional = (command === 'project' && action === 'align') || (command === 'learning' && ['config', 'schedule'].includes(action)) ? 3 : ['project', 'knowledge', 'pending', 'learning', 'task', 'spec', 'signal'].includes(command) ? 2 : 1;
   if (commands.length > positional) fail('ARGUMENT', '命令后存在多余的位置参数');
   const agent = options.agent || 'codex';
   if (!AGENTS.includes(agent)) fail('AGENT', `未知宿主 ${agent}；支持 ${AGENTS.join('/')}`);
   const directory = stateDirectory(options['state-dir']);
   const root = options.root || options.project || process.cwd();
-  if (command === 'signal') return { workflow_signal: await inputJSON(options) };
+  if (command === 'signal') return action ? structuredSignal(directory, root, action, options) : { workflow_signal: await inputJSON(options) };
   if (command === 'hook') {
     try { return await handleHook(directory, await inputJSON(options), { agent }); }
     catch { return { systemMessage: 'workflow 事件输入无效，已保守放行。' }; }
