@@ -1,5 +1,5 @@
 {
   "name": "workflow",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "通过 CLI 安装用户级 hooks；本描述只提供包身份，避免重复注册"
 }

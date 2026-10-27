@@ -75,11 +75,11 @@ async function showTask(state, root, taskId) {
   if (!resolved) fail('PROJECT', '当前目录没有有效项目绑定');
   const task = state.tasks[taskKey(resolved.project.projectId, taskId)];
   if (!task) fail('TASK', '任务不存在或不属于当前项目');
-  const { taskId: id, goal, parentTaskId, route = null, lifecycle, packages = {}, validation = null, waivers = [], finalRef = null, changes = [] } = task;
+  const { taskId: id, goal, parentTaskId, route = null, channels = null, lifecycle, packages = {}, validation = null, waivers = [], finalRef = null, changes = [] } = task;
   const gate = lifecycle === 'active' ? gateReport(state, task, finalRef) : { missing: [], findings: [] };
   const plans = (task.plans || []).map(plan => plan.path);
   const planUnchanged = lifecycle === 'active' ? unchangedPlans(state, task) : [];
-  return { taskId: id, goal, parentTaskId, route, lifecycle, packages: Object.values(packages), validation, waivers, finalRef, changes: changes.length, gateMissing: gate.missing, specFindings: gate.findings, plans, planUnchanged, note: '门禁核对声明记录一致性，不证明审查或测试真实发生' };
+  return { taskId: id, goal, parentTaskId, route, channels, lifecycle, packages: Object.values(packages), validation, waivers, finalRef, changes: changes.length, gateMissing: gate.missing, specFindings: gate.findings, plans, planUnchanged, note: '门禁核对声明记录一致性，不证明审查或测试真实发生' };
 }
 async function main() {
   const { options, commands } = argumentsFor(process.argv.slice(2));

@@ -1,6 +1,6 @@
 {
   "name": "personal-workflow",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "跨智能体项目协作、持久经验采集与受限后台知识维护",
   "license": "MIT",
   "type": "module",

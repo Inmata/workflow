@@ -86,8 +86,21 @@ function packageInput(item) {
   if (item.dependsOn !== undefined && (!Array.isArray(item.dependsOn) || item.dependsOn.length > 50)) fail('PACKAGE', 'dependsOn 必须是数组');
   for (const dependency of item.dependsOn || []) identifier(dependency, 'dependsOn');
   for (const key of ['handle', 'worktree', 'note']) optionalText(item[key], key);
-  for (const key of ['baseRef', 'deliveredRef', 'reviewedRef', 'reviews']) optionalRef(item[key], key);
+  for (const key of ['baseRef', 'deliveredRef', 'reviewedRef', 'reviews', 'channel', 'supersedes']) optionalRef(item[key], key);
   return item;
+}
+// 派工通道：`codeg:<agent_type>` 为 Codeg 委派，`builtin:<类型>` 为宿主内置子代理，`lead` 为 Lead 自己实施。
+function channelsInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.keys(value).length || Object.keys(value).some(role => !['worker', 'reviewer'].includes(role))) fail('CHANNEL', 'channels 需为 {worker?, reviewer?}，值为通道名（如 codeg:claude_code、builtin:general-purpose、lead）');
+  for (const [role, channel] of Object.entries(value)) identifier(channel, `channels.${role}`);
+  return { ...value };
+}
+// 与用户指定通道不一致，或分工任务里 worker 包由 Lead 实施，都算偏离：同一信号的 change 必须列出该包，不能静默换路。
+function channelDeviation(task, next) {
+  const expected = task.channels?.[next.role];
+  if (expected && next.channel !== expected) return `通道 ${next.channel || '未填'} 与任务声明的 ${next.role}=${expected} 不一致`;
+  if (task.route === 'delegated' && next.role === 'worker' && (next.channel === 'lead' || next.handle === 'lead-direct')) return '分工任务的 worker 包改由 Lead 实施';
+  return null;
 }
 function validationInput(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) fail('VALIDATION', 'validation 需为 {ref, evidence[]}');
@@ -113,8 +126,16 @@ function changeInput(value) {
   packages.forEach(item => identifier(item, 'change.packages'));
   return { summary: textField(value.summary, 'change.summary'), reason: textField(value.reason, 'change.reason'), packages, at: new Date().toISOString() };
 }
+// 包本身或它沿 supersedes 接替过的旧包有过审查结论（verdict），即算已审；取消、失败而没给结论的审查包不算。
+function wasReviewed(task, item) {
+  const packages = task.packages || {};
+  for (let current = item, hops = 0; current && hops <= MAX_PACKAGES; current = packages[current.supersedes], hops++) {
+    if (Object.values(packages).some(p => p.role === 'reviewer' && p.reviews === current.packageId && p.verdict)) return true;
+  }
+  return false;
+}
 // 账本只在派发、消费结果、审查结论三个节点记录；批量 upsert，未给出的字段保持原值。
-export function upsertPackages(task, items) {
+export function upsertPackages(task, items, change = null) {
   if (!Array.isArray(items) || !items.length || items.length > 50) fail('PACKAGE', 'packages 需为 1-50 项数组');
   task.packages ||= {};
   const repairLimit = [];
@@ -122,13 +143,29 @@ export function upsertPackages(task, items) {
     const previous = task.packages[item.packageId];
     if (!previous && (!item.role || !item.status)) fail('PACKAGE', '新工作包需给出 role 与 status');
     if (!previous && Object.keys(task.packages).length >= MAX_PACKAGES) fail('PACKAGE', '工作包数量超过上限');
+    if (previous && item.supersedes !== undefined && item.supersedes !== previous.supersedes) fail('PACKAGE', 'supersedes 只能在新建工作包时声明');
+    if (previous?.supersededBy && item.status !== undefined && item.status !== previous.status) fail('PACKAGE', `工作包 ${previous.packageId} 已被 ${previous.supersededBy} 接替，不能再改状态`);
     const next = { attempts: 0, dependsOn: [], ...previous, packageId: item.packageId };
-    for (const key of ['role', 'status', 'handle', 'worktree', 'baseRef', 'deliveredRef', 'reviewedRef', 'reviews', 'verdict', 'dependsOn', 'note']) {
+    for (const key of ['role', 'status', 'handle', 'channel', 'worktree', 'baseRef', 'deliveredRef', 'reviewedRef', 'reviews', 'verdict', 'dependsOn', 'note', 'supersedes']) {
       if (item[key] !== undefined) next[key] = item[key];
     }
     if (next.role !== 'reviewer' && (next.verdict || next.reviews || next.reviewedRef)) fail('PACKAGE', '只有 reviewer 包可带 verdict/reviews/reviewedRef');
+    // 审过的 worker 包不能改标 waived 绕过审查；放弃用 canceled，返修用 supersedes 或原包重新派发。
+    if (next.role === 'worker' && next.status === 'waived' && previous?.status !== 'waived' && wasReviewed(task, next)) fail('PACKAGE', `工作包 ${next.packageId} 已有审查结论，不能标 waived：让审查对上最终交付版本，或用 supersedes 接替，或 canceled 放弃`);
     // 已交付或已消费的包重新派发即一轮返修；attempts 由插件计数，不采信输入。
     if (previous && previous.status !== 'dispatched' && next.status === 'dispatched') next.attempts = (previous.attempts || 0) + 1;
+    // 换新 packageId 返修时用 supersedes 接上旧包：继承轮次，旧包收尾，不再单独要求审查。
+    if (!previous && next.supersedes) {
+      const old = task.packages[next.supersedes];
+      if (!old || old.role !== next.role) fail('PACKAGE', `supersedes 须指向同角色的已有工作包：${next.supersedes}`);
+      if (old.supersededBy) fail('PACKAGE', `工作包 ${old.packageId} 已被 ${old.supersededBy} 接替`);
+      next.attempts = (old.attempts || 0) + 1;
+      old.supersededBy = next.packageId;
+      if (!TERMINAL_PACKAGE.includes(old.status)) old.status = old.status === 'dispatched' ? 'canceled' : 'consumed';
+    }
+    // 只在通道变化或新建时核对；同一偏离已记过 change 的包，后续重新派发不再要求。
+    const deviation = channelDeviation(task, next);
+    if (deviation && deviation !== (previous && channelDeviation(task, previous)) && !change?.packages.includes(next.packageId)) fail('CHANNEL', `工作包 ${next.packageId}：${deviation}。先向用户说明，再在同一 packages 信号附 change:{summary, reason, packages:["${next.packageId}"]} 记录偏离`);
     task.packages[item.packageId] = next;
     if (next.attempts > REPAIR_LIMIT) repairLimit.push(item.packageId);
   }
@@ -178,7 +215,7 @@ export function gateReport(state, task, finalRef) {
   if (task.route !== 'delegated') return { missing: [...missing, ...spec.missing], findings: spec.findings };
   const packages = Object.values(task.packages || {});
   for (const item of packages) if (!TERMINAL_PACKAGE.includes(item.status)) missing.push(`terminal:${item.packageId}`);
-  for (const worker of packages.filter(item => item.role === 'worker' && !['canceled', 'waived'].includes(item.status))) {
+  for (const worker of packages.filter(item => item.role === 'worker' && !['canceled', 'waived'].includes(item.status) && !item.supersededBy)) {
     const passed = packages.some(item => item.role === 'reviewer' && item.reviews === worker.packageId && item.verdict === 'PASS' && !!item.reviewedRef && item.reviewedRef === worker.deliveredRef);
     if (!passed) missing.push(`review:${worker.packageId}`);
   }
@@ -187,7 +224,9 @@ export function gateReport(state, task, finalRef) {
   return { missing: [...missing, ...spec.missing], findings: spec.findings };
 }
 // 豁免可写完整条目（review:pkg-1）或整类步骤（review）；spec 漂移任何豁免都不抵扣。
-const waived = (entry, waivers) => !(entry === 'spec' || entry.startsWith('spec:')) && waivers.some(w => w.step === entry || w.step === entry.split(':')[0]);
+// 审过的 worker 包，审查缺项（未 PASS 或审的不是最终交付版本）也不抵扣：只能补审或用 supersedes 接替。
+const reviewed = (task, entry) => entry.startsWith('review:') && wasReviewed(task, task.packages?.[entry.slice('review:'.length)]);
+const waived = (task, entry, waivers) => !(entry === 'spec' || entry.startsWith('spec:')) && !reviewed(task, entry) && waivers.some(w => w.step === entry || w.step === entry.split(':')[0]);
 export function acceptSignal(state, payload) {
   identifier(payload?.signalId, 'signalId');
   const initial = currentIdentity(state, payload, { replay: true, requireTask: false });
@@ -228,8 +267,10 @@ export function acceptSignal(state, payload) {
         fail('PERMISSION', `任务需明确 mode 与 allowedPaths：${detail}${misplaced.length ? `；${misplaced.join('、')} 写在了顶层，应放进 permissions` : ''}`);
       }
       const plans = payload.plans === undefined ? null : planInput(payload.plans);
+      const channels = payload.channels === undefined ? null : channelsInput(payload.channels);
       task = { projectId: project.projectId, taskId: payload.taskId, goal: payload.goal, parentTaskId: payload.parentTaskId || null, route: payload.route || null, lifecycle: 'active', repairIssued: false, deliveries: {}, candidates: {}, packages: {}, permissions, createdAt: new Date().toISOString() };
       if (plans) task.plans = planBaselines(project.root, plans);
+      if (channels) task.channels = channels;
       state.tasks[key] = task;
     } else {
       if (!['active', 'suspended'].includes(task.lifecycle) && !Object.values(state.pending).some(p => p.projectId === project.projectId && p.taskId === payload.taskId && p.kind === 'knowledge-pending' && p.status === 'open')) fail('TASK', '已完成任务无待接续知识');
@@ -241,6 +282,12 @@ export function acceptSignal(state, payload) {
         const plans = planInput(payload.plans);
         if (task.plans?.length && JSON.stringify(task.plans.map(p => p.path)) !== JSON.stringify(plans)) fail('PLAN', '任务已声明其他计划');
         task.plans ||= planBaselines(project.root, plans);
+      }
+      // 通道同样只能首次或补声明：改用其他通道走 packages 的 change 记录，不改声明。
+      if (payload.channels !== undefined) {
+        const channels = channelsInput(payload.channels);
+        if (task.channels && JSON.stringify(task.channels) !== JSON.stringify(channels)) fail('CHANNEL', '任务已声明其他通道；偏离在 packages 信号里附 change 记录');
+        task.channels ||= channels;
       }
       task.lifecycle = 'active';
     }
@@ -257,20 +304,22 @@ export function acceptSignal(state, payload) {
         task.deliveries[payload.deliveryId] ||= { deliveryId: payload.deliveryId, disposition: null };
       }
     } else if (payload.action === 'packages') {
-      const repairLimit = upsertPackages(task, payload.packages);
+      const change = payload.change === undefined ? null : changeInput(payload.change);
+      const repairLimit = upsertPackages(task, payload.packages, change);
       if (payload.validation !== undefined) task.validation = validationInput(payload.validation);
       // 中途变更追加记录，不覆盖历史。
-      if (payload.change !== undefined) (task.changes ||= []).push(changeInput(payload.change));
+      if (change) (task.changes ||= []).push(change);
       if (repairLimit.length) extra = { repairLimit: true, repairLimitPackages: repairLimit };
     } else if (payload.action === 'task-end') {
       if (payload.validation !== undefined) task.validation = validationInput(payload.validation);
       if (payload.finalRef !== undefined) identifier(payload.finalRef, 'finalRef');
       const waivers = [...(task.waivers || []), ...(payload.waivers === undefined ? [] : waiverInput(payload.waivers))];
       const report = gateReport(state, task, payload.finalRef);
-      const missing = report.missing.filter(entry => !waived(entry, waivers));
+      const missing = report.missing.filter(entry => !waived(task, entry, waivers));
       if (missing.length) {
         const specText = report.findings.length ? `。spec 检查：${describeFindings(report.findings)}；更新 spec，或用 Spec-OK 空提交写明不需要更新的理由` : '';
-        const error = new WorkflowError('GATE', `完成门禁未满足：${missing.join(', ')}${specText}`);
+        const reviewText = missing.some(entry => reviewed(task, entry)) ? '。已安排审查的包不能豁免审查缺项：让审查结论对上最终交付版本（reviewedRef=deliveredRef），或用 supersedes 接替' : '';
+        const error = new WorkflowError('GATE', `完成门禁未满足：${missing.join(', ')}${specText}${reviewText}`);
         error.missing = missing;
         if (report.findings.length) error.findings = report.findings;
         throw error;
@@ -315,12 +364,17 @@ export function stop(state, project, session, event = {}) {
   if (inflight.length) {
     session.stopBlockedTurn = session.turnId;
     const list = inflight.map(([id, item]) => item.handle ? `${id}(${item.handle})` : id).join('、');
-    return { decision: 'block', reason: `workflow 回合结束核对：任务 ${task.taskId} 仍有 ${inflight.length} 个工作包在途（${list}）。宿主不会在子任务结束时唤醒本会话，结束回合就收不到结果。二选一：用有界等待（Codeg get_delegation_status 批量传入在途 task_id、wait_ms 60000，轮间调用 check_user_feedback）继续等到终态或 blocked_on 再收结果；或者向用户说明为什么暂停、何时由谁接续。` };
+    // 宿主内置子代理结束时会通知父会话，只需说明在等什么；其余（Codeg 或未填通道）必须同回合有界等待。
+    const builtin = inflight.every(([, item]) => item.channel?.startsWith('builtin:'));
+    const how = builtin
+      ? '这些包由宿主内置子代理执行，结束时宿主会通知本会话：向用户说明在等哪些包、结果回来后做什么，再结束回合。'
+      : '宿主不会在子任务结束时唤醒本会话，结束回合就收不到结果。二选一：用有界等待（Codeg get_delegation_status 批量传入在途 task_id、wait_ms 60000，轮间调用 check_user_feedback）继续等到终态或 blocked_on 再收结果；或者向用户说明为什么暂停、何时由谁接续。';
+    return { decision: 'block', reason: `workflow 回合结束核对：任务 ${task.taskId} 仍有 ${inflight.length} 个工作包在途（${list}）。${how}` };
   }
   let missing;
   try {
     // 没法检查（git 失败、浅克隆）不算缺项；其余照常核对。
-    missing = gateMissing(state, task).filter(entry => !entry.startsWith('spec-check:') && !waived(entry, task.waivers || []));
+    missing = gateMissing(state, task).filter(entry => !entry.startsWith('spec-check:') && !waived(task, entry, task.waivers || []));
   } catch { return {}; }
   session.stopBlockedTurn = session.turnId;
   const reason = missing.length

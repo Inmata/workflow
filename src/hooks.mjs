@@ -127,7 +127,11 @@ export async function handleHook(directory, event, options = {}) {
     if (typeof event.cwd !== 'string' || typeof event.session_id !== 'string' || !event.session_id) return {};
     const name = event.hook_event_name;
     if (process.env.WORKFLOW_REVIEW === '1') return {};
-    if (isSubagentEvent(event)) return {};
+    if (isSubagentEvent(event)) {
+      // 内置子代理没有 workflow 身份：它发的 signal 不记录，回一句说明，免得它反复重发或停下等回执。
+      if (name === 'PostToolUse' && (await isSignalInvocation(event, options.entry, directory) || isComposedSignal(event))) return contextOutput(name, 'workflow 未接受：宿主内置子代理与 Lead 共用会话，没有自己的 workflow 身份，信号不记录。不要重发 role-claim 或其他信号；按工作包和对应角色指引完成工作，把结果交回 Lead，由 Lead 记账。');
+      return {};
+    }
     const question = QUESTION_TOOLS[agent].includes(event.tool_name);
     const signalInvocation = name === 'PostToolUse' && await isSignalInvocation(event, options.entry, directory);
     // 组合命令里的本插件 signal 不接受，但要回执说明，否则模型只能从 revision 反推信号丢失。
