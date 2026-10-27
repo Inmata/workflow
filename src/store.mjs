@@ -122,8 +122,8 @@ export async function mutate(directory, operation) {
   return withLock(directory, 'state', async () => {
     const file = path.join(directory, 'state.json');
     const original = await readText(file);
-    const migrateV1 = Boolean(original && JSON.parse(original).schemaVersion === 1);
     const state = parseState(original);
+    const migrateV1 = Boolean(original && JSON.parse(original).schemaVersion === 1);
     let lastSaved = null;
     const save = async () => {
       if (migrateV1) {

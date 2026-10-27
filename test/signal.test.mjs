@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { mutate, readState } from '../src/store.mjs';
 import { buildSignal } from '../src/signal.mjs';
@@ -132,5 +132,10 @@ test('Stop 与显式 save 后未再改状态不重复落盘；中间 save 后继
   assert.equal(after.revision, r0 + 3);
   assert.equal(after.customStep, 2);
   assert.equal(await resolveProject(after, path.dirname(f.directory)), null);
+  const stateFile = path.join(f.directory, 'state.json');
+  for (const [broken, code] of [['{bad', 'STATE'], ['null', 'SCHEMA']]) {
+    await writeFile(stateFile, broken);
+    await assert.rejects(() => mutate(f.directory, async () => {}), { code });
+    assert.equal(await readFile(stateFile, 'utf8'), broken);
+  }
 });
-

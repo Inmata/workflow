@@ -272,5 +272,6 @@ workflow signal packages --context <回合句柄> --request <请求ID> --input <
   - 真实子进程 CLI 普通 `PostToolUse`：106.92ms → **97.29ms**（p90 132.97ms → 102.53ms）
   - 真实子进程 CLI `UserPromptSubmit`：462.04ms → **173.51ms**（-62%，p90 491.60ms → 181.12ms）
   - 真实子进程 CLI `Stop`：464.82ms → **174.54ms**（-62%，p90 508.05ms → 182.38ms）
+  - codex 集中只读审查（以 `wait_ms: 0` 一次阻塞调用完成，0 轮询）回报 FIX 1 条：`mutate` 在 `parseState` 前裸跑 `JSON.parse(original)` 导致损坏状态抛无 `code` 异常而非 `STATE`，已调整顺序并补回归单测。
 
 下一次收到实施授权后，从第一批开始。第二、三批按实际收益决定，允许明确延期或放弃，不以整份清单清零作为成功标准。
