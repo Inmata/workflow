@@ -15,6 +15,7 @@ export const TERMINAL_PACKAGE = ['consumed', 'canceled', 'failed', 'waived'];
 export const VERDICTS = ['PASS', 'FIX', 'BLOCKED'];
 const REPAIR_LIMIT = 2;
 const MAX_PACKAGES = 200;
+const MAX_DELIVERY_REFS = 50;
 export const sessionKey = (projectId, sessionId) => digest(`${projectId}\0${sessionId}`);
 export const taskKey = (projectId, taskId) => digest(`${projectId}\0${taskId}`);
 export function textField(value, label) {
@@ -134,48 +135,92 @@ function changeInput(value) {
   return { summary: textField(value.summary, 'change.summary'), reason: textField(value.reason, 'change.reason'), packages, at: new Date().toISOString() };
 }
 // 旧账本可能只有 status=delivered/consumed 或 deliveredRef，没有 P08 新增的标记。
-// 在状态被改写前补记交付事实；历史 attempts 保持原值，不批量重算。
+// 在状态被改写前补记交付事实；r1 的 countedRepair 令牌迁移为 countedRound；历史 attempts 保持原值。
 function backfillDelivery(item) {
   if (!item) return item;
-  if (!['delivered', 'consumed'].includes(item.status) && !item.deliveredRef) return item;
+  if (item.countedRound === undefined && Array.isArray(item.countedRepair)) {
+    const counted = item.countedRepair
+      .map(token => /:delivery:(\d+)$/.exec(token))
+      .filter(Boolean)
+      .map(match => Number(match[1]));
+    // 只有 ref/FIX 令牌说明 r1 计过一轮（FIX 作为隐含交付），按已计入一轮处理。
+    item.countedRound = counted.length ? Math.max(...counted) : item.countedRepair.length ? Math.max(item.deliverySeq || 0, 1) : 0;
+    item.deliverySeq = Math.max(item.deliverySeq || 0, item.countedRound);
+    delete item.countedRepair;
+  }
+  if (!['delivered', 'consumed'].includes(item.status) && !item.deliveredRef && !item.deliveredAt && !item.deliverySeq) return item;
   if (!item.deliveredAt) item.deliveredAt = new Date().toISOString();
   if (!item.deliverySeq) item.deliverySeq = 1;
+  if (item.countedRound === undefined) item.countedRound = 0;
+  // 旧账本没有 recorded 标记时，既有交付状态/引用/轮次都证明本轮有交付记录。
+  if (item.deliveryRecorded === undefined) item.deliveryRecorded = true;
   return item;
 }
-// 返修事实令牌：每个交付轮次/交付引用/审查 FIX 各一枚，令牌带 packageId 命名空间。
-// 已计入的令牌记在 countedRepair；只有出现尚未计入的令牌，重派才算新的一轮。
-// 用集合而不是整体签名：审查撤回旧 FIX 不算新事实，新交付或新 FIX 才会产生新令牌。
-function repairFactTokens(task, item, batchFixes = new Map()) {
-  if (!item) return [];
-  const tokens = [];
-  const delivered = item.deliverySeq || item.deliveredAt || item.deliveredRef || ['delivered', 'consumed'].includes(item.status);
-  if (delivered) tokens.push(`${item.packageId}:delivery:${item.deliverySeq || 1}`);
-  if (item.deliveredRef) tokens.push(`${item.packageId}:ref:${item.deliveredRef}`);
-  const fixes = new Set(Object.values(task.packages || {})
-    .filter(p => p.role === 'reviewer' && p.reviews === item.packageId && p.verdict === 'FIX')
-    .map(p => p.packageId));
-  // 同一批 packages 里可能先重派、后记审查 FIX：预扫出的本批 FIX 也要算。
-  for (const reviewerId of batchFixes.get(item.packageId) || []) fixes.add(reviewerId);
-  for (const reviewerId of fixes) tokens.push(`${item.packageId}:fix:${reviewerId}`);
-  return tokens.sort();
-}
-function newRepairFacts(task, item, countedRepair = [], batchFixes = new Map()) {
-  const counted = new Set(countedRepair || []);
-  return repairFactTokens(task, item, batchFixes).filter(token => !counted.has(token));
-}
-// 本批 reviewer 项按合并后的状态预扫 FIX 目标，保证计数与数组顺序无关。
-function batchReviewerFixes(items, task) {
-  const fixes = new Map();
-  for (const item of items) {
-    const previous = task.packages[item.packageId];
-    const role = item.role ?? previous?.role;
-    const reviews = item.reviews !== undefined ? item.reviews : previous?.reviews;
-    const verdict = item.verdict !== undefined ? item.verdict : previous?.verdict;
-    if (role !== 'reviewer' || !reviews || verdict !== 'FIX') continue;
-    if (!fixes.has(reviews)) fixes.set(reviews, new Set());
-    fixes.get(reviews).add(item.packageId);
+// 返修计数的单位是“交付轮次”，不是交付/引用/FIX 各自独立的令牌。
+// 开启新一轮：进入 delivered；拿到此前未见的交付引用；只有审查 FIX、此前没有任何交付轮次时由隐含交付开启。
+// 已计入的轮次记在 countedRound；同一轮迟到的 deliveredRef/FIX 属于同一轮，不会再次计数。
+// deliveryRecorded 表示本包当前轮已有交付记录：首轮补记引用是同一轮的迟到补记，不再开新轮。
+// 从非 delivered 状态直接进入 consumed 且没有新引用是消费失败或终态结果，不开启新轮次。
+function deliveryRound(previous, item, fixRequested = false, recorded = false) {
+  const ref = item.deliveredRef || null;
+  const previousRef = previous?.deliveredRef || null;
+  let seq = previous?.deliverySeq || 0;
+  const seen = new Set(previous?.deliveryRefs || []);
+  if (previousRef) seen.add(previousRef);
+  if (!previous) {
+    // 新包直接以交付状态或交付引用建账，本身就是一轮。
+    if (['delivered', 'consumed'].includes(item.status) || ref) { seq = 1; recorded = true; }
+  } else if (item.status === 'delivered' && previous.status !== 'delivered') {
+    seq += 1;
+    recorded = true;
+  } else if (ref && !seen.has(ref) && (previousRef || !recorded)) {
+    // 此前已有引用而换成新值才是新交付；本包当前轮还没有交付记录时，首个引用开启这一轮。
+    seq += 1;
+    recorded = true;
   }
-  return fixes;
+  if (fixRequested && seq === 0) { seq = 1; recorded = true; }
+  return { seq, recorded };
+}
+// 记录见过的交付引用，供“此前未见过的 deliveredRef”判断；有界保留，避免状态无界增长。
+function rememberDeliveryRefs(previous, next) {
+  const refs = new Set(previous?.deliveryRefs || []);
+  if (previous?.deliveredRef) refs.add(previous.deliveredRef);
+  if (next.deliveredRef) refs.add(next.deliveredRef);
+  if (refs.size) next.deliveryRefs = [...refs].slice(-MAX_DELIVERY_REFS);
+}
+// 本批 reviewer 事实按整批合并后的最终状态预扫 FIX 目标，保证计数与数组顺序无关。
+// 先把旧账本中的 FIX 放进结果，再用本批 reviewer 项覆盖：改成 PASS/BLOCKED 或换审查对象会移除旧目标。
+function batchReviewerFixes(items, task) {
+  const final = new Map();
+  const add = (target, reviewerId) => {
+    if (!final.has(target)) final.set(target, new Set());
+    final.get(target).add(reviewerId);
+  };
+  const remove = (target, reviewerId) => {
+    const set = final.get(target);
+    if (!set) return;
+    set.delete(reviewerId);
+    if (!set.size) final.delete(target);
+  };
+  for (const reviewer of Object.values(task.packages || {})) {
+    if (reviewer.role === 'reviewer' && reviewer.reviews && reviewer.verdict === 'FIX') add(reviewer.reviews, reviewer.packageId);
+  }
+  // 同一批里同一 reviewer 重复出现时，后项覆盖前项，只按最终状态计入。
+  const merged = new Map();
+  for (const item of items) {
+    const previous = merged.get(item.packageId) || task.packages[item.packageId];
+    merged.set(item.packageId, {
+      role: item.role ?? previous?.role,
+      reviews: item.reviews !== undefined ? item.reviews : previous?.reviews,
+      verdict: item.verdict !== undefined ? item.verdict : previous?.verdict,
+    });
+  }
+  for (const [reviewerId, state] of merged) {
+    const before = task.packages[reviewerId];
+    if (before?.role === 'reviewer' && before.reviews && before.verdict === 'FIX') remove(before.reviews, reviewerId);
+    if (state.role === 'reviewer' && state.reviews && state.verdict === 'FIX') add(state.reviews, reviewerId);
+  }
+  return final;
 }
 // 包本身或它沿 supersedes 接替过的旧包有过审查结论（verdict），即算已审；取消、失败而没给结论的审查包不算。
 function wasReviewed(task, item) {
@@ -191,7 +236,8 @@ export function upsertPackages(task, items, change = null) {
   task.packages ||= {};
   const repairLimit = [];
   const parsed = items.map(packageInput);
-  const batchFixes = batchReviewerFixes(parsed, task);
+  const reviewerFixes = batchReviewerFixes(parsed, task);
+  const fixRequested = packageId => (reviewerFixes.get(packageId)?.size || 0) > 0;
   for (const item of parsed) {
     const previous = task.packages[item.packageId];
     // 先按旧状态补记交付事实，再做任何状态改写：旧账本的 delivered/consumed 不会因转 failed/canceled 丢失。
@@ -207,39 +253,49 @@ export function upsertPackages(task, items, change = null) {
     if (next.role !== 'reviewer' && (next.verdict || next.reviews || next.reviewedRef)) fail('PACKAGE', '只有 reviewer 包可带 verdict/reviews/reviewedRef');
     // 审过的 worker 包不能改标 waived 绕过审查；放弃用 canceled，返修用 supersedes 或原包重新派发。
     if (next.role === 'worker' && next.status === 'waived' && previous?.status !== 'waived' && wasReviewed(task, next)) fail('PACKAGE', `工作包 ${next.packageId} 已有审查结论，不能标 waived：让审查对上最终交付版本，或用 supersedes 接替，或 canceled 放弃`);
-    // 进入交付状态时推进交付轮次；同一轮 delivered→consumed 不重复推进。
-    if (['delivered', 'consumed'].includes(next.status) && !['delivered', 'consumed'].includes(previous?.status)) {
-      next.deliverySeq = (previous?.deliverySeq || 0) + 1;
-    } else if (!next.deliverySeq && (next.deliveredAt || next.deliveredRef)) {
-      next.deliverySeq = 1;
-    }
-    // 记下交付起点；之后转 failed/canceled 或重新派发都不擦除，避免借终态绕开返修计数。
-    if (!next.deliveredAt && (next.deliveredRef || next.status === 'delivered' || next.status === 'consumed')) next.deliveredAt = new Date().toISOString();
-    // 同包重派：只有出现尚未计入的交付或 FIX 事实才加一；已计入的旧事实不会因启动失败重派再次生效。
-    // attempts 由插件计数，不采信输入。
-    if (previous && previous.status !== 'dispatched' && next.status === 'dispatched') {
-      const facts = newRepairFacts(task, next, previous.countedRepair, batchFixes);
-      if (facts.length) {
-        next.attempts = (previous.attempts || 0) + 1;
-        next.countedRepair = [...new Set([...(previous.countedRepair || []), ...facts])].sort();
-      } else next.attempts = previous.attempts || 0;
-    }
-    // 换新 packageId 返修时用 supersedes 接上旧包：继承轮次与已计入标记，同一判定；
-    // 旧包确有尚未计入的交付或修订要求时加一，未产出的启动失败不增加。
+    // 返修计数的单位是交付轮次：先推进轮次，再判断重派或接替时是否有尚未计入的一轮。
     if (!previous && next.supersedes) {
       const old = task.packages[next.supersedes];
       if (!old || old.role !== next.role) fail('PACKAGE', `supersedes 须指向同角色的已有工作包：${next.supersedes}`);
       if (old.supersededBy) fail('PACKAGE', `工作包 ${old.packageId} 已被 ${old.supersededBy} 接替`);
       backfillDelivery(old);
-      const counted = old.countedRepair || [];
-      const facts = newRepairFacts(task, old, counted, batchFixes);
-      next.attempts = (old.attempts || 0) + (facts.length ? 1 : 0);
-      // 新包继承已计入的标记；本轮新计数的事实同样记下，后续重派不会重复使用。
-      next.countedRepair = [...new Set([...counted, ...facts])].sort();
-      if (!next.countedRepair.length) delete next.countedRepair;
+      const oldSeq = deliveryRound(old, old, fixRequested(old.packageId), Boolean(old.deliveryRecorded)).seq;
+      const oldCounted = old.countedRound || 0;
+      // 旧包确有尚未计入的交付轮次（或仅 FIX 的隐含交付）时，这次接替才是一轮返修；未产出的启动失败不增加。
+      next.attempts = (old.attempts || 0) + (oldSeq > oldCounted ? 1 : 0);
+      // 新包继承旧包的轮次编号与已计入标记，再叠加自己的初始交付；同一条交付不会被重复计数。
+      const chain = { status: old.status, deliveredRef: old.deliveredRef, deliverySeq: oldSeq, deliveryRefs: old.deliveryRefs || [] };
+      next.countedRound = Math.max(oldCounted, oldSeq);
+      const planned = deliveryRound(chain, next, fixRequested(next.packageId), false);
+      next.deliverySeq = planned.seq;
+      // 新包自身记了交付/消费结果也算当前轮已有记录，后续首个引用按同一轮补记处理。
+      next.deliveryRecorded = planned.recorded || ['delivered', 'consumed'].includes(next.status);
+      rememberDeliveryRefs(chain, next);
       old.supersededBy = next.packageId;
       if (!TERMINAL_PACKAGE.includes(old.status)) old.status = old.status === 'dispatched' ? 'canceled' : 'consumed';
+    } else if (previous) {
+      const planned = deliveryRound(previous, next, fixRequested(next.packageId), Boolean(previous.deliveryRecorded));
+      next.deliverySeq = planned.seq;
+      next.deliveryRecorded = planned.recorded;
+      next.countedRound = previous.countedRound || 0;
+      rememberDeliveryRefs(previous, next);
+      // 同包重派：只有存在尚未计入的交付轮次才加一；已计入的轮次不会因启动失败重派再次生效。
+      // attempts 由插件计数，不采信输入。
+      if (previous.status !== 'dispatched' && next.status === 'dispatched') {
+        if (next.deliverySeq > next.countedRound) {
+          next.attempts = (previous.attempts || 0) + 1;
+          next.countedRound = next.deliverySeq;
+        } else next.attempts = previous.attempts || 0;
+      }
+    } else {
+      const planned = deliveryRound(null, next, fixRequested(next.packageId), false);
+      next.deliverySeq = planned.seq;
+      next.deliveryRecorded = planned.recorded;
+      next.countedRound = 0;
+      rememberDeliveryRefs(null, next);
     }
+    // 记下交付起点；之后转 failed/canceled 或重新派发都不擦除，避免借终态绕开返修计数。
+    if (!next.deliveredAt && (next.deliveredRef || next.status === 'delivered' || next.status === 'consumed')) next.deliveredAt = new Date().toISOString();
     // 只在通道变化或新建时核对；同一偏离已记过 change 的包，后续重新派发不再要求。
     const deviation = channelDeviation(task, next);
     if (deviation && deviation !== (previous && channelDeviation(task, previous)) && !change?.packages.includes(next.packageId)) fail('CHANNEL', `工作包 ${next.packageId}：${deviation}。先向用户说明，再在同一 packages 信号附 change:{summary, reason, packages:["${next.packageId}"]} 记录偏离`);
