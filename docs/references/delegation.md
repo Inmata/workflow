@@ -10,7 +10,7 @@ Lead 派发 Worker/Reviewer 时读本页；简单任务（lead-direct）不需�
    ```powershell
    node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-w1 --package w1 --role worker --status dispatched --channel codeg:claude_code --handle <委派ID>
    node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-w1-done --package w1 --status consumed --ref <交付提交>
-   node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-r1 --package r1 --role reviewer --status dispatched --channel codeg:codex --reviews w1
+   node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-r1 --package r1 --role reviewer --status dispatched --channel codeg:codex --handle <委派ID> --reviews w1
    node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-r1-done --package r1 --status consumed --verdict PASS --ref <被审提交>
    ```
 

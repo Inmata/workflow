@@ -81,7 +81,7 @@ hook 提供 project/session/turn/ticket/interruptEpoch/expectedRevision。contex
 node "<本次hook提供的bin/workflow.mjs>" signal task-start --session <sessionId> --turn <turnId> --id start-1 --task task-readme --route delegated --goal "本次已授权目标" --mode write --paths README.md,LESSONS.md
 node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-1 --package w1 --role worker --status dispatched --channel codeg:claude_code --handle <委派ID>
 node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-2 --package w1 --status consumed --ref <交付提交>
-node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-3 --package r1 --role reviewer --status dispatched --channel codeg:codex --reviews w1
+node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-3 --package r1 --role reviewer --status dispatched --channel codeg:codex --handle <委派ID> --reviews w1
 node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-4 --package r1 --status consumed --verdict PASS --ref <被审提交>
 node "<本次hook提供的bin/workflow.mjs>" signal task-end --session <sessionId> --turn <turnId> --id end-1 --final-ref <交付提交> --evidence "npm test 250/250 通过" --evidence "npm run check 0 错误"
 ```
