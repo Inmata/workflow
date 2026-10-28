@@ -77,11 +77,16 @@ function documentName(project) {
 }
 
 // 首次写入前补一次只读扫描；否则索引为空，之后的变更检测永远返回 stale:false。
+// 已扫描过的空索引不重扫：否则删光来源后新增的资料会被自动并进基线，绕过显式确认。
 async function ensureIndexed(directory, target) {
   const state = await readState(directory);
   const project = projectIn(state, target);
   if (!project) fail('PROJECT', '项目未启用；先执行 project enable');
-  if (!project.alignment?.files?.length) await scanAlignment(directory, target);
+  const alignment = project.alignment;
+  if (alignment?.files?.length) return;
+  // generatedAt 只由 scanAlignment 写入；旧索引缺该字段时沿用原有行为（空索引补扫）。
+  if (alignment?.generatedAt !== undefined) return;
+  await scanAlignment(directory, target);
 }
 
 async function resolveDocument(project, requested) {
@@ -342,6 +347,12 @@ async function confirmSources(alignment, target, sources) {
   for (const source of sources) {
     const result = await confirmSource(target, source);
     if (result.reason) { unconfirmed.push({ path: source.path, reason: result.reason }); continue; }
+    // inspect 每次最多检查 CHECK_MAX_FILES 项；新增来源越过上限会让索引永远 incomplete，
+    // 且越界项不再被检查，因此不登记，交由全量 scan 或缩小来源范围处理。
+    if (!result.deleted && !files.has(source.path) && files.size >= CHECK_MAX_FILES) {
+      unconfirmed.push({ path: source.path, reason: 'limit' });
+      continue;
+    }
     if (result.deleted) files.delete(source.path);
     else {
       const previous = files.get(source.path);

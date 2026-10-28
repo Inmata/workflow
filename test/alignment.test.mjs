@@ -341,6 +341,47 @@ test('sources 拒绝越界路径、无效快照、重复与对齐文档自身', 
   }
 });
 
+test('已扫描的空索引不自动重扫，新增来源仍提示 stale', async () => {
+  const f = await fixture();
+  await scanAlignment(f.directory, f.project);
+  await rename(path.join(f.project, 'README.md'), path.join(f.area, 'README-removed.md'));
+  await rename(path.join(f.project, 'AGENTS.md'), path.join(f.area, 'AGENTS-removed.md'));
+  const removed = await apply(f, { content: '# 项目对齐\n', sources: [{ path: 'README.md', deleted: true }, { path: 'AGENTS.md', deleted: true }] });
+  assert.deepEqual(removed.confirmed, ['README.md', 'AGENTS.md']);
+  assert.deepEqual((await readState(f.directory)).projects[f.projectId].alignment.files, []);
+  await writeFile(path.join(f.project, 'README.md'), '# 项目\n新增资料\n');
+  await apply(f, { content: '# 项目对齐\n' });
+  const indexed = (await readState(f.directory)).projects[f.projectId].alignment;
+  assert.deepEqual(indexed.files, [], '已扫描的空索引不应被自动重扫');
+  const status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, true);
+  assert.ok(status.directoryChanged.includes('.'), JSON.stringify(status));
+  const confirmed = await apply(f, { content: '# 项目对齐\n', sources: [await snapshot(f.project, 'README.md')] });
+  assert.deepEqual(confirmed.confirmed, ['README.md']);
+  assert.equal((await alignmentStatus(f.directory, f.project)).stale, false);
+});
+
+test('新增来源超过检查上限时不登记并保留 stale', async () => {
+  const f = await fixture();
+  const files = {};
+  for (let index = 0; index < 298; index++) files[`docs/f${String(index).padStart(3, '0')}.md`] = '内容\n';
+  await documents(f.project, files);
+  const scanned = await scanAlignment(f.directory, f.project);
+  assert.equal(scanned.files.length, 300);
+  await writeFile(path.join(f.project, 'docs', 'new.md'), '新增\n');
+  await writeFile(path.join(f.project, 'README.md'), '# 项目\n已刷新\n');
+  const result = await apply(f, { content: '# 项目对齐\n', sources: [await snapshot(f.project, 'README.md'), await snapshot(f.project, 'docs/new.md')] });
+  assert.deepEqual(result.confirmed, ['README.md']);
+  assert.deepEqual(result.unconfirmed, [{ path: 'docs/new.md', reason: 'limit' }]);
+  const indexed = (await readState(f.directory)).projects[f.projectId].alignment.files;
+  assert.equal(indexed.length, 300);
+  assert.ok(!indexed.some(file => file.path === 'docs/new.md'));
+  const status = await alignmentStatus(f.directory, f.project, { budgetMs: 30000 });
+  assert.equal(status.incomplete, false);
+  assert.equal(status.stale, true);
+  assert.ok(status.directoryChanged.includes('docs'), JSON.stringify(status));
+});
+
 async function snapshot(project, relative) {
   const info = await lstat(path.join(project, relative));
   return { path: relative, size: info.size, mtimeMs: info.mtimeMs };

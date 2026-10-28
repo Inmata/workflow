@@ -156,9 +156,9 @@ node bin/workflow.mjs project align suggest --root "D:/项目" --input finding.j
 }
 ```
 
-`sources` 可选，只更新来源索引基线，不改变文档正文与裁决的写入语义。每项可写路径字符串，或 `{ "path", "size", "mtimeMs" }` 快照；路径必须是项目内的相对路径，且属于 scan 会收录的资料类型。带快照时提交前会重新核对，读取后又变化（大小或 mtime 不符）就不确认该来源，并在结果 `unconfirmed` 中给出原因；只写路径时按提交时的当前状态确认。新增来源用当前快照显式确认，删除的来源用 `{ "path", "deleted": true }` 显式确认；未列出的新增资料仍由目录检查提示。确认新目录中的来源时，只有该目录及其祖先目录内的候选资料都已收录才登记当前目录基线，否则不登记，下次检查仍会发现未列出的来源。结果的 `confirmed` 是本次实际刷新或移除的来源，`unconfirmed` 是请求确认但仍变化、已消失或不可收录的来源。不传 `sources`（旧客户端，或只更新正文/决定/建议）不会刷新任何来源基线。`apply`、`decide`、`suggest` 都可以在同一次输入中携带 `sources`、`decisions`、`findings`。
+`sources` 可选，只更新来源索引基线，不改变文档正文与裁决的写入语义。每项可写路径字符串，或 `{ "path", "size", "mtimeMs" }` 快照；路径必须是项目内的相对路径，且属于 scan 会收录的资料类型。带快照时提交前会重新核对，读取后又变化（大小或 mtime 不符）就不确认该来源，并在结果 `unconfirmed` 中给出原因；只写路径时按提交时的当前状态确认。新增来源用当前快照显式确认，删除的来源用 `{ "path", "deleted": true }` 显式确认；未列出的新增资料仍由目录检查提示。索引已达 300 项检查上限时，新增来源不会被登记，`unconfirmed` 中的 `reason` 为 `limit`；此时应改用 `project align scan` 重建索引或缩小确认范围（已有来源的刷新与删除不受影响）。确认新目录中的来源时，只有该目录及其祖先目录内的候选资料都已收录才登记当前目录基线，否则不登记，下次检查仍会发现未列出的来源。结果的 `confirmed` 是本次实际刷新或移除的来源，`unconfirmed` 是请求确认但仍变化、已消失或不可收录的来源。不传 `sources`（旧客户端，或只更新正文/决定/建议）不会刷新任何来源基线。`apply`、`decide`、`suggest` 都可以在同一次输入中携带 `sources`、`decisions`、`findings`。
 
-以上只展示业务字段。三个写命令还必须带[当前身份](usage.md#任务与回执)和明确的 `baseline`：用 `knowledge inspect --path <对齐文件>` 获取编辑前指纹，不存在时传 `null`。先声明包含对齐文件路径的 write 任务；同一项目的任何 Lead 会话都可写，计划或只读任务不能写对齐文件。写入共用快照、指纹检查与事务恢复：别的会话或用户先改过文档时返回 `CONFLICT`，重新 inspect 取新指纹后再写。首次没有索引时补只读扫描。
+以上只展示业务字段。三个写命令还必须带[当前身份](usage.md#任务与回执)和明确的 `baseline`：用 `knowledge inspect --path <对齐文件>` 获取编辑前指纹，不存在时传 `null`。先声明包含对齐文件路径的 write 任务；同一项目的任何 Lead 会话都可写，计划或只读任务不能写对齐文件。写入共用快照、指纹检查与事务恢复：别的会话或用户先改过文档时返回 `CONFLICT`，重新 inspect 取新指纹后再写。首次没有索引时补只读扫描；已扫描但来源为空的索引不会自动重扫，之后新增的资料仍按目录变化提示 stale，需要显式确认。
 
 `apply` 写进表格但从未登记的行：状态为 `pending` 的自动登记为待裁决（等同于 suggest），返回结果的 `registered` 列出这些 ID；已写成其他状态的行拒绝写入并给出 decide 命令，因为裁决必须经 decide 留痕。
 
@@ -166,7 +166,7 @@ node bin/workflow.mjs project align suggest --root "D:/项目" --input finding.j
 
 - 收集 `*.md`、`*.txt`、`*.rst`、`*.adoc`，以及 `package.json`、`Makefile`、`*.ps1`、`*.sh`、`pyproject.toml`、`Cargo.toml`、`go.mod`。
 - 排除 `.git`、`node_modules`、`bin`、`obj`、`dist`、`build`、`work`、`release-staging`、`coverage`、`target`、缓存和临时目录。
-- 每个文件只记录 `size` 与 `mtimeMs`，不读正文；默认上限 300 个文件，`--max-files` 最大 300。
+- 每个文件只记录 `size` 与 `mtimeMs`，不读正文；默认上限 300 个文件，`--max-files` 最大 300；变更检查每次也最多核对 300 项，`sources` 确认不会让索引越过该上限。
 - 分类为 `product`、`usage`、`release`、`plan`、`archive`、`other`。分类只用于索引，不决定权威性。
 - 符号链接、硬链接和目录逃逸不进入索引，在 `skipped` 中报告原因。
 - 对齐文档自身不进入索引，避免写回后把自己判成过期。
