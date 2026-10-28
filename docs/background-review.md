@@ -146,6 +146,9 @@ node bin/workflow.mjs learning status --root "D:/项目"
 node bin/workflow.mjs learning review --root "D:/项目" --now
 # 有完整提案的中断运行，按保存的提案恢复，不再调用模型
 node bin/workflow.mjs learning recover --root "D:/项目" --run "<运行ID>"
+# 内容冲突时选择保留提案（核对后仍可手动 recover）或作废并重新排队材料
+node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --keep
+node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --discard
 ```
 
 `review` 可能返回的状态：
@@ -158,9 +161,15 @@ node bin/workflow.mjs learning recover --root "D:/项目" --run "<运行ID>"
 | `no-fit` | 没有材料，或单份材料超出 `maxInputChars` |
 | `timeout` | 超过 `maxRunMinutes` 被终止；材料保留，占用当日额度 |
 | `failed` | 模型失败、结果无效或隔离未生效，`reason` 说明原因；材料保留 |
-| `recovery` / `recovery-required` | 有未完成的运行，先用 `learning recover` 处理 |
+| `deferred` | 业务任务、只读会话或复盘锁竞争导致暂缓；提案已保存，条件允许后由下次检查先重试提交，不再调用模型 |
+| `conflict` | 提案与人工编辑冲突，未覆盖任何文件；用 `learning resolve --keep` 保留或 `--discard` 作废 |
+| `kept` | 已选择保留冲突提案；核对后用 `learning recover` 手动应用，处理前不自动重试 |
+| `recovery` | 写入事务未完整结束；提案保留，按既有事务恢复语义处理，不会把未完成事务当成 pending |
+| `recovery-required` | 有未完成的运行需要辨认；有提案的会在条件允许时自动接续，其余用 `learning recover` 处理 |
 
-错误码 `BUSY` 表示项目还有活动的业务任务，等业务结束后再跑。`LOCKED` 表示另一个复盘正在运行，所有项目共用一个复盘锁。
+错误码 `BUSY` 表示项目还有活动的业务任务，等业务结束后再跑。`LOCKED` 表示另一个复盘正在运行，所有项目共用一个复盘锁。这两类短延期不会推进正常检查时间，也不会再次调用模型：下次检查或有界短重试会先补提交已保存的提案。
+
+内容冲突不会反复按旧 baseline 自动提交。`--keep` 保留提案和待写隔离，人工核对冲突后可再执行 `learning recover`；`--discard` 作废旧提案并撤销本批隔离，材料保持未处理、人工编辑不被覆盖，下一次新模型调用仍按正常额度计算。
 
 ## 5. 计划任务管理
 
@@ -172,6 +181,7 @@ node bin/workflow.mjs learning schedule remove --root "D:/项目"    # 只删除
 
 - 任务只在当前用户登录时运行，经 `conhost.exe --headless` 启动 Node，不弹窗口。电脑关机或未登录时不运行，恢复后再检查。
 - 定时检查本身不调用模型，只有达到条件、没有活动业务任务、额度足够时才启动复盘。
+- 锁竞争、业务任务或只读会话造成的延期不消耗整个检查周期；已生成提案的运行会在下次检查或有界短重试时先补提交，不重新调用模型。
 - 用 `learning config set` 修改 `checkIntervalMinutes` 等配置时，会同步更新已注册的任务。直接手改 JSON 的，要等下一次检查才同步，或手动再执行一次 `install`。
 - 升级插件后，旧定义的任务会在下一次检查时自动按新定义重新注册。0.3.0 及更早版本注册的任务可能根本不会运行，升级后请手动执行一次 `install`。
 

@@ -16,7 +16,7 @@ function argumentsFor(argv) {
     if (!value.startsWith('--')) { commands.push(value); continue; }
     const key = value.slice(2);
     if (!allowed.has(key) || Object.hasOwn(options, key)) fail('ARGUMENT', `未知或重复参数 --${key}`);
-    if (['help', 'global', 'now', 'skip-learning', 'enable-learning'].includes(key)) { options[key] = true; continue; }
+    if (['help', 'global', 'now', 'skip-learning', 'enable-learning', 'keep', 'discard'].includes(key)) { options[key] = true; continue; }
     if (!argv[index + 1] || argv[index + 1].startsWith('--')) fail('ARGUMENT', `参数 --${key} 缺少值`);
     options[key] = argv[++index];
   }
@@ -52,6 +52,7 @@ const help = {
     'learning enable|disable|status|migrate|acknowledge [--root <项目>]', 'learning doctor [--global] [--root <项目>]（不调用模型）',
     'learning review [--now] [--root <项目>]（真实模型调用）',
     'learning recover --run <运行ID> [--root <项目>]（不调用模型）',
+    'learning resolve --run <运行ID> --keep|--discard [--root <项目>]（内容冲突时保留或作废旧提案）',
     'learning schedule preview|install|remove [--root <项目>]',
     'pending list [--project <目录>]', 'pending inspect --pending <id> [--project <目录>]', 'pending create --input <JSON文件>',
     'hook --agent codex|claude（stdin 为宿主事件）',
@@ -60,7 +61,7 @@ const help = {
 };
 // --path is a document-only option; it is never used to construct shell commands.
 allowed.add('path');
-for (const key of ['global', 'now', 'query', 'run', 'version', 'task', 'ref']) allowed.add(key);
+for (const key of ['global', 'now', 'query', 'run', 'version', 'task', 'ref', 'keep', 'discard']) allowed.add(key);
 // signal 便捷子命令的字段参数；身份字段（ticket、epoch、revision）不接受命令行传入，只从状态补齐。
 for (const key of ['turn', 'id', 'goal', 'route', 'mode', 'paths', 'plans', 'channels', 'parent', 'phase', 'delivery', 'package', 'final-ref']) allowed.add(key);
 async function structuredSignal(directory, root, action, options) {
@@ -158,12 +159,17 @@ async function main() {
     const { migrateCandidates } = await import('../src/learning.mjs');
     if (action === 'enable') { const result = await setLearningEnabled(directory, root, true); return { ...result, migration: await migrateCandidates(directory, root) }; }
     if (action === 'disable') return setLearningEnabled(directory, root, false);
-    const { acknowledgeNotices, learningStatus, recoverReview, reviewOnce } = await import('../src/review.mjs');
+    const { acknowledgeNotices, learningStatus, recoverReview, resolveReview, reviewOnce } = await import('../src/review.mjs');
     if (action === 'status') return learningStatus(directory, root);
     if (action === 'migrate') return migrateCandidates(directory, root);
     if (action === 'acknowledge') return acknowledgeNotices(directory, root);
     if (action === 'review') return reviewOnce(directory, root, { nowRequested: options.now });
     if (action === 'recover') return recoverReview(directory, root, options.run);
+    if (action === 'resolve') {
+      if (!options.run) fail('ARGUMENT', 'learning resolve 需要 --run');
+      if (Boolean(options.keep) === Boolean(options.discard)) fail('ARGUMENT', 'learning resolve 需要且只能选择 --keep 或 --discard');
+      return resolveReview(directory, root, options.run, options.keep ? 'keep' : 'discard');
+    }
     if (action === 'tick') return tick(directory, root);
     if (action === 'doctor') {
       // --global 只看个人配置，接入前也能用；否则按项目配置覆盖后的最终值核对。

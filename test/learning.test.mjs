@@ -2,13 +2,13 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
-import { capture, feedback, maturityFor, readEntries, readItems, renderEntry, reviseKnowledge, selectKnowledge } from '../src/learning.mjs';
+import { capture, feedback, maturityFor, putItem, readEntries, readItems, renderEntry, reviseKnowledge, selectKnowledge } from '../src/learning.mjs';
 import { projectContext } from '../src/context.mjs';
 import { learningConfig, setLearningConfig, setLearningEnabled, projectFor } from '../src/learning-config.mjs';
-import { dueReason, learningStatus, recoverReview, reviewOnce } from '../src/review.mjs';
+import { dueReason, learningStatus, recoverReview, resolveReview, reviewOnce } from '../src/review.mjs';
 import { preflight, runProcess } from '../src/runner.mjs';
 import { schedulePreview, installSchedule, removeSchedule, tick } from '../src/scheduler.mjs';
-import { readState, mutate } from '../src/store.mjs';
+import { readState, mutate, withLock } from '../src/store.mjs';
 import { applyKnowledge, inspectKnowledge, createPending } from '../src/knowledge.mjs';
 import { taskKey } from '../src/protocol.mjs';
 import { event, fixture, identity, start, emit, deliver, entry, cli, KNOWLEDGE_TEST_HOOKS } from './helpers.mjs';
@@ -121,6 +121,188 @@ test('知识写后崩溃恢复不再调用模型且不重复消费', async () =>
   assert.equal((await learningStatus(f.directory, f.project)).pending, 0);
   assert.equal((await recoverReview(f.directory, f.project, result.id)).replayed, true);
 });
+test('P03 提交遇 BUSY 只延期；前台结束后由后续短检查接续，模型只调用一次', async () => {
+  const f = await fixture(); await start(f); await observe(f, 1); await finish(f);
+  await setLearningEnabled(f.directory, f.project, true);
+  const t0 = new Date('2026-10-28T10:00:00Z');
+  let calls = 0;
+  const defaults = fakeOptions();
+  const first = await tick(f.directory, f.project, { now: t0, nowRequested: true, preflight: async () => ({ status: 'capabilities-verified' }), runner: async (...args) => {
+    calls++;
+    // 模型完成前前台启动：提交阶段应转为可自动延期的状态。
+    f.turnId = 'turn-foreground'; f.taskId = 'task-foreground';
+    await event(f, 'UserPromptSubmit');
+    await start(f);
+    return defaults.runner(...args);
+  } });
+  assert.equal(first.status, 'deferred');
+  assert.equal(first.reason, 'BUSY');
+  assert.equal(calls, 1);
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 1);
+  assert.equal((await readEntries(await projectFor(f.directory, f.project))).length, 0);
+  // 延期不消耗正常检查周期，只留下一次有界重试机会。
+  let state = await readState(f.directory);
+  assert.equal(state.projects[f.projectId].learning.lastCheckedAt, undefined);
+  assert.ok(state.projects[f.projectId].learning.nextCheckAt);
+  await finish(f);
+  // 30 秒后的延期机会：只重试落盘，不再调用模型。
+  const resumed = await tick(f.directory, f.project, { now: new Date(t0.getTime() + 30000), nowRequested: true, runner: () => assert.fail('延期接续不应调用模型') });
+  assert.equal(resumed.status, 'completed');
+  assert.equal(resumed.resumed, true);
+  assert.equal(calls, 1);
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 0);
+  const runs = await readItems(f.directory, await projectFor(f.directory, f.project), 'runs');
+  assert.equal(runs.length, 1);
+  assert.deepEqual(runs[0].usage, { input_tokens: 100, output_tokens: 50 });
+  // 连续检查不双写、不双消费，也不新增模型额度。
+  const again = await tick(f.directory, f.project, { now: new Date(t0.getTime() + 20 * 60000), runner: () => assert.fail('不应再次调用模型') });
+  assert.equal(again.status, 'daily-limit');
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 0);
+  assert.equal((await readEntries(await projectFor(f.directory, f.project))).length, 1);
+});
+
+test('P03 真实内容冲突不覆盖用户编辑；作废后材料重新排队，新的模型调用按正常额度执行', async () => {
+  const f = await fixture(); await start(f); await observe(f, 1); await finish(f);
+  await setLearningEnabled(f.directory, f.project, true);
+  await setLearningConfig(f.directory, f.project, { maxRunsPerDay: 3 });
+  const t0 = new Date('2026-10-28T10:00:00Z');
+  const userPath = path.join(f.project, '.workflow', 'knowledge', 'K-o1.md');
+  const userContent = renderEntry(knowledgeEntry('K-o1', '用户手工编辑的登录经验', '保留用户自己的结论', ['src/login.mjs']));
+  let calls = 0;
+  const defaults = fakeOptions();
+  const first = await reviewOnce(f.directory, f.project, fakeOptions({ now: t0, nowRequested: true, runner: async (...args) => {
+    calls++;
+    await mkdir(path.dirname(userPath), { recursive: true });
+    await writeFile(userPath, userContent);
+    return defaults.runner(...args);
+  } }));
+  assert.equal(first.status, 'conflict');
+  assert.equal(calls, 1);
+  assert.equal(await readFile(userPath, 'utf8'), userContent);
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 1);
+  // 冲突不会反复原样自动提交，也不再调用模型。
+  const retry = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true, runner: () => assert.fail('冲突不应再次调用模型') }));
+  assert.equal(retry.status, 'conflict');
+  // CLI 明确的作废出口：不消费 inbox、不改用户文件，并撤销本批隔离。
+  const discarded = cli(['learning', 'resolve', '--root', f.project, '--state-dir', f.directory, '--run', first.id, '--discard']);
+  assert.equal(discarded.status, 0, discarded.stdout + discarded.stderr);
+  assert.equal(JSON.parse(discarded.stdout).status, 'discarded');
+  assert.equal(await readFile(userPath, 'utf8'), userContent);
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 1);
+  assert.deepEqual((await readState(f.directory)).projects[f.projectId].learning.quarantine, {});
+  await assert.rejects(recoverReview(f.directory, f.project, first.id), { code: 'RUN' });
+  // 作废后重新排队，新模型调用正常发生并计入额度；人工编辑保持不变。
+  const second = await reviewOnce(f.directory, f.project, fakeOptions({ now: t0, nowRequested: true, runner: async () => {
+    calls++;
+    return { status: 'completed', usage: { input_tokens: 10, output_tokens: 5 }, answer: { decisions: [{ observationIds: ['o1'], action: 'wait', reason: '用户已手工处理，等待更多证据' }] } };
+  } }));
+  assert.equal(second.status, 'completed');
+  assert.equal(calls, 2);
+  assert.equal(await readFile(userPath, 'utf8'), userContent);
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 0);
+  assert.equal((await learningStatus(f.directory, f.project)).waiting, 1);
+});
+
+test('P03 冲突提案可显式保留，人工核对后手动恢复一次即可完成', async () => {
+  const f = await fixture(); await start(f); await observe(f, 1); await finish(f);
+  await setLearningEnabled(f.directory, f.project, true);
+  const t0 = new Date('2026-10-28T10:00:00Z');
+  const userPath = path.join(f.project, '.workflow', 'knowledge', 'K-o1.md');
+  const defaults = fakeOptions();
+  const first = await reviewOnce(f.directory, f.project, fakeOptions({ now: t0, nowRequested: true, runner: async (...args) => {
+    await mkdir(path.dirname(userPath), { recursive: true });
+    await writeFile(userPath, renderEntry(knowledgeEntry('K-o1', '用户版本', '用户先写入的结论', ['src/login.mjs'])));
+    return defaults.runner(...args);
+  } }));
+  assert.equal(first.status, 'conflict');
+  assert.equal((await resolveReview(f.directory, f.project, first.id, 'keep')).status, 'kept');
+  const waiting = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true, runner: () => assert.fail('保留的冲突提案不应自动重试') }));
+  assert.equal(waiting.status, 'recovery-required');
+  // 人工把文件调整为提案内容后，手动恢复一次即可完成。
+  const project = await projectFor(f.directory, f.project);
+  const run = (await readItems(f.directory, project, 'runs')).find(r => r.id === first.id);
+  await writeFile(path.join(f.project, run.proposal.changes[0].path), run.proposal.changes[0].content);
+  const recovered = await recoverReview(f.directory, f.project, first.id);
+  assert.equal(recovered.status, 'completed');
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 0);
+  assert.deepEqual(await recoverReview(f.directory, f.project, first.id), { id: first.id, status: 'completed', replayed: true });
+});
+
+test('P03 跨项目锁争用只短延期，不额外等一个正常检查周期', async () => {
+  const f = await fixture(); await start(f); await observe(f, 1); await finish(f);
+  await setLearningEnabled(f.directory, f.project, true);
+  const t0 = new Date('2026-10-28T10:00:00Z');
+  let release, acquired;
+  const ready = new Promise(resolve => { acquired = resolve; });
+  const gate = new Promise(resolve => { release = resolve; });
+  const holding = withLock(f.directory, 'background-review', async () => { acquired(); await gate; });
+  await ready;
+  const first = await tick(f.directory, f.project, { now: t0, nowRequested: true, runner: () => assert.fail('锁被占用时不应调用模型') });
+  assert.equal(first.status, 'deferred');
+  assert.equal(first.reason, 'LOCKED');
+  let state = await readState(f.directory);
+  assert.equal(state.projects[f.projectId].learning.lastCheckedAt, undefined);
+  assert.ok(state.projects[f.projectId].learning.nextCheckAt);
+  release(); await holding;
+  // 30 秒后的有界机会即可执行，不必等到 15 分钟检查周期。
+  const second = await tick(f.directory, f.project, { now: new Date(t0.getTime() + 30000), nowRequested: true, preflight: async () => ({ status: 'capabilities-verified' }), runner: fakeOptions().runner });
+  assert.equal(second.status, 'completed');
+  state = await readState(f.directory);
+  assert.ok(state.projects[f.projectId].learning.lastCheckedAt);
+  assert.equal(state.projects[f.projectId].learning.nextCheckAt, undefined);
+});
+
+test('P03 损坏或未知的未完成运行保守保留，不自动改成成功或失败', async () => {
+  const f = await fixture(); await start(f); await observe(f, 1); await finish(f);
+  await setLearningEnabled(f.directory, f.project, true);
+  const project = await projectFor(f.directory, f.project);
+  await putItem(f.directory, project, 'runs', { id: 'review-committing', day: '2026-10-28', status: 'committing', reason: 'unknown-transaction', usage: null });
+  let calls = 0;
+  const first = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true, runner: () => { calls++; } }));
+  assert.equal(first.status, 'recovery-required');
+  assert.equal(calls, 0);
+  let run = (await readItems(f.directory, project, 'runs')).find(r => r.id === 'review-committing');
+  assert.equal(run.status, 'committing');
+  assert.equal(run.reason, 'unknown-transaction');
+  await putItem(f.directory, project, 'runs', { id: 'review-mystery', day: '2026-10-28', status: 'mystery', reason: null, usage: null, proposal: { changes: [], outcomes: [] }, batch: [], previous: [] });
+  const second = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true, runner: () => { calls++; } }));
+  assert.equal(second.status, 'recovery-required');
+  assert.equal(calls, 0);
+  run = (await readItems(f.directory, project, 'runs')).find(r => r.id === 'review-mystery');
+  assert.equal(run.status, 'mystery');
+});
+
+test('P03 写后崩溃的事务由后续检查按既有恢复语义接续，不重复调用模型或消费材料', async () => {
+  const f = await fixture(); await start(f); await observe(f, 1); await finish(f);
+  await setLearningEnabled(f.directory, f.project, true);
+  const t0 = new Date('2026-10-28T10:00:00Z');
+  let calls = 0;
+  const defaults = fakeOptions();
+  const crashed = await reviewOnce(f.directory, f.project, fakeOptions({ now: t0, nowRequested: true, runner: async (...args) => {
+    calls++;
+    return defaults.runner(...args);
+  }, checkpoint(stage) {
+    if (stage === 'written') { const error = new Error(); error.code = 'SIMULATED_CRASH'; throw error; }
+  } }));
+  assert.equal(crashed.status, 'recovery');
+  assert.equal(calls, 1);
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 1);
+  assert.equal(Object.values((await readState(f.directory)).transactions).length, 1);
+  // 下次检查按指纹复用已完成写入，不调用模型。
+  const resumed = await tick(f.directory, f.project, { now: new Date(t0.getTime() + 60000), nowRequested: true, runner: () => assert.fail('恢复事务不应调用模型') });
+  assert.equal(resumed.status, 'completed');
+  assert.equal(resumed.resumed, true);
+  assert.equal(calls, 1);
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 0);
+  assert.equal((await readEntries(await projectFor(f.directory, f.project))).length, 1);
+  assert.ok(Object.values((await readState(f.directory)).transactions).some(tx => tx.status === 'applied'));
+  // 连续检查不双写、不双消费。
+  const again = await tick(f.directory, f.project, { now: new Date(t0.getTime() + 20 * 60000), runner: () => assert.fail('不应再次调用模型') });
+  assert.equal(again.status, 'daily-limit');
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 0);
+  assert.equal((await readEntries(await projectFor(f.directory, f.project))).length, 1);
+});
+
 test('等待证据的材料不每天重读，新材料可以唤醒；不同项目隔离', async () => {
   const f = await fixture(); await start(f); await observe(f, 1); await finish(f); await setLearningEnabled(f.directory, f.project, true);
   const first = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true, runner: async () => ({ status: 'completed', answer: { decisions: [{ observationIds: ['o1'], action: 'wait', reason: '缺少独立验证' }] } }) }));

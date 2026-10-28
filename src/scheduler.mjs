@@ -2,10 +2,13 @@ import path from 'node:path';
 import { atomicWrite, digest, fail, mutate, readState } from './store.mjs';
 import { projectFor, learningConfig } from './learning-config.mjs';
 import { projectData } from './learning.mjs';
-import { reviewOnce } from './review.mjs';
+import { DEFERRED_CODES, reviewOnce } from './review.mjs';
 import { runProcess } from './runner.mjs';
 
 const xml = s => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+// 锁竞争、BUSY 等短延期只安排有界重试，不推进正常检查时间；退避上限受检查周期约束。
+const DEFER_RETRY_MS = 30000;
+const DEFER_RETRY_STEPS = 4;
 // Windows 路径不含引号，只需处理结尾反斜杠，否则 `"D:\"` 会把引号转义掉。
 const winArg = s => '"' + String(s).replace(/(\\+)$/, '$1$1') + '"';
 // 任务定义变化时递增，旧任务在下次运行时自动重新注册。
@@ -57,10 +60,32 @@ export async function tick(directory, root, options = {}) {
   if (!project.learning?.enabled) return { status: 'disabled' };
   const { values: config } = await learningConfig(directory, project);
   const now = options.now || new Date();
-  if (project.learning.lastCheckedAt && now - Date.parse(project.learning.lastCheckedAt) < config.checkIntervalMinutes * 60000) return { status: 'interval' };
-  await mutate(directory, async state => { state.projects[project.projectId].learning.lastCheckedAt = now.toISOString(); });
+  const interval = config.checkIntervalMinutes * 60000;
+  // 检查时间与有效执行时间分开：延期不记作一次检查，下一次机会不必再等整个周期。
+  const lastValue = project.learning.lastCheckedAt ? Date.parse(project.learning.lastCheckedAt) : null;
+  const retryValue = project.learning.nextCheckAt ? Date.parse(project.learning.nextCheckAt) : null;
+  const last = Number.isFinite(lastValue) ? lastValue : null;
+  const retryAt = Number.isFinite(retryValue) ? retryValue : null;
+  const intervalDue = last === null || now - last >= interval;
+  const retryDue = retryAt !== null && now >= retryAt;
+  if (!intervalDue && !retryDue) return { status: 'interval' };
   // 直接改配置文件或升级任务定义后，会在下次旧间隔检查时同步系统调度。
   if (project.learning.schedule && (project.learning.schedule.format !== TASK_FORMAT || project.learning.schedule.checkIntervalMinutes !== config.checkIntervalMinutes || project.learning.schedule.maxRunMinutes !== config.maxRunMinutes)) await installSchedule(directory, root, project.learning.schedule.entry, options.execute);
-  try { return await reviewOnce(directory, root, options); }
-  catch (error) { return { status: 'deferred', reason: error.code || 'IO' }; }
+  let result;
+  try { result = await reviewOnce(directory, root, options); }
+  catch (error) { result = { status: 'deferred', reason: error.code || 'IO' }; }
+  const deferred = result.status === 'deferred' && (DEFERRED_CODES.has(result.reason) || result.reason === 'LOCKED');
+  await mutate(directory, async state => {
+    const learning = state.projects[project.projectId]?.learning;
+    if (!learning) return;
+    if (!deferred) {
+      learning.lastCheckedAt = now.toISOString();
+      delete learning.nextCheckAt; delete learning.deferCount;
+      return;
+    }
+    learning.deferCount = (learning.deferCount || 0) + 1;
+    const delay = Math.min(interval, DEFER_RETRY_MS * 2 ** Math.min(learning.deferCount - 1, DEFER_RETRY_STEPS));
+    learning.nextCheckAt = new Date(now.getTime() + delay).toISOString();
+  });
+  return result;
 }
