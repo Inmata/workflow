@@ -13,6 +13,8 @@ export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 export const entry = path.join(root, 'bin', 'workflow.mjs');
 // store 的锁交错钩子只挂在全局符号上，不作为生产模块的导出句柄；测试通过这个键设置/清理。
 export const LOCK_TEST_HOOKS = Symbol.for('workflow.lock-test-hooks');
+// 知识检索的单文件读取故障注入点；用于稳定复现"读取失败但 size/mtimeMs 不变"的恢复场景。
+export const KNOWLEDGE_TEST_HOOKS = Symbol.for('workflow.knowledge-test-hooks');
 const temporaryAreas = new Set();
 export async function temporary(prefix = 'case-') {
   const parent = path.join(tmpdir(), 'workflow-tests');

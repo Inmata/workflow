@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { capture, feedback, maturityFor, readEntries, readItems, renderEntry, reviseKnowledge, selectKnowledge } from '../src/learning.mjs';
 import { projectContext } from '../src/context.mjs';
 import { learningConfig, setLearningConfig, setLearningEnabled, projectFor } from '../src/learning-config.mjs';
@@ -11,7 +11,7 @@ import { schedulePreview, installSchedule, removeSchedule, tick } from '../src/s
 import { readState, mutate } from '../src/store.mjs';
 import { applyKnowledge, inspectKnowledge, createPending } from '../src/knowledge.mjs';
 import { taskKey } from '../src/protocol.mjs';
-import { event, fixture, identity, start, emit, deliver, entry, cli } from './helpers.mjs';
+import { event, fixture, identity, start, emit, deliver, entry, cli, KNOWLEDGE_TEST_HOOKS } from './helpers.mjs';
 
 async function observe(f, n, extra = {}) {
   return capture(f.directory, { ...await identity(f), observation: { id: 'o' + n, incidentId: 'incident-' + n, kind: 'success', summary: '登录超时修复后验证成功 ' + n, conditions: '登录接口', evidence: ['test:login-' + n], paths: ['src/login.mjs'], verified: true, ...extra } });
@@ -258,6 +258,15 @@ async function putKnowledge(f, id, title, summary, paths = []) {
   await mkdir(folder, { recursive: true });
   await writeFile(path.join(folder, id + '.md'), renderEntry(knowledgeEntry(id, title, summary, paths)));
 }
+// 元数据 JSON 合法且正文与 renderEntry 完全一致，只破坏字段类型；模拟人工/旧版本写入的结构损坏。
+async function putCorruptKnowledge(f, id, mutate) {
+  const value = knowledgeEntry(id, '损坏经验', '字段类型损坏的正文');
+  mutate(value);
+  const folder = path.join(f.project, '.workflow', 'knowledge');
+  await mkdir(folder, { recursive: true });
+  await writeFile(path.join(folder, id + '.md'), renderEntry(value));
+}
+const knowledgePath = id => '.workflow/knowledge/' + id + '.md';
 function entrance(output) {
   const text = output.hookSpecificOutput?.additionalContext;
   assert.ok(text?.startsWith('workflow 入口：'), JSON.stringify(output));
@@ -286,6 +295,63 @@ test('P02 坏知识条目只跳过自身：新回合与 signal 正常、有效�
   const repaired = await selectKnowledge(f.directory, f.project, { text: '登录', paths: ['README.md'] });
   assert.equal(repaired.skippedTotal, 0);
   assert.ok(repaired.selected.some(item => item.id === 'K-bad'));
+});
+
+test('P02-r1 元数据字段类型损坏只跳过自身：召回与入口继续，维护读取仍严格', async () => {
+  const f = await fixture(); await start(f);
+  await putKnowledge(f, 'K-good', '登录超时经验', '登录超时先取消请求', ['README.md']);
+  await putCorruptKnowledge(f, 'K-badtags', value => { value.tags = 'explicit'; });
+  await putCorruptKnowledge(f, 'K-badscope', value => { value.scope = { paths: 'src/login.mjs', version: null }; });
+  await putCorruptKnowledge(f, 'K-badtitle', value => { value.title = 42; });
+  await putCorruptKnowledge(f, 'K-badversion', value => { value.scope = { paths: [], version: 3 }; });
+  const badIds = ['K-badtags', 'K-badscope', 'K-badtitle', 'K-badversion'];
+  const result = await selectKnowledge(f.directory, f.project, { text: '登录', paths: ['README.md'], full: true });
+  // 字段类型损坏不会再在 join/some/replace 处抛 TypeError 中断整次召回。
+  assert.equal(result.unavailable, null, JSON.stringify(result));
+  assert.ok(result.selected.some(item => item.id === 'K-good'), JSON.stringify(result));
+  assert.equal(result.skippedTotal, badIds.length);
+  for (const id of badIds) assert.ok(result.skipped.some(item => item.path === knowledgePath(id)), id);
+  f.turnId = 'turn-2';
+  const { context } = entrance(await event(f, 'UserPromptSubmit'));
+  assert.ok(context.knowledge.selected.some(item => item.id === 'K-good'), JSON.stringify(context.knowledge));
+  assert.equal(context.knowledge.skippedTotal, badIds.length);
+  assert.match(context.instruction, /无法解析/);
+  // 维护/写入路径仍严格拒绝：跳过不等于可写授权。
+  await assert.rejects(readEntries(await projectFor(f.directory, f.project)), { code: 'KNOWLEDGE' });
+  // 修复后签名变化，缓存失效并重新解析；剩余损坏条目继续单独跳过。
+  await putKnowledge(f, 'K-badtags', '登录重试', '先取消请求再重试', ['README.md']);
+  const repaired = await selectKnowledge(f.directory, f.project, { text: '登录', paths: ['README.md'], full: true });
+  assert.equal(repaired.skippedTotal, badIds.length - 1);
+  assert.ok(repaired.selected.some(item => item.id === 'K-badtags'), JSON.stringify(repaired));
+});
+
+test('P02-r1 单文件读取故障不写入失败缓存：size 与 mtimeMs 不变也能在恢复后召回', async () => {
+  const f = await fixture(); await start(f);
+  await putKnowledge(f, 'K-good', '登录超时经验', '登录超时先取消请求', ['README.md']);
+  await putKnowledge(f, 'K-locked', '登录重试经验', '先取消请求再重试', ['README.md']);
+  const locked = path.join(f.project, '.workflow', 'knowledge', 'K-locked.md');
+  const before = await stat(locked);
+  // 模拟权限/占用导致的瞬时 readFile 失败；不修改文件内容、大小与时间戳。
+  globalThis[KNOWLEDGE_TEST_HOOKS] = { beforeRead: ({ relative }) => {
+    if (relative !== knowledgePath('K-locked')) return;
+    const error = new Error('EBUSY: resource busy or locked, open ' + locked);
+    error.code = 'EBUSY';
+    throw error;
+  } };
+  let failed;
+  try { failed = await selectKnowledge(f.directory, f.project, { text: '登录', paths: ['README.md'], full: true }); }
+  finally { delete globalThis[KNOWLEDGE_TEST_HOOKS]; }
+  assert.ok(failed.selected.some(item => item.id === 'K-good'), JSON.stringify(failed));
+  assert.ok(failed.skipped.some(item => item.path === knowledgePath('K-locked') && item.code === 'EBUSY'), JSON.stringify(failed.skipped));
+  assert.equal(failed.skippedTotal, 1);
+  // 读取故障不是确定性解析结果，本次不得固化索引，否则恢复后同签名会永久命中失败缓存。
+  await assert.rejects(readFile(path.join(f.directory, 'projects', f.projectId, 'knowledge-index.json')), { code: 'ENOENT' });
+  const after = await stat(locked);
+  assert.equal(after.size, before.size);
+  assert.equal(after.mtimeMs, before.mtimeMs);
+  const recovered = await selectKnowledge(f.directory, f.project, { text: '登录', paths: ['README.md'], full: true });
+  assert.equal(recovered.skippedTotal, 0, JSON.stringify(recovered.skipped));
+  assert.ok(recovered.selected.some(item => item.id === 'K-locked'), JSON.stringify(recovered));
 });
 
 test('P02 知识目录缺失与读取故障提示可区分，入口身份仍然保存', async () => {

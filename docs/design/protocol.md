@@ -102,7 +102,7 @@ PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输�
 
 `knowledge inspect --project <root> --path <relative>` 输出 `{path,exists,content,fingerprint}`，缺文件 fingerprint=null。`knowledge apply` 输入身份字段与 `changes:[{path,baseline,content,responsibility,reason,evidence,candidateIds}]`、`candidates`。candidate 包含 `id,taskId,workPackage,conditions,finding,recommendation,evidence`。
 
-`knowledge select|explain` 是显式查询，返回 `selected`、完整 `excluded`（含原因）、`criticalOmitted`、`skipped` 以及 `excludedTotal/skippedTotal` 等总数。hook 自动入口只注入 `selected`、重要遗漏摘要和总数；程序化检索的排除清单按条数与字符双预算截断，`excludedOmitted` 说明省略数量。检索逐条解析知识文件：损坏、权限或路径/链接检查失败的条目跳过并记录 `skipped`，其他有效条目继续召回；写路径仍使用严格读取，跳过不等于可写授权。
+`knowledge select|explain` 是显式查询，返回 `selected`、完整 `excluded`（含原因）、`criticalOmitted`、`skipped` 以及 `excludedTotal/skippedTotal` 等总数。hook 自动入口只注入 `selected`、重要遗漏摘要和总数；程序化检索的排除清单按条数与字符双预算截断，`excludedOmitted` 说明省略数量。检索逐条解析知识文件：损坏（含元数据字段类型非法）、权限或路径/链接检查失败的条目跳过并记录 `skipped`，其他有效条目继续召回；写路径仍使用严格读取，跳过不等于可写授权。
 
 仅当前有效 write 任务及 allowedPaths 内非敏感 UTF-8 文本可写。禁止绝对路径、`..`、Git/客户端配置、凭据文件、二进制；遇到链接/硬链接拒绝自动写入并要求先核对目标。检查祖先 realpath 防目录链接逃逸。新文件必须有实际正文。非敏感声明和证据由 Lead 核对；插件拒绝常见凭据内容，不复制全仓或完整聊天。
 

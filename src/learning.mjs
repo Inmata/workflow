@@ -87,6 +87,31 @@ export async function migrateCandidates(directory, root) {
   });
 }
 const MARKER = '<!-- workflow-knowledge\n';
+const isPlainObject = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const isStringArray = value => Array.isArray(value) && value.every(item => typeof item === 'string');
+// 与 review.mjs 的构造约束保持一致；枚举值由内部写入路径产生，未知值视为损坏而不是静默降权。
+const ENTRY_ENUMS = {
+  type: ['method', 'fact', 'preference'],
+  importance: ['normal', 'important', 'critical'],
+  maturity: ['unverified', 'verified', 'stable'],
+};
+// 检索阶段直接消费这些字段；类型损坏会在 join/replace/some 等调用处抛 TypeError 并中断整次召回。
+function validateEntry(entry) {
+  if (!isPlainObject(entry)) fail('KNOWLEDGE', '知识元数据不是对象');
+  for (const key of ['title', 'summary', 'conditions']) if (typeof entry[key] !== 'string') fail('KNOWLEDGE', `知识字段类型无效 ${key}`);
+  if (entry.tags !== undefined && !isStringArray(entry.tags)) fail('KNOWLEDGE', '知识字段类型无效 tags');
+  if (entry.scope !== undefined) {
+    if (!isPlainObject(entry.scope)) fail('KNOWLEDGE', '知识字段类型无效 scope');
+    if (entry.scope.paths !== undefined && !isStringArray(entry.scope.paths)) fail('KNOWLEDGE', '知识字段类型无效 scope.paths');
+    if (entry.scope.version !== undefined && entry.scope.version !== null && typeof entry.scope.version !== 'string') fail('KNOWLEDGE', '知识字段类型无效 scope.version');
+  }
+  for (const [key, allowed] of Object.entries(ENTRY_ENUMS)) if (entry[key] !== undefined && (typeof entry[key] !== 'string' || !allowed.includes(entry[key]))) fail('KNOWLEDGE', `知识字段类型无效 ${key}`);
+  // 维护路径会遍历/追加这些集合；提前拦截，避免严格读取阶段出现 TypeError。
+  for (const key of ['evidence', 'history']) if (entry[key] !== undefined && !Array.isArray(entry[key])) fail('KNOWLEDGE', `知识字段类型无效 ${key}`);
+  if (entry.generation !== undefined && !(Number.isInteger(entry.generation) && entry.generation >= 1)) fail('KNOWLEDGE', '知识字段类型无效 generation');
+  for (const key of ['supersedes', 'supersededBy']) if (entry[key] !== undefined && entry[key] !== null && typeof entry[key] !== 'string') fail('KNOWLEDGE', `知识字段类型无效 ${key}`);
+  return entry;
+}
 export function renderEntry(entry) {
   return MARKER + JSON.stringify(entry, null, 2) + '\n-->\n\n# ' + entry.title + '\n\n' + entry.summary + '\n\n适用条件：' + entry.conditions + '\n';
 }
@@ -96,24 +121,33 @@ export function parseEntry(content) {
   if (end < 0) fail('KNOWLEDGE', '元数据不完整');
   let entry;
   try { entry = JSON.parse(content.slice(MARKER.length, end)); } catch { fail('KNOWLEDGE', '知识元数据损坏'); }
-  identifier(entry.id, 'knowledgeId');
+  validateEntry(entry);
+  try { identifier(entry.id, 'knowledgeId'); } catch { fail('KNOWLEDGE', '知识 ID 无效'); }
   if (entry.schemaVersion !== 1 || !['active', 'disputed', 'superseded', 'retired'].includes(entry.status)) fail('KNOWLEDGE', '未知知识版本或状态');
   // 人工改正文需要同步结构字段，避免检索到与可见正文不同的结论。
   if (renderEntry(entry) !== content) fail('KNOWLEDGE', '知识正文与元数据不同；请通过 revise 更新并保留原因');
   return entry;
 }
 const KNOWLEDGE_FOLDER = '.workflow/knowledge/';
+// 仅测试使用的读取故障注入点：与 store 的锁交错钩子一致，挂在全局符号上，未设置时是空操作。
+const KNOWLEDGE_TEST_HOOKS = Symbol.for('workflow.knowledge-test-hooks');
+async function runKnowledgeHook(name, context) {
+  const hook = globalThis[KNOWLEDGE_TEST_HOOKS]?.[name];
+  if (typeof hook === 'function') await hook(context);
+}
 // 自动入口只带命中、重要遗漏摘要与总数；排除清单按条数和字符双预算截断，完整诊断留给显式查询。
 const EXCLUDED_SHOWN = 10;
 const EXCLUDED_SHOWN_CHARS = 1200;
 const SKIPPED_SHOWN = 5;
 const IMPORTANT_SHOWN = 5;
 
-async function entryFrom(project, relative) {
-  const doc = await document(await safeDocument(project.knowledgeRoot, relative));
+function entryFromDocument(doc, relative) {
   const value = parseEntry(doc.content);
   if (entryPath(value.id) !== relative) fail('KNOWLEDGE', '知识 ID 与文件名不一致');
   return { ...value, fingerprint: doc.fingerprint, path: relative };
+}
+async function entryFrom(project, relative) {
+  return entryFromDocument(await document(await safeDocument(project.knowledgeRoot, relative)), relative);
 }
 // 维护/写入路径保持严格：跳过损坏条目只用于召回，不能据此获得可写授权。
 export async function readEntries(project) {
@@ -135,7 +169,7 @@ async function indexedEntries(directory, project) {
   let names;
   try { names = await readdir(folder); }
   catch (error) { if (error.code === 'ENOENT') return { entries: [], skipped: [], missing: true }; throw error; }
-  const files = [], skipped = [], readable = [];
+  const files = [], scanSkipped = [], readable = [];
   for (const name of names.filter(n => n.endsWith('.md')).sort()) {
     const relative = KNOWLEDGE_FOLDER + name;
     try {
@@ -143,26 +177,40 @@ async function indexedEntries(directory, project) {
       const info = await lstat(file);
       files.push([name, info.size, info.mtimeMs]);
       readable.push(relative);
-    } catch (error) { skipped.push({ path: relative, code: error.code || 'IO', message: error.message }); }
+    } catch (error) { scanSkipped.push({ path: relative, code: error.code || 'IO', message: error.message }); }
   }
   const signature = digest(JSON.stringify(files));
   const cacheFile = path.join(projectData(directory, project), 'knowledge-index.json');
   try {
     const cached = JSON.parse(await readText(cacheFile));
-    if (cached?.schemaVersion === 2 && cached.signature === signature && Array.isArray(cached.entries) && Array.isArray(cached.skipped)) {
+    if (cached?.schemaVersion === 3 && cached.signature === signature && Array.isArray(cached.entries) && Array.isArray(cached.skipped)) {
       // 当前目录扫描发现的坏路径优先；缓存补充上次解析失败但 stat 仍正常的条目。
-      const merged = new Map([...cached.skipped, ...skipped].map(item => [item.path, item]));
+      const merged = new Map([...cached.skipped, ...scanSkipped].map(item => [item.path, item]));
       return { entries: cached.entries, skipped: [...merged.values()], missing: false };
     }
   } catch {}
-  const entries = [];
+  const entries = [], readSkipped = [], parseSkipped = [];
   for (const relative of readable) {
-    try { entries.push(await entryFrom(project, relative)); }
-    catch (error) { skipped.push({ path: relative, code: error.code || 'IO', message: error.message }); }
+    let doc;
+    try {
+      await runKnowledgeHook('beforeRead', { relative });
+      doc = await document(await safeDocument(project.knowledgeRoot, relative));
+      // 读取期间文件消失属于阶段性故障，不能当作确定性的内容损坏缓存。
+      if (!doc.exists) fail('ENOENT', '读取期间知识文件消失');
+    } catch (error) {
+      readSkipped.push({ path: relative, code: error.code || 'IO', message: error.message });
+      continue;
+    }
+    try { entries.push(entryFromDocument(doc, relative)); }
+    catch (error) { parseSkipped.push({ path: relative, code: error.code || 'IO', message: error.message }); }
   }
-  // 索引缓存写入失败不影响本次召回；签名包含坏文件，修复后自然重新解析。
-  await writeJSON(cacheFile, { schemaVersion: 2, signature, entries, skipped }).catch(() => {});
-  return { entries, skipped, missing: false };
+  // 只有全部文件都成功读出内容时才固化索引：读取/权限/占用故障会随签名外的环境变化恢复，
+  // 缓存它会让 size/mtimeMs 不变的同一文件永久跳过；目录扫描故障也只在本次实时重算。
+  if (!scanSkipped.length && !readSkipped.length) {
+    // 索引缓存写入失败不影响本次召回；签名包含坏文件，修复后自然重新解析。
+    await writeJSON(cacheFile, { schemaVersion: 3, signature, entries, skipped: parseSkipped }).catch(() => {});
+  }
+  return { entries, skipped: [...scanSkipped, ...readSkipped, ...parseSkipped], missing: false };
 }
 export function maturityFor(evidence, type, status) {
   if (status !== 'active') return 'unverified';
@@ -186,19 +234,27 @@ export async function selectKnowledge(directory, root, query = {}) {
     return { selected: [], excluded: [], excludedTotal: 0, excludedOmitted: 0, criticalOmitted: [], criticalOmittedTotal: 0, skipped: [], skippedTotal: 0, total: 0, version: null, chars: 0, unavailable: { kind: 'io', code: error.code || 'IO' } };
   }
   const entries = index.entries;
+  const skipped = [...index.skipped];
   const terms = tokens(query.text || '');
   const paths = query.paths || [];
   const full = query.full === true;
   const selected = [], allExcluded = [];
-  const ranked = entries.map(e => {
-    const scoped = !e.scope?.paths?.length || paths.some(p => e.scope.paths.some(s => p === s || p.startsWith(s.replace(/\/$/, '') + '/')));
-    const version = !e.scope?.version || e.scope.version === query.version;
-    const words = tokens(e.title + ' ' + e.summary + ' ' + e.conditions + ' ' + (e.tags || []).join(' '));
-    const matches = terms.filter(t => words.includes(t)).length;
-    const relevant = matches > 0 || (e.scope?.paths?.length && scoped);
-    const reason = project.learning?.quarantine?.[e.path] ? '写入批次尚未完成' : project.learning?.disputes?.[e.id] ? '即时反例待处理' : e.status !== 'active' ? '状态 ' + e.status : !scoped || !version ? '适用范围不匹配' : !relevant ? '与本任务不相关' : null;
-    return { e, reason, score: matches * 100 + (e.scope?.paths?.length ? 50 : 0) + ({ normal: 0, important: 10, critical: 20 }[e.importance] || 0) + ({ unverified: 0, verified: 1, stable: 2 }[e.maturity] || 0) };
-  }).sort((a, b) => b.score - a.score || a.e.id.localeCompare(b.e.id));
+  // 缓存来自上一版本或人工编辑时仍可能残留异常结构；单条失败只跳过该条，不拖垮整次召回。
+  const ranked = [];
+  for (const e of entries) {
+    try {
+      const scoped = !e.scope?.paths?.length || paths.some(p => e.scope.paths.some(s => p === s || p.startsWith(s.replace(/\/$/, '') + '/')));
+      const version = !e.scope?.version || e.scope.version === query.version;
+      const words = tokens(e.title + ' ' + e.summary + ' ' + e.conditions + ' ' + (e.tags || []).join(' '));
+      const matches = terms.filter(t => words.includes(t)).length;
+      const relevant = matches > 0 || (e.scope?.paths?.length && scoped);
+      const reason = project.learning?.quarantine?.[e.path] ? '写入批次尚未完成' : project.learning?.disputes?.[e.id] ? '即时反例待处理' : e.status !== 'active' ? '状态 ' + e.status : !scoped || !version ? '适用范围不匹配' : !relevant ? '与本任务不相关' : null;
+      ranked.push({ e, reason, score: matches * 100 + (e.scope?.paths?.length ? 50 : 0) + ({ normal: 0, important: 10, critical: 20 }[e.importance] || 0) + ({ unverified: 0, verified: 1, stable: 2 }[e.maturity] || 0) });
+    } catch (error) {
+      skipped.push({ path: typeof e?.path === 'string' ? e.path : '', code: 'KNOWLEDGE', message: '索引条目结构无效：' + error.message });
+    }
+  }
+  ranked.sort((a, b) => b.score - a.score || a.e.id.localeCompare(b.e.id));
   let used = 0;
   for (const { e, reason, score } of ranked) {
     const summary = { id: e.id, title: e.title, summary: e.summary, conditions: e.conditions, maturity: e.maturity, importance: e.importance, path: e.path };
@@ -220,14 +276,14 @@ export async function selectKnowledge(directory, root, query = {}) {
     excluded.push(item);
   }
   const critical = allExcluded.filter(item => item.critical);
-  const version = digest(JSON.stringify([entries.map(e => [e.id, e.fingerprint]), index.skipped.map(item => [item.path, item.code]), project.learning?.disputes || {}, project.learning?.quarantine || {}, config.retrievalLimit, config.retrievalChars]));
+  const version = digest(JSON.stringify([ranked.map(({ e }) => [e.id, e.fingerprint]), skipped.map(item => [item.path, item.code]), project.learning?.disputes || {}, project.learning?.quarantine || {}, config.retrievalLimit, config.retrievalChars]));
   const missing = index.missing;
   // 目录缺失本身是正常空库；已启用学习时缺失才提示，且与读取故障用不同 kind 区分。
   const unavailable = missing && project.learning?.enabled ? { kind: 'missing', code: 'ENOENT' } : null;
   return {
     selected, excluded, excludedTotal: allExcluded.length, excludedOmitted: allExcluded.length - excluded.length,
     criticalOmitted: full ? critical : critical.slice(0, IMPORTANT_SHOWN), criticalOmittedTotal: critical.length,
-    skipped: full ? index.skipped : index.skipped.slice(0, SKIPPED_SHOWN), skippedTotal: index.skipped.length,
+    skipped: full ? skipped : skipped.slice(0, SKIPPED_SHOWN), skippedTotal: skipped.length,
     total: ranked.length, missing, unavailable, version, chars: used,
   };
 }
