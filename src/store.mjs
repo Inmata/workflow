@@ -1,4 +1,5 @@
-import { mkdir, open, readFile, readdir, rename, realpath, stat } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { copyFile, mkdir, open, readFile, readdir, rename, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { createHash, randomUUID } from 'node:crypto';
@@ -94,8 +95,38 @@ async function hold(deadline, state) {
   return Date.now() < deadline;
 }
 const lockDiagnostic = (file, action) => `锁内容不可辨认（${file}）：保留原文件不回收。先确认没有进程正在使用本状态目录，再把它移到 retired-locks/${path.basename(file)} 后重试${action ? `；${action}` : ''}`;
-// 回收死持有者的锁。guard 串行化回收并记录可核验的回收者；回收前重新读取目标锁的持有者，
-// 目标已换人时停止，避免移走新锁。guard 自身由崩溃进程遗留时，凭其记录的 pid 判定后移到 retired-locks。
+// 本进程当前持有的 recovery guard token。用于辨认本进程提前释放或崩溃后留下的 guard，
+// 不把别的进程仍在使用的 guard 当成残留。
+const activeGuards = new Set();
+async function moveToRetired(from, retired, label) {
+  await rename(from, path.join(retired, `${randomUUID()}.${label}`)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+}
+// 放回时只创建不覆盖：目标路径已被新持有者占用时返回 false，让调用方保留现场并报诊断。
+async function restoreNoClobber(from, target) {
+  try { await copyFile(from, target, constants.COPYFILE_EXCL); return true; }
+  catch (error) { if (error.code === 'EEXIST' || error.code === 'ENOENT') return false; throw error; }
+}
+// 先把 guard 原子摘到唯一待复核名，再核对内容是否仍是刚才读到的那一个。
+// 期间被别的恢复者替换过时放回并留诊断，不按旧读取结果移走新 guard。
+async function removeStaleGuard(guardFile, retired, observedRaw) {
+  const quarantine = path.join(path.dirname(guardFile), `.${path.basename(guardFile)}.recheck-${randomUUID()}`);
+  try { await rename(guardFile, quarantine); }
+  catch (error) { if (error.code === 'ENOENT') return 'gone'; throw error; }
+  const moved = await readText(quarantine, null);
+  // Windows 上同一路径的并发 rename 可能都报成功但只有一个真正生效；没读到内容说明已被别人摘走。
+  if (moved === null) return 'gone';
+  if (moved === observedRaw) {
+    await moveToRetired(quarantine, retired, 'stale-recovery.lock');
+    return 'removed';
+  }
+  const restored = await restoreNoClobber(quarantine, guardFile);
+  await moveToRetired(quarantine, retired, restored ? 'superseded-recovery.lock' : 'conflict-recovery.lock');
+  if (!restored) fail('LOCKED', `恢复 guard 在核对期间被另一恢复者替换（${guardFile}）；已保留现场，稍后重试`);
+  return 'superseded';
+}
+// 回收死持有者的锁。guard 串行化回收并记录可核验的回收者；摘走 guard 或目标锁前都先原子改名，
+// 再核对内容仍是刚才辨认的身份，持有者已换人时放回并停止，避免移走新锁。guard 自身由崩溃进程
+// 遗留时，凭其记录的 pid（或本进程已不再持有的 token）判定后移到 retired-locks。
 async function recoverDeadLock(directory, file, previous, deadline) {
   const retired = path.join(directory, 'retired-locks');
   await mkdir(retired, { recursive: true });
@@ -115,26 +146,53 @@ async function recoverDeadLock(directory, file, previous, deadline) {
         if (Date.now() - info.mtimeMs < LOCK_WRITE_GRACE_MS && await hold(deadline, guardPoll)) continue;
         fail('LOCKED', lockDiagnostic(guardFile, '恢复用的 guard 需要辨认后才能回收旧锁'));
       }
-      if (liveness(holder.pid) !== false) {
+      // 本进程创建、但已不在 activeGuards 的 guard 只可能是提前释放的残留。
+      const ours = holder.pid === process.pid && !activeGuards.has(holder.token);
+      if (liveness(holder.pid) !== false && !ours) {
         if (!await hold(deadline, guardPoll)) fail('LOCKED', `另一进程正在辨认旧锁（pid=${holder.pid}，guard=${guardFile}）；保留待办，不并发回收`);
         continue;
       }
-      await rename(guardFile, path.join(retired, `${randomUUID()}.stale-recovery.lock`));
+      if (await removeStaleGuard(guardFile, retired, raw) === 'gone') continue;
     }
   }
+  const guardToken = randomUUID();
+  activeGuards.add(guardToken);
   try {
-    await guard.writeFile(JSON.stringify({ pid: process.pid, name: path.basename(file), targetPid: previous.pid, targetToken: previous.token ?? null, createdAt: new Date().toISOString() }));
+    await guard.writeFile(JSON.stringify({ pid: process.pid, token: guardToken, name: path.basename(file), targetPid: previous.pid, targetToken: previous.token ?? null, createdAt: new Date().toISOString() }));
     const currentRaw = await readText(file, null);
     let current = null;
     try { current = currentRaw ? JSON.parse(currentRaw) : null; } catch { current = null; }
-    if (!current || current.pid !== previous.pid || (current.token ?? null) !== (previous.token ?? null)) fail('LOCKED', '锁持有者已变化，停止回收');
-    if (liveness(current.pid) !== false) fail('LOCKED', '锁持有者仍在运行，停止回收');
-    await rename(file, path.join(retired, `${randomUUID()}.dead.lock`));
+    // 另一个恢复者已经换掉了旧锁：回到主循环按新持有者重试，不在这里抢锁。
+    if (!current || current.pid !== previous.pid || (current.token ?? null) !== (previous.token ?? null)) return 'changed';
+    if (liveness(current.pid) !== false) return 'changed';
+    // 目标锁同样先摘到唯一待复核名，再核对仍是刚才确认的死锁；期间被重建时放回，不覆盖新锁。
+    const quarantine = path.join(path.dirname(file), `.${path.basename(file)}.recheck-${randomUUID()}`);
+    try { await rename(file, quarantine); }
+    catch (error) { if (error.code === 'ENOENT') return 'released'; throw error; }
+    const moved = await readText(quarantine, null);
+    // 并发 rename 的败者可能报成功但没移动文件：说明别的恢复者已先摘走，回到主循环重试。
+    if (moved === null) return 'released';
+    if (moved !== currentRaw || liveness(current.pid) !== false) {
+      const restored = await restoreNoClobber(quarantine, file);
+      await moveToRetired(quarantine, retired, restored ? 'superseded.lock' : 'conflict.lock');
+      return 'changed';
+    }
+    await moveToRetired(quarantine, retired, 'dead.lock');
   } finally {
     await guard.close().catch(() => {});
-    await rename(guardFile, path.join(retired, `${randomUUID()}.recovery.lock`)).catch(() => {});
+    try {
+      // 只归档仍带自己 token 的 guard；被后来者替换时保留现场，不误移新 guard。
+      // token 在归档完成前保持登记，避免别的竞争者把正在释放的 guard 当成残留。
+      const raw = await readText(guardFile, null);
+      let currentGuard = null;
+      try { currentGuard = raw ? JSON.parse(raw) : null; } catch { currentGuard = null; }
+      if (currentGuard?.token === guardToken) await moveToRetired(guardFile, retired, 'recovery.lock');
+    } finally {
+      activeGuards.delete(guardToken);
+    }
   }
 }
+
 export async function withLock(directory, name, operation, options = {}) {
   const locks = path.join(directory, 'locks');
   await mkdir(locks, { recursive: true });
@@ -225,22 +283,37 @@ export async function lifecycleEvents(directory) {
   }
   return events;
 }
-// 已消费或确定不适用的事件移到 consumed/ 保留诊断，不从磁盘直接删除。
-export async function retireLifecycleEvent(directory, name) {
-  const folder = path.join(directory, LIFECYCLE_DIRECTORY);
-  const consumed = path.join(folder, 'consumed');
-  await mkdir(consumed, { recursive: true });
-  await rename(path.join(folder, name), path.join(consumed, name)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+// deferred/ 里的记录也要能重新进入消费：会话稍后登记、或收到其他入口事件时按有界重试恢复关联。
+export async function deferredLifecycleEvents(directory) {
+  const folder = path.join(directory, LIFECYCLE_DIRECTORY, 'deferred');
+  let names;
+  try { names = await readdir(folder); } catch (error) { if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return []; throw error; }
+  const events = [];
+  for (const name of names.filter(item => item.endsWith('.json')).sort()) {
+    const raw = await readText(path.join(folder, name), null);
+    let record = null;
+    try { record = raw ? JSON.parse(raw) : null; } catch { record = null; }
+    events.push({ name, record });
+  }
+  return events;
 }
-// 缺可信关联的事件不丢弃、也不反复重试：移到 deferred/ 并附原因，等人工核对。
+const lifecycleSource = (directory, from) => path.join(directory, LIFECYCLE_DIRECTORY, ...(from === 'deferred' ? ['deferred'] : []));
+// 已消费或确定不适用的事件移到 consumed/ 保留诊断，不从磁盘直接删除。
+export async function retireLifecycleEvent(directory, name, from = 'queue') {
+  const consumed = path.join(directory, LIFECYCLE_DIRECTORY, 'consumed');
+  await mkdir(consumed, { recursive: true });
+  await rename(path.join(lifecycleSource(directory, from), name), path.join(consumed, name)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+}
+// 缺可信关联的事件不丢弃，移到 deferred/ 并附原因；后续入口按有界重试重新尝试。
 // 同一事件（event+session+turn）重复落盘时只保留一份，其余归入 consumed/。
-export async function deferLifecycleEvent(directory, name, reason) {
+export async function deferLifecycleEvent(directory, name, reason, from = 'queue') {
   const folder = path.join(directory, LIFECYCLE_DIRECTORY);
   const deferred = path.join(folder, 'deferred');
   const consumed = path.join(folder, 'consumed');
   await mkdir(deferred, { recursive: true });
   await mkdir(consumed, { recursive: true });
-  const raw = await readText(path.join(folder, name), null);
+  const source = path.join(lifecycleSource(directory, from), name);
+  const raw = await readText(source, null);
   let record = null;
   try { record = raw ? JSON.parse(raw) : null; } catch { record = null; }
   const scope = record ? [record.event, record.sessionId, record.turnId].join('\0') : name;
@@ -249,14 +322,32 @@ export async function deferLifecycleEvent(directory, name, reason) {
     let item = null;
     try { item = text ? JSON.parse(text) : null; } catch { item = null; }
     if (item && [item.event, item.sessionId, item.turnId].join('\0') === scope) {
-      await rename(path.join(folder, name), path.join(consumed, `${randomUUID()}.duplicate.json`)).catch(error => { if (error.code !== 'ENOENT') throw error; });
+      await rename(source, path.join(consumed, `${randomUUID()}.duplicate.json`)).catch(error => { if (error.code !== 'ENOENT') throw error; });
       return { name: other, reason: 'duplicate' };
     }
   }
   const target = path.join(deferred, name);
-  await rename(path.join(folder, name), target).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  await rename(source, target).catch(error => { if (error.code !== 'ENOENT') throw error; });
   await atomicWrite(`${target}.reason.txt`, `${reason}\n`);
   return { name, reason };
+}
+// 重试耗尽后把可操作的诊断写到 deferred 记录旁边，人工核对时有据可查。
+export async function noteDeferredLifecycleEvent(directory, name, reason) {
+  const target = path.join(directory, LIFECYCLE_DIRECTORY, 'deferred', name);
+  await atomicWrite(`${target}.reason.txt`, `${reason}\n`);
+}
+// 状态提交成功后才执行文件归档：状态写入失败或进程在保存后、归档前退出时，事件仍留在扫描范围，
+// 下一次入口靠已持久化的回执幂等跳过。单个归档失败不回滚状态。
+export async function archiveLifecycleEvents(directory, actions) {
+  for (const action of actions || []) {
+    try {
+      if (action.to === 'consumed') await retireLifecycleEvent(directory, action.name, action.from);
+      else if (action.to === 'deferred') await deferLifecycleEvent(directory, action.name, action.reason, action.from);
+      else if (action.to === 'deferred-note') await noteDeferredLifecycleEvent(directory, action.name, action.reason);
+    } catch {
+      // 事件仍在原处；已保存的 receipt 会让下次消费变成幂等跳过。
+    }
+  }
 }
 // 诊断出口：列出仍未消费、需要人工辨认的结束事件。
 export async function pendingLifecycleEvents(directory) {

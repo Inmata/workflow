@@ -88,9 +88,9 @@ packages 的 `handle` 填宿主委派 ID（Codeg task_id）时，委派状态查
 | SessionEnd | 同中断保存；不把业务标为完成，不续跑业务 |
 | PreCompact/PostCompact/compact SessionStart | 保存/恢复既有身份；预算不变 |
 
-Interrupt、StopFailure、SessionEnd 先写一条独立的本机待处理记录（状态根 `lifecycle-events/`，按时间命名，同目录原子替换），再尝试拿状态锁幂等消费：已消费移入 `consumed/`；同一 `event_id` 或同一 event+会话+回合重放只生效一次；缺可信项目/会话/回合关联的移入 `deferred/` 并附原因，不猜身份。记录绑定写入时的 project/session/task/turn，消费时会话已进入新回合则视为迟到事件：不撤销新票据、不自动继续，只在任务仍 active 时补一条 business-incomplete 待办。事件记录落盘失败时如实说明，只尝试写当前状态，不宣称已持久化。
+Interrupt、StopFailure、SessionEnd 先写一条独立的本机待处理记录（状态根 `lifecycle-events/`，按时间命名，同目录原子替换），再尝试拿状态锁幂等消费。消费只改内存状态，状态提交成功后才归档：已消费移入 `consumed/`；状态写入失败或保存后、归档前进程退出时，事件仍留在扫描范围，下一次入口靠已持久化的 `event_id`/event+回合回执幂等跳过，不重复中断。记录只绑定宿主给出的可信回合（`turn_id` 或 `prompt_id`）；缺失时不推断当前会话回合，按关联不足移入 `deferred/` 并说明，不中断新回合，任务仍 active 时补一条 business-incomplete 待办。`deferred/` 记录会在后续入口重读并按有界重试恢复关联：首次重入立即重试，之后按间隔，超过次数或时限后停止自动重试并写入原因文件。记录绑定写入时的 project/session/task/turn，消费时会话已进入新回合则视为迟到事件：不撤销新票据、不自动继续，只在任务仍 active 时补一条 business-incomplete 待办。事件记录落盘与状态锁同时失败时，两件事都如实说明，不宣称已持久化或已应用。
 
-“仍有其他有效 Lead 会话”指同一 project/task、非子角色、未中断、票据未撤销且回合标识存在的其他会话；旧状态缺 `interrupted`/`ticket` 字段时保守按未中断处理，不按 `lastSeenAt` 年龄判定会话死亡。空或损坏的恢复 guard 不猜成死锁：宽限期后返回 `LOCKED` 诊断并保留原文件；guard 记录 pid/targetPid/targetToken，回收前重读目标锁，持有者变化即停止。
+“仍有其他有效 Lead 会话”指同一 project/task、非子角色、未中断、票据未撤销且回合标识存在的其他会话；旧状态缺 `interrupted`/`ticket` 字段时保守按未中断处理，不按 `lastSeenAt` 年龄判定会话死亡。空或损坏的恢复 guard 不猜成死锁：宽限期后返回 `LOCKED` 诊断并保留原文件。guard 记录 pid/token/targetPid/targetToken；回收死 guard 或目标锁时先原子改名到唯一待复核名，再核对内容仍是刚才辨认的身份，不符则放回（不覆盖）并留诊断；释放 guard 前也校验自己的 token，避免移走后来者的新 guard。
 
 回合结束核对只读：不改任务状态，不替 Lead 发 task-end，不生成经验待办；缺项计算与 task-end 门禁相同，已记录的 waivers 照常抵扣，`spec-check:<原因>` 不计入。核对出错（状态损坏、锁超时等）时放行。宿主把 reason 作为续轮提示注入：Codex 以 `<hook_prompt>` 用户消息、Claude Code 以 Stop hook 反馈续一轮，续轮不触发 UserPromptSubmit，第二次 Stop 带 `stop_hook_active:true`。插件只认已记录的内容：没发 task-start 或未记进工作包的工作查不到，hook 未执行时也不生效。
 

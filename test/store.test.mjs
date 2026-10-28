@@ -65,6 +65,28 @@ test('P01 死持有者残留锁可回收；空或损坏的恢复 guard 不猜成
   assert.equal(await withLock(directory, 'state', async () => 'recovered', { budgetMs: 800 }), 'recovered');
   assert.deepEqual((await readdir(path.join(directory, 'retired-locks'))).some(name => name.includes('stale-recovery')), true);
 });
+test('P01 恢复 guard 身份核对：多竞争者交错只回收死 guard，不误移或覆盖在用 guard', async () => {
+  const dead = deadPid();
+  for (let round = 0; round < 8; round++) {
+    const directory = await temporary('lock-race-');
+    const locks = path.join(directory, 'locks');
+    await mkdir(locks, { recursive: true });
+    const lockFile = path.join(locks, `${digest('state')}.lock`);
+    const guardFile = `${lockFile}.recovery`;
+    // 崩溃进程同时留下死锁和死 guard，三个竞争者同时尝试恢复。
+    await writeFile(lockFile, JSON.stringify({ pid: dead, token: `dead-${round}`, name: 'state', createdAt: new Date(0).toISOString() }));
+    await writeFile(guardFile, JSON.stringify({ pid: dead, name: 'state', createdAt: new Date(0).toISOString() }));
+    const results = await Promise.all(['a', 'b', 'c'].map(label => withLock(directory, 'state', async () => label, { budgetMs: 2500 })));
+    assert.deepEqual(results.sort(), ['a', 'b', 'c']);
+    const retired = path.join(directory, 'retired-locks');
+    for (const file of (await readdir(retired).catch(() => [])).filter(name => name.endsWith('stale-recovery.lock'))) {
+      const archived = JSON.parse(await readFile(path.join(retired, file), 'utf8'));
+      assert.equal(archived.pid, dead, `第 ${round} 轮误把在用 guard 当成死 guard 归档：${file}`);
+    }
+    assert.deepEqual((await readdir(locks)).filter(name => name.includes('.recovery')), [], `第 ${round} 轮遗留 guard`);
+    assert.deepEqual((await readdir(locks)).filter(name => name.endsWith('.lock')), [], `第 ${round} 轮遗留锁`);
+  }
+});
 test('P01 生命周期结束事件独立落盘，未消费前保留待办并可用于诊断', async () => {
   const directory = await temporary('lifecycle-');
   await recordLifecycleEvent(directory, { kind: 'lifecycle', event: 'SessionEnd', projectId: 'p', sessionId: 's', turnId: 't', at: new Date().toISOString() });

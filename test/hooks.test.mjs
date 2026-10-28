@@ -76,6 +76,22 @@ test('P01 结束事件落盘失败如实报告，不把内存写入当作已持�
   assert.match(output.systemMessage, /未能保存 Interrupt 事件记录/);
   assert.match(output.systemMessage, /仅尝试写入当前状态/);
 });
+test('P01 结束事件记录与状态锁同时失败时如实报告：既未落盘也未应用', async () => {
+  const f = await fixture();
+  await start(f);
+  await writeFile(path.join(f.directory, 'lifecycle-events'), '故意占用目录名称');
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const holder = withLock(f.directory, 'state', async () => { await gate; });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const output = await event(f, 'Interrupt');
+  release();
+  await holder;
+  assert.match(output.systemMessage, /未能保存 Interrupt 事件记录/);
+  assert.match(output.systemMessage, /LOCKED/);
+  assert.match(output.systemMessage, /事件未应用/);
+  assert.doesNotMatch(output.systemMessage, /已另存为本机待办/);
+});
 test('未知会话与未知事件保守放行，不建立业务任务', async () => {
   const f = await fixture();
   for (const old of [

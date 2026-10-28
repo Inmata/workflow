@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
-import { deferLifecycleEvent, digest, fail, id, lifecycleEvents, retireLifecycleEvent, SCHEMA_VERSION, WorkflowError } from './store.mjs';
+import { deferredLifecycleEvents, digest, fail, id, lifecycleEvents, SCHEMA_VERSION, WorkflowError } from './store.mjs';
 import { checkSpecs, describeFindings } from './spec.mjs';
 
 export const PHASES = ['unknown', 'operation-only', 'executing', 'waiting-user', 'delivering'];
@@ -419,35 +419,87 @@ function otherLeadSession(state, task, current) {
     && typeof item.turnId === 'string' && item.turnId);
 }
 // 生命周期结束事件先落本机待处理记录，拿到状态锁后幂等消费。只认已识别的三个结束事件，
-// 不把 signal 重放成新授权。事件按 project/session/回合绑定：
+// 不把 signal 重放成新授权。事件按 project/session/可核验的宿主回合绑定：
 // - 当前回合的事件：执行中断保存；
 // - 旧回合的事件迟到：不打断新回合，也不丢——任务仍 active 时保留为待办，由用户显式接续；
-// - 会话/项目/回合无法核验：保留待办并给出原因，不猜测归属。
+// - 会话/项目/回合无法核验：移入 deferred/ 并给原因，后续入口按有界重试重新关联，超限后留待办或诊断。
+// 消费只改内存状态；文件归档由调用方在 mutate 成功保存后执行（archiveLifecycleEvents），
+// 避免状态写入失败或保存后崩溃时事件已离开扫描范围。
 export const LIFECYCLE_EVENTS = ['Interrupt', 'StopFailure', 'SessionEnd'];
-export async function consumeLifecycleEvents(directory, state) {
-  const applied = [], deferred = [], late = [];
+// deferred 记录按次数和时限有界重试：首次重入立即试一次，之后按间隔，超限后不再自动重试。
+const DEFER_RETRY_INTERVAL_MS = 30_000;
+const DEFER_MAX_ATTEMPTS = 5;
+const DEFER_MAX_AGE_MS = 10 * 60_000;
+export async function consumeLifecycleEvents(directory, state, options = {}) {
+  const applied = [], deferred = [], late = [], archive = [];
+  const retryIntervalMs = options.retryIntervalMs ?? DEFER_RETRY_INTERVAL_MS;
+  const maxAttempts = options.maxAttempts ?? DEFER_MAX_ATTEMPTS;
+  const maxAgeMs = options.maxAgeMs ?? DEFER_MAX_AGE_MS;
+  const now = Date.now();
   let events;
   try { events = await lifecycleEvents(directory); }
   catch (error) {
     // 待办目录本身不可读（如被同名文件占住）：保留状态维护，但如实说明待办无法消费。
-    return { applied, deferred: [{ reason: 'unreadable', message: error.message }], late };
+    return { applied, deferred: [{ reason: 'unreadable', message: error.message }], late, archive };
   }
-  for (const { name, record } of events) {
+  let deferredEvents;
+  try { deferredEvents = await deferredLifecycleEvents(directory); }
+  catch (error) { deferredEvents = []; deferred.push({ reason: 'unreadable-deferred', message: error.message }); }
+  state.lifecycleDeferred ||= {};
+  const entries = [
+    ...events.map(item => ({ ...item, from: 'queue' })),
+    ...deferredEvents.map(item => ({ ...item, from: 'deferred' })),
+  ];
+  for (const { name, record, from } of entries) {
     if (!record || typeof record !== 'object' || record.kind !== 'lifecycle' || !LIFECYCLE_EVENTS.includes(record.event)) {
       // 无法辨认的记录保留现场，由 doctor/人工核对，不猜测删除。
-      deferred.push({ name, reason: 'unknown-event' });
+      deferred.push({ name, from, reason: 'unknown-event', escalated: Boolean(state.lifecycleDeferred[name]?.escalated) });
+      continue;
+    }
+    const meta = state.lifecycleDeferred[name];
+    if (from === 'deferred' && meta?.escalated) {
+      deferred.push({ name, from, reason: meta.reason || 'escalated', attempts: meta.attempts, escalated: true });
       continue;
     }
     const project = state.projects[record.projectId];
     const session = state.sessions[sessionKey(record.projectId, record.sessionId)];
-    if (!project?.enabled || !session || !record.turnId) {
-      await deferLifecycleEvent(directory, name, !project?.enabled ? '项目未启用或已移除' : !session ? '会话未登记' : '事件缺少回合标识').catch(() => {});
-      deferred.push({ name, reason: 'unbound', event: record.event });
+    // 没有宿主可信回合标识时不用当前会话回合推断：旧事件会被误当成新回合事件执行中断。
+    const reason = !project?.enabled ? '项目未启用或已移除' : !session ? '会话未登记' : !record.turnId ? '事件缺少可信回合标识' : null;
+    if (reason) {
+      if (from === 'queue') {
+        archive.push({ name, from, to: 'deferred', reason });
+        state.lifecycleDeferred[name] = { attempts: 1, firstSeenAt: new Date(now).toISOString(), lastAttemptAt: new Date(now).toISOString(), reason };
+        // 缺回合标识的记录不会因会话登记而变可信；有仍 active 的任务时立即留可操作待办，不中断当前回合。
+        if (!record.turnId) lifecycleTaskPending(state, record, reason);
+        deferred.push({ name, from, reason, attempts: 1 });
+        continue;
+      }
+      const attempts = meta?.attempts || 1;
+      const firstSeen = Date.parse(meta?.firstSeenAt) || now;
+      const lastAttempt = Date.parse(meta?.lastAttemptAt) || 0;
+      // 首次重入立即重试（入口登记与结束事件交错）；之后按间隔，超过次数或时限后升级诊断。
+      const due = attempts < 2 || now - lastAttempt >= retryIntervalMs || now - firstSeen >= maxAgeMs;
+      if (!due) {
+        deferred.push({ name, from, reason, attempts });
+        continue;
+      }
+      const nextAttempts = attempts + 1;
+      const escalated = nextAttempts >= maxAttempts || now - firstSeen >= maxAgeMs;
+      state.lifecycleDeferred[name] = { ...meta, attempts: nextAttempts, lastAttemptAt: new Date(now).toISOString(), reason, ...(escalated ? { escalated: true, escalatedAt: new Date(now).toISOString() } : {}) };
+      if (escalated) {
+        lifecycleTaskPending(state, record, reason);
+        archive.push({ name, from: 'deferred', to: 'deferred-note', reason: `${reason}；已重试 ${nextAttempts} 次仍无法恢复关联，不再自动重试。核对 deferred/ 中的事件，必要时人工处理` });
+      }
+      deferred.push({ name, from, reason, attempts: nextAttempts, ...(escalated ? { escalated: true } : {}) });
       continue;
     }
     // 重放只生效一次：同一宿主事件 ID 或同一 event+turn 已消费过时直接归档。
     const key = lifecycleReceiptKey(record);
-    if (session.lifecycleReceipts?.[key]) { await retireLifecycleEvent(directory, name).catch(() => {}); continue; }
+    if (session.lifecycleReceipts?.[key]) {
+      archive.push({ name, from, to: 'consumed', outcome: 'duplicate' });
+      delete state.lifecycleDeferred[name];
+      continue;
+    }
     if (session.turnId !== record.turnId) {
       // 旧回合迟到：不撤销新回合票据；事件记录的 taskId 仍 active 时只保存待办，不自动继续。
       session.lifecycleReceipts ||= {};
@@ -455,16 +507,26 @@ export async function consumeLifecycleEvents(directory, state) {
       const task = record.taskId ? state.tasks[taskKey(record.projectId, record.taskId)] : null;
       if (task?.lifecycle === 'active') pendingFor(state, record.projectId, task.taskId, `${record.event} 属于回合 ${record.turnId}，晚于新回合到达；已保存，不自动继续`, 'business-incomplete', { turnId: record.turnId, event: record.event });
       late.push({ event: record.event, turnId: record.turnId, currentTurnId: session.turnId });
-      await retireLifecycleEvent(directory, name).catch(() => {});
+      archive.push({ name, from, to: 'consumed', outcome: 'late' });
+      delete state.lifecycleDeferred[name];
       continue;
     }
     interrupt(state, project, session);
     session.lifecycleReceipts ||= {};
     session.lifecycleReceipts[key] = { event: record.event, turnId: record.turnId, at: new Date().toISOString(), outcome: 'applied' };
     applied.push({ event: record.event, sessionId: record.sessionId, turnId: record.turnId });
-    await retireLifecycleEvent(directory, name).catch(() => {});
+    archive.push({ name, from, to: 'consumed', outcome: 'applied' });
+    delete state.lifecycleDeferred[name];
   }
-  return { applied, deferred, late };
+  return { applied, deferred, late, archive };
+}
+// 关联不足时给出可操作待办（仅任务仍 active），让人显式核对，而不是静默滞留或猜测中断。
+function lifecycleTaskPending(state, record, reason) {
+  const task = record.taskId ? state.tasks[taskKey(record.projectId, record.taskId)] : null;
+  if (task?.lifecycle !== 'active') return null;
+  return pendingFor(state, record.projectId, task.taskId,
+    `${record.event} 事件无法确认属于当前回合（${reason}）；未中断任何回合，任务 ${task.taskId} 仍为 active，请核对后显式收尾或接续`,
+    'business-incomplete', { event: record.event, turnId: record.turnId || null, source: 'lifecycle-deferred' });
 }
 function lifecycleReceiptKey(record) {
   return typeof record.hostEventId === 'string' && record.hostEventId ? `event:${record.hostEventId}` : `turn:${record.event}\0${record.turnId}`;

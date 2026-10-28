@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { digest, mutate, pendingLifecycleEvents, readState, withLock } from '../src/store.mjs';
-import { taskKey } from '../src/protocol.mjs';
+import { chmod, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { archiveLifecycleEvents, digest, mutate, pendingLifecycleEvents, readState, recordLifecycleEvent, withLock } from '../src/store.mjs';
+import { consumeLifecycleEvents, taskKey } from '../src/protocol.mjs';
+import { handleHook } from '../src/hooks.mjs';
 import { createPending } from '../src/knowledge.mjs';
-import { assertRoundCheck, deadPid, deliver, emit, event, fixture, identity, start } from './helpers.mjs';
+import { assertRoundCheck, deadPid, deliver, emit, entry, event, fixture, identity, start } from './helpers.mjs';
 
 test('交付不要求复盘：Stop 每回合最多挡一次提醒 task-end，重启、跨 turn 与压缩不补偿经验', async () => {
   const f = await fixture();
@@ -88,7 +89,7 @@ test('P01 两个 Lead 会话共用任务时，结束其中一个不挂起任务�
   assert.equal(state.tasks[taskKey(f.projectId, f.taskId)].lifecycle, 'suspended');
   assert.equal(Object.values(state.pending).filter(item => item.kind === 'business-incomplete').length, 1);
 });
-test('P01 旧状态的会话缺 interrupted 字段时保守按未中断，不挂起仍在用的任务', async () => {
+test('P01 旧状态的会话缺 interrupted/ticket 字段时保守按未中断，不挂起仍在用的任务', async () => {
   const f = await fixture();
   await start(f);
   // 第二个 Lead 会话接续同一任务后，清掉它的 interrupted/ticket 字段，模拟升级前的旧状态。
@@ -96,7 +97,7 @@ test('P01 旧状态的会话缺 interrupted 字段时保守按未中断，不挂
   await event(other, 'UserPromptSubmit');
   await emit(other, { action: 'task-start' });
   await mutate(f.directory, async state => {
-    for (const session of Object.values(state.sessions)) if (session.sessionId !== f.sessionId) { delete session.interrupted; delete session.lastSeenAt; }
+    for (const session of Object.values(state.sessions)) if (session.sessionId !== f.sessionId) { delete session.interrupted; delete session.lastSeenAt; delete session.ticket; }
   });
   await event(f, 'Interrupt');
   const state = await readState(f.directory);
@@ -221,4 +222,109 @@ test('未知 schema 和损坏状态不阻断宿主，原字节保持', async () 
   await writeFile(file, '{broken');
   assert.equal((await event(f, 'Stop')).decision, undefined);
   assert.equal(await readFile(file, 'utf8'), '{broken');
+});
+test('P01 状态已保存但归档前崩溃：事件仍在队列，重放靠已持久化回执只生效一次', async () => {
+  const f = await fixture();
+  await start(f);
+  const name = await recordLifecycleEvent(f.directory, { kind: 'lifecycle', event: 'Interrupt', projectId: f.projectId, sessionId: f.sessionId, taskId: f.taskId, turnId: f.turnId, at: new Date().toISOString() });
+  let consumed;
+  // 只提交状态、不执行归档，模拟保存成功后进程在归档前退出。
+  await mutate(f.directory, async state => { consumed = await consumeLifecycleEvents(f.directory, state); });
+  assert.equal(consumed.archive.length, 1);
+  assert.ok((await pendingLifecycleEvents(f.directory)).queued.includes(name));
+  let state = await readState(f.directory);
+  assert.equal(Object.values(state.sessions).find(item => item.sessionId === f.sessionId).interruptEpoch, 1);
+  // 下一次入口重新消费：回执命中只归档，不再次中断、不重复补待办。
+  await event(f, 'SessionEnd');
+  state = await readState(f.directory);
+  assert.equal(Object.values(state.sessions).find(item => item.sessionId === f.sessionId).interruptEpoch, 1);
+  assert.equal(Object.values(state.pending).filter(item => item.kind === 'business-incomplete').length, 1);
+  assert.deepEqual((await pendingLifecycleEvents(f.directory)).queued, []);
+});
+test('P01 状态写入失败时不归档事件，恢复后可补消费且只生效一次', async t => {
+  const f = await fixture();
+  await start(f);
+  const file = path.join(f.directory, 'state.json');
+  await chmod(file, 0o444);
+  const output = await event(f, 'Interrupt');
+  await chmod(file, 0o666);
+  const persisted = Object.values((await readState(f.directory)).sessions).find(item => item.sessionId === f.sessionId);
+  if (persisted.interrupted) { t.skip('当前平台可覆盖只读文件，无法注入状态写入失败'); return; }
+  assert.match(output.systemMessage, /STATE_WRITE_FAILED/);
+  assert.match(output.systemMessage, /已另存为本机待办/);
+  assert.equal((await pendingLifecycleEvents(f.directory)).queued.length, 1);
+  // 磁盘恢复后下一次入口补消费：中断与回执保存，事件随后归档。
+  await event(f, 'Stop');
+  const state = await readState(f.directory);
+  assert.equal(Object.values(state.sessions).find(item => item.sessionId === f.sessionId).interruptEpoch, 1);
+  assert.equal(Object.values(state.pending).filter(item => item.kind === 'business-incomplete').length, 1);
+  assert.deepEqual((await pendingLifecycleEvents(f.directory)).queued, []);
+});
+test('P01 结束事件缺少宿主回合标识时不推断当前回合，不撤销新票据', async () => {
+  const f = await fixture();
+  await start(f);
+  f.turnId = 'turn-2';
+  await event(f, 'UserPromptSubmit');
+  const before = await readState(f.directory);
+  const ticket = Object.values(before.sessions).find(item => item.sessionId === f.sessionId).ticket;
+  const output = await handleHook(f.directory, { hook_event_name: 'SessionEnd', cwd: f.project, session_id: f.sessionId }, { synthetic: true, entry });
+  const state = await readState(f.directory);
+  const session = Object.values(state.sessions).find(item => item.sessionId === f.sessionId);
+  assert.equal(session.turnId, 'turn-2');
+  assert.equal(session.interrupted, false);
+  assert.equal(session.ticket, ticket);
+  assert.equal(state.tasks[taskKey(f.projectId, f.taskId)].lifecycle, 'active');
+  const pending = Object.values(state.pending).filter(item => item.kind === 'business-incomplete');
+  assert.equal(pending.length, 1);
+  assert.match(pending[0].reason, /无法确认属于当前回合/);
+  assert.equal((await pendingLifecycleEvents(f.directory)).deferred.length, 1);
+  assert.match(output.systemMessage, /缺少可信项目\/会话关联/);
+});
+test('P01 入口登记与结束事件交错：deferred 记录重试后在会话登记后消费，不撤销新回合', async () => {
+  const f = await fixture();
+  await start(f);
+  const sessionId = 'session-interleaved';
+  // 结束事件先到：会话尚未登记，事件只能先落 deferred。
+  await handleHook(f.directory, { hook_event_name: 'SessionEnd', cwd: f.project, session_id: sessionId, turn_id: 'turn-old' }, { synthetic: true, entry });
+  assert.equal((await pendingLifecycleEvents(f.directory)).deferred.length, 1);
+  // 入口随后登记同一会话的新回合。
+  await handleHook(f.directory, { hook_event_name: 'UserPromptSubmit', cwd: f.project, session_id: sessionId, turn_id: 'turn-new' }, { synthetic: true, entry });
+  // 下一次消费重新读取 deferred：会话已登记，事件属于旧回合，按迟到处理。
+  let consumed;
+  await mutate(f.directory, async state => { consumed = await consumeLifecycleEvents(f.directory, state, { retryIntervalMs: 0 }); });
+  await archiveLifecycleEvents(f.directory, consumed.archive);
+  assert.equal(consumed.late.length, 1);
+  const state = await readState(f.directory);
+  const session = Object.values(state.sessions).find(item => item.sessionId === sessionId);
+  assert.equal(session.turnId, 'turn-new');
+  assert.equal(session.interrupted, false);
+  assert.ok(session.ticket);
+  assert.deepEqual((await pendingLifecycleEvents(f.directory)).deferred, []);
+});
+test('P01 deferred 记录有界重试：超限后停止自动重试，留下可操作待办与诊断', async () => {
+  const f = await fixture();
+  await start(f);
+  await recordLifecycleEvent(f.directory, { kind: 'lifecycle', event: 'SessionEnd', projectId: f.projectId, sessionId: 'session-ghost', taskId: f.taskId, turnId: 'turn-ghost', at: new Date().toISOString() });
+  const pass = async () => {
+    let consumed;
+    await mutate(f.directory, async state => { consumed = await consumeLifecycleEvents(f.directory, state, { retryIntervalMs: 0, maxAttempts: 3 }); });
+    await archiveLifecycleEvents(f.directory, consumed.archive);
+    return consumed;
+  };
+  const first = await pass();
+  assert.equal(first.deferred.length, 1);
+  assert.equal(first.deferred[0].escalated, undefined);
+  await pass();
+  const escalated = await pass();
+  assert.equal(escalated.deferred[0].escalated, true);
+  // 再入一次不再自动重试，也不重复补待办。
+  const settled = await pass();
+  assert.equal(settled.deferred[0].escalated, true);
+  const state = await readState(f.directory);
+  const pending = Object.values(state.pending).filter(item => item.kind === 'business-incomplete');
+  assert.equal(pending.length, 1);
+  const deferredFolder = path.join(f.directory, 'lifecycle-events', 'deferred');
+  const notes = (await readdir(deferredFolder)).filter(name => name.endsWith('.reason.txt'));
+  assert.equal(notes.length, 1);
+  assert.match(await readFile(path.join(deferredFolder, notes[0]), 'utf8'), /不再自动重试/);
 });

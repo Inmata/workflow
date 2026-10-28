@@ -27,7 +27,7 @@ Claude Code 事件没有 `turn_id`，用宿主 `prompt_id` 关联一次用户输
 | SessionEnd | 保存未完成任务待办，票据失效 |
 | PreCompact / PostCompact | 只记录观测，不输出上下文 |
 
-宿主提供 `prompt_id` 时用它建立回合；入口事件缺失该字段时本机生成，后续事件按当前会话回合关联，不因标识缺失丢弃工具回执。
+宿主提供 `prompt_id` 时用它建立回合；入口事件缺失该字段时本机生成，后续事件按当前会话回合关联，不因标识缺失丢弃工具回执。StopFailure、SessionEnd 缺少 `prompt_id` 时不推断当前回合：事件保留在 `deferred/` 按关联不足处理，任务仍 active 时留待办，不撤销新回合票据。
 
 `hookSpecificOutput.additionalContext` 只在 SessionStart、UserPromptSubmit、PostToolUse、Stop 返回；StopFailure、SessionEnd、PreCompact、PostCompact 仅记录观测，避免事件名不匹配的输出被宿主拒绝。
 

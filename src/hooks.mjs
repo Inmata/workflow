@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { canonical, digest, id, mutate, observeHost, readState, recordLifecycleEvent, samePath, within } from './store.mjs';
+import { archiveLifecycleEvents, canonical, digest, id, mutate, observeHost, readState, recordLifecycleEvent, samePath, within } from './store.mjs';
 import { acceptSignal, consumeLifecycleEvents, interrupt, LIFECYCLE_EVENTS, openTurn, pendingFor, sessionKey, stop, taskKey, TERMINAL_PACKAGE } from './protocol.mjs';
 import { resolveProject } from './projects.mjs';
 import { projectContext, signalUsage } from './context.mjs';
@@ -128,6 +128,8 @@ const identityHint = 'workflow 本回合未建立入口身份（缺少宿主回�
 export async function handleHook(directory, event, options = {}) {
   // 结束事件独立落盘后，即使后续拿不到状态锁也要如实说明它已保存。
   let recordedLifecycle = null;
+  // 记录失败的信息必须带到外层：状态锁再失败时也要说明事件既未落盘也未应用。
+  let lifecycleNote = '';
   try {
     const agent = HOSTS.includes(options.agent) ? options.agent : 'codex';
     if (!event || typeof event !== 'object' || !HOST_EVENTS[agent].includes(event.hook_event_name)) return {};
@@ -160,17 +162,16 @@ export async function handleHook(directory, event, options = {}) {
     if (!initial) return {};
     // 委派状态查询只读核对账本，不写状态：每次等待都落盘会放大锁竞争。
     if (name === 'PostToolUse' && delegationStatus) return delegationHint(existing, initial.project, event, turnId);
-    let lifecycleNote = '';
     if (LIFECYCLE_EVENTS.includes(name)) {
       // 结束事件先独立原子落盘：状态锁被短暂占用或进程随后退出时，事件仍能在下一次入口被消费。
-      // 回合身份取宿主给出的回合，缺失时用记录时已知的会话回合，不猜新回合。
+      // 只绑定宿主给出的可信回合；缺失时留空，让消费端按关联不足处理，不拿当前会话回合推断归属。
       const known = existing.sessions[sessionKey(initial.project.projectId, event.session_id)];
       try {
         const recordName = await recordLifecycleEvent(directory, {
           kind: 'lifecycle', event: name, projectId: initial.project.projectId, sessionId: event.session_id,
           // 绑定记录时的任务与回合：迟到事件据此只保存待办，不去改写之后打开的新回合。
           taskId: known?.taskId || null,
-          turnId: hostTurn || known?.turnId || null, ticket: known?.ticket || null,
+          turnId: hostTurn || null, ticket: known?.ticket || null,
           hostEventId: typeof event.event_id === 'string' ? event.event_id : null,
           at: new Date().toISOString(), source: options.synthetic ? 'synthetic' : 'callback',
         });
@@ -180,7 +181,9 @@ export async function handleHook(directory, event, options = {}) {
         lifecycleNote = `workflow 未能保存 ${name} 事件记录（${error.code || 'IO'}）：仅尝试写入当前状态；磁盘恢复后请重试。`;
       }
     }
-    return await mutate(directory, async (state, save) => {
+    // 事件文件的归档要等状态提交成功后再执行；保存失败时事件留在原处，下次入口靠回执幂等跳过。
+    let lifecycleArchive = [];
+    const output = await mutate(directory, async (state, save) => {
       const resolved = await resolveProject(state, event.cwd, probe);
       if (!resolved) return {};
       const project = resolved.project;
@@ -189,8 +192,10 @@ export async function handleHook(directory, event, options = {}) {
       observeHost(state, agent, name, { at: new Date().toISOString(), sessionId: event.session_id, source: options.synthetic ? 'synthetic' : 'callback' });
       // 拿到状态锁后再幂等消费待处理结束事件；迟到的旧事件不打断新回合，只保留待办。
       const consumed = await consumeLifecycleEvents(directory, state);
+      lifecycleArchive = consumed.archive;
+      const escalated = consumed.deferred.filter(item => item.escalated).length;
       const lifecycleOutput = lifecycleNote ? { systemMessage: lifecycleNote }
-        : consumed.deferred.length && LIFECYCLE_EVENTS.includes(name) ? { systemMessage: `workflow 有 ${consumed.deferred.length} 个结束事件缺少可信项目/会话关联，已保留本机待办（${consumed.deferred.map(item => item.name).join('、')}）；不撤销任何新回合票据。` } : {};
+        : consumed.deferred.length && LIFECYCLE_EVENTS.includes(name) ? { systemMessage: `workflow 有 ${consumed.deferred.length} 个结束事件缺少可信项目/会话关联，已保留本机待办（${consumed.deferred.map(item => item.name).join('、')}）；不撤销任何新回合票据。${escalated ? `其中 ${escalated} 个已多次重试仍无法恢复关联，见 deferred/ 中的原因文件。` : ''}` } : {};
       if (session && event.event_id && session.observed[event.event_id]) return lifecycleOutput;
       if (name === 'SessionStart' || name === 'UserPromptSubmit') {
         // 会话开始后插件被重装：hook 已是新版本，但会话里已读的指引和命令仍是旧的，提示开新会话。
@@ -252,7 +257,8 @@ export async function handleHook(directory, event, options = {}) {
         // 正常情况下结束事件已在上面由待办记录幂等消费；只有事件记录落盘失败时才在这里按当前回合保守保存，
         // 避免把同一事件既写入待办又在新回合上重复中断。两种情况都把事件状态说明原样带回。
         if (!lifecycleNote) return lifecycleOutput;
-        if (hostTurn && session.turnId !== hostTurn) return lifecycleOutput;
+        // 没有宿主回合标识时不拿当前会话推断归属：无法证明它属于本回合，只保留说明。
+        if (!hostTurn || session.turnId !== hostTurn) return lifecycleOutput;
         interrupt(state, project, session);
         return lifecycleOutput;
       }
@@ -260,10 +266,14 @@ export async function handleHook(directory, event, options = {}) {
       if (name === 'PostCompact') return {};
       return {};
     }, { budgetMs: lockBudget(name) });
+    // 状态已提交：此时再归档事件；归档失败不影响已保存的回执，下次消费幂等跳过。
+    await archiveLifecycleEvents(directory, lifecycleArchive);
+    return output;
   } catch (error) {
     // Never return a continuation when identity, persistence, schema or locking failed.
     const saved = recordedLifecycle ? `本次 ${recordedLifecycle.event} 事件已另存为本机待办（${recordedLifecycle.name}），下一次入口会幂等消费；` : '';
+    const lostRecord = lifecycleNote ? `${lifecycleNote} 本次状态也未确认保存，事件未应用；` : '';
     const detail = error.code === 'LOCKED' ? `原因：${error.message}；先核对持有进程已结束，再按提示处理残留锁或 guard，不直接删除活动锁。` : '';
-    return { systemMessage: `workflow 已保守放行，维护暂不可用：${error.code || 'IO'}；保留状态和待办。${detail}${saved}` };
+    return { systemMessage: `workflow 已保守放行，维护暂不可用：${error.code || 'IO'}；保留状态和待办。${detail}${saved}${lostRecord}` };
   }
 }
