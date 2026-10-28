@@ -114,13 +114,13 @@ PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输�
 
 ## 项目对齐
 
-对齐不新增 phase、不改 signal schema。`scan` 只读扫描项目并写本机索引，`status` 检查索引；`apply`、`decide`、`suggest` 需要有效身份、write 任务、目标 allowedPaths 与明确 baseline，使用共享写入事务。只读/计划任务即使对齐文件缺失也不能写。
+对齐不新增 phase、不改 signal schema。`scan` 只读扫描项目并写本机索引，`status` 检查索引；`apply`、`decide`、`suggest` 需要有效身份、write 任务、目标 allowedPaths 与明确 baseline，使用共享写入事务。只读/计划任务即使对齐文件缺失也不能写。一次写入可带 `sources` 列出本次实际重读并确认的来源（可选 `size`/`mtimeMs` 快照，删除项 `deleted: true`），只刷新这些来源的 `files` 基线和相关目录；提交前复核快照，读取后又变化的来源不确认并保持 stale，未列出的来源也不动。
 
 索引保存 `schemaVersion`、`generatedAt`、`docPath`、`docFingerprint`、`files`（`path/size/mtimeMs/kind`）、`directories`（索引文件父目录的 `path/mtimeMs`）、`decisions` 与 `findings`（只存 ID、状态和裁决时间）。扫描收集文档文本和工具链入口，排除 `.git`、`node_modules`、`bin`、`obj`、`dist`、`build`、`work`、`release-staging`、`.workflow`、缓存和临时目录；默认 300 个文件，`--max-files` 最大 300。符号链接、硬链接和目录逃逸不进入索引，在 `skipped` 报告原因。每个文件只取大小和 mtime，不读正文；对齐文档自身不进入索引，避免写回后自判过期。
 
 `apply` 用 `workflow-alignment:begin/end` 标记区维护正文，标记外逐字保留；`decide`、`suggest` 按 `## 已裁决记录`、`## 结构建议` 标题定位小节（到下一个标题或管理区结束标记为止，末节不越过标记），同一 ID 原位替换，首条记录替换“- 暂无”类占位行。写入前核对输入 `baseline`，不一致返回 `CONFLICT` 并保留原文；写入使用同目录临时文件原子替换。首次 `apply`/`decide`/`suggest` 若索引为空，会先补一次只读扫描，保证后续变更检测有效。
 
-`projectContext` 注入 `alignment:{path,exists,docExists,stale,changed,missing,directoryChanged,pendingDecisions,pendingFindings}`。`stale` 只由索引文件大小/mtime 和父目录 mtime 变化得出，不读正文；`pendingDecisions`/`pendingFindings` 以对齐文档表格为准并与索引状态合并，绕过 `decide`/`suggest` 直接写表也不会漏计；`exists=false` 时按未对齐处理。对齐读取失败时改为注入 `alignment:{error:{code}}` 和一句短降级提示，不按未对齐处理，也不回滚已保存的入口身份。hook 不自动写项目文件，只提示 Lead 增量更新或逐条确认待裁决项。
+`projectContext` 注入 `alignment:{path,exists,docExists,stale,changed,missing,directoryChanged,pendingDecisions,pendingFindings}`。`stale` 只由索引文件大小/mtime 和父目录 mtime 变化得出，不读正文；`changed` 每项附当前 `size`/`mtimeMs`，可作为 `sources` 快照；`pendingDecisions`/`pendingFindings` 以对齐文档表格为准并与索引状态合并，绕过 `decide`/`suggest` 直接写表也不会漏计；`exists=false` 时按未对齐处理。对齐读取失败时改为注入 `alignment:{error:{code}}` 和一句短降级提示，不按未对齐处理，也不回滚已保存的入口身份。hook 不自动写项目文件，只提示 Lead 增量更新或逐条确认待裁决项。
 
 ## 安装和版本
 

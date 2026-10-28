@@ -47,7 +47,7 @@ function alignmentAction(alignment) {
   if (!alignment.exists) return '项目尚未对齐：先读 alignmentGuide，按协议做只读扫描并把结论写入对齐文件；差异按提问路径询问用户，不擅自实施。';
   if (!alignment.docExists) return '项目对齐索引已建立但文档缺失：按协议生成对齐文件，差异按提问路径询问用户，不擅自实施。';
   if (alignment.mismatch?.length) return `对齐文档表格与本机索引不一致（${alignment.mismatch.map(m => m.id + ':' + m.document + '/' + m.index).join('、')}）：不要手改表格，按 alignmentGuide 用 decide 重新登记。`;
-  if (alignment.stale) return `项目对齐索引已过期（${alignment.changed.length + alignment.missing.length + alignment.directoryChanged.length} 项变化）：只重读变化文件和新增资料，更新对齐文件，不重新全量扫描。`;
+  if (alignment.stale) return `项目对齐索引已过期（${alignment.changed.length + alignment.missing.length + alignment.directoryChanged.length} 项变化）：只重读变化文件和新增资料，再用 apply/decide/suggest 的 sources 带上读取时快照确认已读来源；未确认来源仍会提示，不重新全量扫描。`;
   if (alignment.pendingDecisions || alignment.pendingFindings) return `项目对齐还有 ${alignment.pendingDecisions} 项待裁决、${alignment.pendingFindings} 项结构建议；按提问路径向用户确认，可跨回合裁决；用户批准的结构建议在当回合直接执行修改，再用 decide 登记 accepted-change。`;
   return '';
 }

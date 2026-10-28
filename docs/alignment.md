@@ -24,7 +24,7 @@
 对齐文件"对齐依据"段记录了已扫描文件的路径、大小、mtime。
 逐个 stat 这些文件，比较大小和 mtime：
 - 全部一致 → 直接复用，跳过第 2 步。
-- 有变化 / 文件消失 → 只重读变化的文件和新增的索引类文档，更新对齐文件。
+- 有变化 / 文件消失 → 只重读变化的文件和新增的索引类文档，再用 `apply` 的 `sources` 列出本次实际重读并确认的来源（带读取时的 `size` 与 `mtimeMs`），只刷新这些来源的基线；删除的来源传 `{ "path": "...", "deleted": true }`。没列出的变化仍算过期，不能因为写入成功就视为全部来源已核对。
 不要因为一个文件变化就重扫整个 docs。
 
 #### 1.2 重新对齐
@@ -32,6 +32,7 @@
 重新核对差异和结构问题，提出 spec 清单（第 3.1 步），用 apply 更新对齐文件。
 `project align scan` 只刷新文件清单，跑完 scan 或 status 显示无变化都不算完成重新对齐。
 已裁决项不重复询问，只问新发现；对齐文件里的手写内容保留。
+重新对齐也只刷新 `sources` 里实际重读过的来源，没读过的资料不要列。
 写对齐文件前先声明包含该文件路径的 write 任务。
 
 ### 2. 首次对齐与重新对齐（只读分析 + 只写对齐文件）
@@ -131,7 +132,7 @@ node bin/workflow.mjs project align scan --root "D:/项目" --max-files 300
 # 新会话检查是否过期；同时返回待裁决/待处理数量
 node bin/workflow.mjs project align status --root "D:/项目"
 
-# 写入 Lead 生成的对齐正文
+# 写入 Lead 生成的对齐正文（可同时用 sources 确认已重读来源）
 node bin/workflow.mjs project align apply --root "D:/项目" --input align.json
 
 # 记录一条或多条裁决
@@ -147,9 +148,15 @@ node bin/workflow.mjs project align suggest --root "D:/项目" --input finding.j
 {
   "content": "# 项目对齐\n## 对齐依据\n...",
   "decisions": [{ "id": "D1", "status": "accepted-project", "reason": "项目已有约定" }],
-  "findings": [{ "id": "F1", "problem": "版本号陈旧", "location": "CONTRIBUTING.md", "recommendation": "与代码常量对齐" }]
+  "findings": [{ "id": "F1", "problem": "版本号陈旧", "location": "CONTRIBUTING.md", "recommendation": "与代码常量对齐" }],
+  "sources": [
+    { "path": "README.md", "size": 1234, "mtimeMs": 1760000000000 },
+    { "path": "docs/old.md", "deleted": true }
+  ]
 }
 ```
+
+`sources` 可选，只更新来源索引基线，不改变文档正文与裁决的写入语义。每项可写路径字符串，或 `{ "path", "size", "mtimeMs" }` 快照；路径必须是项目内的相对路径，且属于 scan 会收录的资料类型。带快照时提交前会重新核对，读取后又变化（大小或 mtime 不符）就不确认该来源，并在结果 `unconfirmed` 中给出原因；只写路径时按提交时的当前状态确认。新增来源用当前快照显式确认，删除的来源用 `{ "path", "deleted": true }` 显式确认；未列出的新增资料仍由目录检查提示。结果的 `confirmed` 是本次实际刷新或移除的来源，`unconfirmed` 是请求确认但仍变化、已消失或不可收录的来源。不传 `sources`（旧客户端，或只更新正文/决定/建议）不会刷新任何来源基线。`apply`、`decide`、`suggest` 都可以在同一次输入中携带 `sources`、`decisions`、`findings`。
 
 以上只展示业务字段。三个写命令还必须带[当前身份](usage.md#任务与回执)和明确的 `baseline`：用 `knowledge inspect --path <对齐文件>` 获取编辑前指纹，不存在时传 `null`。先声明包含对齐文件路径的 write 任务；同一项目的任何 Lead 会话都可写，计划或只读任务不能写对齐文件。写入共用快照、指纹检查与事务恢复：别的会话或用户先改过文档时返回 `CONFLICT`，重新 inspect 取新指纹后再写。首次没有索引时补只读扫描。
 
@@ -195,7 +202,7 @@ hook 在 SessionStart 和 UserPromptSubmit 返回的 context 中包含：
 }
 ```
 
-Lead 还会得到 `alignmentGuide` 路径。`exists=false` 表示尚未对齐；`stale=true` 表示索引中的文件大小、mtime 或所在目录变化，需要只重读变化文件和新增资料；待裁决数量提醒 Lead 不要遗忘未决差异。`pendingDecisions`/`pendingFindings` 以对齐文档中的表格为准（Lead 直接写表格也算），再与本机索引状态合并，因此绕过 `decide`/`suggest` 也不会漏掉待办。`mismatch` 列出表格状态与 decide 登记值不一致的行（`document` 是表格里的值，`index` 是登记值，`invalid: true` 表示表格里的值不是合法状态），多半是手改了表格：按用户的裁决重新 decide，decide 会把表格状态纠正为登记值。目录 mtime 变化时会重新列目录，只有出现未收录的候选资料（文档、脚本、工具链文件）才计入 `directoryChanged`；新增图片等其他文件或目录被删除不算。旧项目没有索引字段时按未对齐处理，不报错。hook 只读状态和对齐文档，不自动写项目文件。
+Lead 还会得到 `alignmentGuide` 路径。`exists=false` 表示尚未对齐；`stale=true` 表示索引中的文件大小、mtime 或所在目录变化，需要只重读变化文件和新增资料，并把已读来源用 `sources` 确认；未确认的来源会继续提示。`changed` 每项除 `path`、`reason` 外还带当前 `size` 和 `mtimeMs`，可直接作为 `sources` 快照。`pendingDecisions`/`pendingFindings` 以对齐文档中的表格为准（Lead 直接写表格也算），再与本机索引状态合并，因此绕过 `decide`/`suggest` 也不会漏掉待办。`mismatch` 列出表格状态与 decide 登记值不一致的行（`document` 是表格里的值，`index` 是登记值，`invalid: true` 表示表格里的值不是合法状态），多半是手改了表格：按用户的裁决重新 decide，decide 会把表格状态纠正为登记值。目录 mtime 变化时会重新列目录，只有出现未收录的候选资料（文档、脚本、工具链文件）才计入 `directoryChanged`；新增图片等其他文件或目录被删除不算。旧项目没有索引字段时按未对齐处理，不报错。hook 只读状态和对齐文档，不自动写项目文件。
 
 ## 边界
 
@@ -204,3 +211,4 @@ Lead 还会得到 `alignmentGuide` 路径。`exists=false` 表示尚未对齐；
 - 项目原有做法不自动服从，也不自动推翻；每条真实差异都要用户裁决并留痕。
 - 不读构建产物、缓存和历史计划正文；未读文件仍列入全量清单并标注"存在但未读"。
 - 索引只保存 ID、状态和裁决时间；理由与建议正文以项目内文档为权威。
+- `sources` 只刷新列出的来源；不传时不会因为正文、决定或建议写入成功而确认整个项目。

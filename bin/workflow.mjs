@@ -38,7 +38,7 @@ const help = {
     'project enable --root <目录> [--coexistence-mode bounded|pending-only]',
     'project disable --root <目录>', 'project attach-worktree --project <projectId> --root <目录>',
     'project align scan|status --root <目录> [--max-files N]',
-    'project align apply|decide|suggest --root <目录> --input <JSON文件>',
+    'project align apply|decide|suggest --root <目录> --input <JSON文件>（sources 增量确认来源基线）',
     'context --role lead|worker|reviewer [--project <目录>] [--session <sessionId>]',
     'task show --task <taskId> [--project <目录>]（只读查看分流、工作包账本、变更条数与门禁缺项）',
     'spec check [--project <目录>] [--ref <提交>]（只读检查 .spec 管辖文件是否漂移；有发现时退出码 1）',
@@ -57,7 +57,7 @@ const help = {
     'pending list [--project <目录>]', 'pending inspect --pending <id> [--project <目录>]', 'pending create --input <JSON文件>',
     'hook --agent codex|claude（stdin 为宿主事件）',
   ],
-  note: 'signal 只输出，需当前宿主 PostToolUse 接受；未知状态、提问和中断不发补偿。不会自动提交或发布。',
+  note: 'signal 只输出，需当前宿主 PostToolUse 接受；未知状态、提问和中断不发补偿。对齐 sources 只刷新列出的已确认来源，不传时保持旧行为。不会自动提交或发布。',
 };
 // --path is a document-only option; it is never used to construct shell commands.
 allowed.add('path');

@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { link, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { link, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { alignmentStatus, applyAlignment, classify, decideAlignment, scanAlignment, suggestAlignment } from '../src/alignment.mjs';
 import { getContext } from '../src/context.mjs';
 import { readState, digest } from '../src/store.mjs';
@@ -193,6 +193,116 @@ test('CLI 接入 align scan/status，state 只保存 ID 与状态', async () => 
   assert.equal(alignment.docPath, 'docs/WORKFLOW-ALIGNMENT.md');
   assert.equal(alignment.docFingerprint, null);
 });
+
+test('sources 确认单个来源后不再提示，未确认来源仍过期', async () => {
+  const f = await fixture();
+  await documents(f.project, { 'docs/a.md': '原始\n' });
+  await scanAlignment(f.directory, f.project);
+  await writeFile(path.join(f.project, 'README.md'), '# 项目\n原始内容\n已变更\n');
+  await writeFile(path.join(f.project, 'docs', 'a.md'), '已变更\n');
+  let status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, true);
+  assert.deepEqual(status.changed.map(item => item.path).sort(), ['README.md', 'docs/a.md']);
+  assert.ok(status.changed.every(item => Number.isSafeInteger(item.size) && typeof item.mtimeMs === 'number'));
+  // 旧客户端只写正文/裁决，不传 sources 时不刷新任何来源基线。
+  await apply(f, { content: '# 项目对齐\n' });
+  await decide(f, { decisions: [{ id: 'D1', status: 'pending' }] });
+  await suggest(f, { findings: [{ id: 'F1', problem: '缺少索引', location: 'docs', recommendation: '补索引' }] });
+  status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, true);
+  assert.deepEqual(status.changed.map(item => item.path).sort(), ['README.md', 'docs/a.md']);
+  let context = await getContext(f.directory, f.project, 'lead', f.sessionId);
+  assert.ok(context.instruction.includes('sources'));
+  await apply(f, { content: '# 项目对齐\n', sources: [await snapshot(f.project, 'README.md')] });
+  status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, true);
+  assert.deepEqual(status.changed.map(item => item.path), ['docs/a.md']);
+  await apply(f, { content: '# 项目对齐\n', sources: [await snapshot(f.project, 'docs/a.md')] });
+  status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, false);
+  assert.deepEqual(status.changed, []);
+  context = await getContext(f.directory, f.project, 'lead', f.sessionId);
+  assert.ok(!context.instruction.includes('对齐索引已过期'));
+});
+
+test('sources 快照在提交前复核，确认期间再次修改保留 stale', async () => {
+  const f = await fixture();
+  await scanAlignment(f.directory, f.project);
+  await writeFile(path.join(f.project, 'README.md'), '# 项目\n第一次修改\n');
+  const stale = await snapshot(f.project, 'README.md');
+  await writeFile(path.join(f.project, 'README.md'), '# 项目\n第二次修改，内容更长\n');
+  const result = await apply(f, { content: '# 项目对齐\n', sources: [stale] });
+  assert.equal(result.status, 'applied');
+  assert.deepEqual(result.confirmed, []);
+  assert.deepEqual(result.unconfirmed, [{ path: 'README.md', reason: 'size' }]);
+  let status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, true);
+  assert.deepEqual(status.changed.map(item => item.path), ['README.md']);
+  const fixed = await apply(f, { content: '# 项目对齐\n', sources: [await snapshot(f.project, 'README.md')] });
+  assert.deepEqual(fixed.confirmed, ['README.md']);
+  assert.deepEqual(fixed.unconfirmed, []);
+  status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, false);
+});
+
+test('sources 支持新增、删除与 decisions/findings 一次提交', async () => {
+  const f = await fixture();
+  await documents(f.project, { 'docs/a.md': '原始\n' });
+  await scanAlignment(f.directory, f.project);
+  await rename(path.join(f.project, 'docs', 'a.md'), path.join(f.area, 'a-removed.md'));
+  await writeFile(path.join(f.project, 'docs', 'new.md'), '新增资料\n');
+  await writeFile(path.join(f.project, 'docs', 'other.md'), '另一份新增\n');
+  let status = await alignmentStatus(f.directory, f.project);
+  assert.ok(status.missing.some(item => item.path === 'docs/a.md'));
+  assert.ok(status.directoryChanged.includes('docs'));
+  const result = await apply(f, {
+    content: '# 项目对齐\n',
+    decisions: [{ id: 'D1', status: 'accepted-project', reason: '用户选择项目做法' }],
+    findings: [{ id: 'F1', problem: '缺少索引', location: 'docs', recommendation: '补索引' }],
+    sources: [{ path: 'docs/a.md', deleted: true }, await snapshot(f.project, 'docs/new.md')],
+  });
+  assert.equal(result.status, 'applied');
+  assert.deepEqual(result.confirmed.sort(), ['docs/a.md', 'docs/new.md']);
+  assert.deepEqual(result.unconfirmed, []);
+  status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, true);
+  assert.deepEqual(status.missing, []);
+  assert.deepEqual(status.directoryChanged, ['docs']);
+  const indexed = (await readState(f.directory)).projects[f.projectId].alignment.files.map(file => file.path);
+  assert.ok(!indexed.includes('docs/a.md'));
+  assert.ok(indexed.includes('docs/new.md'));
+  assert.ok(!indexed.includes('docs/other.md'));
+  const text = await readFile(docPath(f.project), 'utf8');
+  assert.ok(text.includes('D1 accepted-project：用户选择项目做法'));
+  assert.ok(text.includes('| F1 | 缺少索引 | docs | 补索引 | pending |'));
+  await apply(f, { content: '# 项目对齐\n', sources: [await snapshot(f.project, 'docs/other.md')] });
+  status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, false);
+  assert.deepEqual(status.directoryChanged, []);
+});
+
+test('sources 拒绝越界路径、无效快照、重复与对齐文档自身', async () => {
+  const f = await fixture();
+  await scanAlignment(f.directory, f.project);
+  const cases = [
+    ['README.md', 'INPUT'],
+    [[{}], 'PATH'],
+    [[{ path: '../outside.md' }], 'PATH'],
+    [[{ path: 'docs/picture.png' }], 'INPUT'],
+    [[{ path: 'README.md', size: 1 }], 'INPUT'],
+    [[{ path: 'README.md', size: 1, mtimeMs: 1 }, { path: 'README.md' }], 'INPUT'],
+    [[{ path: 'README.md', deleted: true, size: 1, mtimeMs: 1 }], 'INPUT'],
+    [[{ path: 'WORKFLOW-ALIGNMENT.md' }], 'INPUT'],
+  ];
+  for (const [sources, code] of cases) {
+    await assert.rejects(apply(f, { content: '# 项目对齐\n', sources }), { code }, JSON.stringify(sources));
+  }
+});
+
+async function snapshot(project, relative) {
+  const info = await lstat(path.join(project, relative));
+  return { path: relative, size: info.size, mtimeMs: info.mtimeMs };
+}
 
 async function authorized(f, operation, input) {
   if (!f.alignmentTask) { await start(f, { mode: 'write', allowedPaths: ['docs/WORKFLOW-ALIGNMENT.md', 'WORKFLOW-ALIGNMENT.md'] }); f.alignmentTask = true; }
