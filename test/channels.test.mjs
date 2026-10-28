@@ -84,6 +84,26 @@ test('supersedes：换新 packageId 返修继承轮次、旧包收尾，被接�
   assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
 });
 
+test('supersedes 的返修计数同样以交付事实为准：启动失败不增加，交付或 FIX 后累计', async () => {
+  const f = await fixture();
+  await delegated(f);
+  // 未产出的启动失败重派：换新 packageId 接替也不增加返修。
+  await packages(f, [{ packageId: 'w1', role: 'worker', status: 'failed' }]);
+  await packages(f, [{ packageId: 'w2', role: 'worker', status: 'dispatched', supersedes: 'w1' }]);
+  await packages(f, [{ packageId: 'w2', status: 'failed' }]);
+  await packages(f, [{ packageId: 'w3', role: 'worker', status: 'dispatched', supersedes: 'w2' }]);
+  assert.equal((await taskOf(f)).packages.w3.attempts, 0);
+  // 审查要求修订（即使该包本身没有交付记录）也是返修事实。
+  await packages(f, [{ packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w3', verdict: 'FIX' }]);
+  await packages(f, [{ packageId: 'w4', role: 'worker', status: 'dispatched', supersedes: 'w3' }]);
+  assert.equal((await taskOf(f)).packages.w4.attempts, 1);
+  // 交付后转 failed 不会抹掉交付事实，换 ID 继续累计。
+  await packages(f, [{ packageId: 'w4', status: 'delivered', deliveredRef: 'v1' }]);
+  await packages(f, [{ packageId: 'w4', status: 'failed' }]);
+  await packages(f, [{ packageId: 'w5', role: 'worker', status: 'dispatched', supersedes: 'w4' }]);
+  assert.equal((await taskOf(f)).packages.w5.attempts, 2);
+});
+
 test('supersedes：在途旧包记为 canceled；目标不存在、异角色、已被接替或给已有包补声明都拒绝', async () => {
   const f = await fixture();
   await delegated(f);

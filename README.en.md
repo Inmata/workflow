@@ -274,7 +274,7 @@ After upgrading, reinstall the hosts. The AGENTS block is unchanged, so re-onboa
 Changes in 0.6.2:
 
 - Dispatch channels: when you name which agent plays each role, the Lead records it with `channels` on task-start and fills the actual `channel` on each work package. Switching to the host's built-in subagents midway, or the Lead implementing a worker package of a delegated task itself, must be told to you first and recorded with a `change` in the ledger; otherwise the signal is rejected. Silent switching is no longer possible.
-- A repair under a new package ID uses `supersedes` to link the old package: attempts keep counting (so the two-round limit is visible), the old package is closed automatically, and review applies only to the latest package in the chain.
+- A repair under a new package ID uses `supersedes` to link the old package: rounds that already delivered or were asked to revise by review keep counting (so the two-round limit is visible), while a re-dispatch after a startup failure that never produced output no longer inflates attempts; the old package is closed automatically, and review applies only to the latest package in the chain.
 - A worker package that already has a review verdict (including on a package it superseded) can no longer pass by waiver or by being marked waived when its review does not match the final delivery; it must be re-reviewed. Packages never reviewed can still be waived.
 - When every in-flight package runs on the host's built-in subagents, Stop no longer asks for a Codeg-style wait, only for a note on what is pending. A built-in subagent that sends a signal gets a reply saying it has no workflow identity and nothing is recorded.
 

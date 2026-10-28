@@ -133,6 +133,16 @@ function changeInput(value) {
   packages.forEach(item => identifier(item, 'change.packages'));
   return { summary: textField(value.summary, 'change.summary'), reason: textField(value.reason, 'change.reason'), packages, at: new Date().toISOString() };
 }
+// 返修事实：此前真的交付过（状态到过 delivered/consumed、有交付引用，或新包记下的 deliveredAt），
+// 或审查已要求修订（FIX）。启动失败/取消而从未产出不算返修；交付后转 failed/canceled 仍保留该事实。
+// 旧包没有 deliveredAt 时按既有状态与 deliveredRef 推断，不回写历史 attempts。
+function revisionRequested(task, item) {
+  return Object.values(task.packages || {}).some(p => p.role === 'reviewer' && p.reviews === item.packageId && p.verdict === 'FIX');
+}
+function deliveredFact(task, item) {
+  if (!item) return false;
+  return Boolean(item.deliveredAt || item.deliveredRef || ['delivered', 'consumed'].includes(item.status)) || revisionRequested(task, item);
+}
 // 包本身或它沿 supersedes 接替过的旧包有过审查结论（verdict），即算已审；取消、失败而没给结论的审查包不算。
 function wasReviewed(task, item) {
   const packages = task.packages || {};
@@ -159,17 +169,20 @@ export function upsertPackages(task, items, change = null) {
     if (next.role !== 'reviewer' && (next.verdict || next.reviews || next.reviewedRef)) fail('PACKAGE', '只有 reviewer 包可带 verdict/reviews/reviewedRef');
     // 审过的 worker 包不能改标 waived 绕过审查；放弃用 canceled，返修用 supersedes 或原包重新派发。
     if (next.role === 'worker' && next.status === 'waived' && previous?.status !== 'waived' && wasReviewed(task, next)) fail('PACKAGE', `工作包 ${next.packageId} 已有审查结论，不能标 waived：让审查对上最终交付版本，或用 supersedes 接替，或 canceled 放弃`);
-    // 已交付或已消费的包重新派发即一轮返修；attempts 由插件计数，不采信输入。
-    if (previous && previous.status !== 'dispatched' && next.status === 'dispatched') next.attempts = (previous.attempts || 0) + 1;
-    // 换新 packageId 返修时用 supersedes 接上旧包：继承轮次，旧包收尾，不再单独要求审查。
+    // 已交付或被审查要求修订的包重新派发才是一轮返修；从未产出的启动失败/取消后重派不计数。
+    // attempts 由插件计数，不采信输入。
+    if (previous && previous.status !== 'dispatched' && next.status === 'dispatched' && deliveredFact(task, previous)) next.attempts = (previous.attempts || 0) + 1;
+    // 换新 packageId 返修时用 supersedes 接上旧包：继承轮次；旧包确有交付或修订要求时加一，未产出的启动失败不增加。
     if (!previous && next.supersedes) {
       const old = task.packages[next.supersedes];
       if (!old || old.role !== next.role) fail('PACKAGE', `supersedes 须指向同角色的已有工作包：${next.supersedes}`);
       if (old.supersededBy) fail('PACKAGE', `工作包 ${old.packageId} 已被 ${old.supersededBy} 接替`);
-      next.attempts = (old.attempts || 0) + 1;
+      next.attempts = (old.attempts || 0) + (deliveredFact(task, old) ? 1 : 0);
       old.supersededBy = next.packageId;
       if (!TERMINAL_PACKAGE.includes(old.status)) old.status = old.status === 'dispatched' ? 'canceled' : 'consumed';
     }
+    // 记下交付起点；之后转 failed/canceled 或重新派发都不擦除，避免借终态绕开返修计数。
+    if (!next.deliveredAt && (next.deliveredRef || next.status === 'delivered' || next.status === 'consumed')) next.deliveredAt = new Date().toISOString();
     // 只在通道变化或新建时核对；同一偏离已记过 change 的包，后续重新派发不再要求。
     const deviation = channelDeviation(task, next);
     if (deviation && deviation !== (previous && channelDeviation(task, previous)) && !change?.packages.includes(next.packageId)) fail('CHANNEL', `工作包 ${next.packageId}：${deviation}。先向用户说明，再在同一 packages 信号附 change:{summary, reason, packages:["${next.packageId}"]} 记录偏离`);

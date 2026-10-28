@@ -115,6 +115,63 @@ test('packages 批量 upsert 幂等，返修自增 attempts 并在超过两轮�
   assert.equal((await packages(f, [{ packageId: 'w1', verdict: 'PASS' }])).result.reason, 'PACKAGE');
 });
 
+test('返修计数以交付事实为准：启动失败重派不增长，交付后失败/取消再派仍累计', async () => {
+  const f = await fixture();
+  await delegated(f);
+  const taskOf = async () => (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
+  await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched' }]);
+  // 连续三次“派发后启动失败、从未产出”的重派不计返修。
+  for (let round = 0; round < 3; round++) {
+    await packages(f, [{ packageId: 'w1', status: 'failed' }]);
+    await packages(f, [{ packageId: 'w1', status: 'dispatched' }]);
+    assert.equal((await taskOf()).packages.w1.attempts, 0, `第 ${round + 1} 次启动失败重派不应计返修`);
+  }
+  assert.equal((await taskOf()).packages.w1.deliveredAt, undefined);
+  // 交付后转 canceled 再派仍算返修，终态不能绕开计数。
+  await packages(f, [{ packageId: 'w1', status: 'delivered', deliveredRef: 'v1' }]);
+  assert.ok((await taskOf()).packages.w1.deliveredAt);
+  await packages(f, [{ packageId: 'w1', status: 'canceled' }]);
+  await packages(f, [{ packageId: 'w1', status: 'dispatched' }]);
+  assert.equal((await taskOf()).packages.w1.attempts, 1);
+  // 交付后转 failed 再派同样累计，并照常触发两轮提醒。
+  await packages(f, [{ packageId: 'w1', status: 'delivered', deliveredRef: 'v2' }]);
+  await packages(f, [{ packageId: 'w1', status: 'failed' }]);
+  await packages(f, [{ packageId: 'w1', status: 'dispatched' }]);
+  assert.equal((await taskOf()).packages.w1.attempts, 2);
+  await packages(f, [{ packageId: 'w1', status: 'delivered', deliveredRef: 'v3' }]);
+  const result = (await packages(f, [{ packageId: 'w1', status: 'dispatched' }])).result;
+  assert.equal(result.repairLimit, true);
+  assert.deepEqual(result.repairLimitPackages, ['w1']);
+});
+
+test('旧状态无 deliveredAt 仍可读取：按既有交付引用/状态推断返修事实，不猜改历史 attempts', async () => {
+  const f = await fixture();
+  await delegated(f);
+  const stateFile = path.join(f.directory, 'state.json');
+  const taskOf = async () => (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
+  await packages(f, [
+    { packageId: 'delivered', role: 'worker', status: 'delivered', deliveredRef: 'v1' },
+    { packageId: 'consumed', role: 'worker', status: 'consumed' },
+    { packageId: 'failed', role: 'worker', status: 'failed' },
+  ]);
+  // 模拟旧版本写入的账本：没有新增标记，历史 attempts 原样保留。
+  const state = JSON.parse(await readFile(stateFile, 'utf8'));
+  const packagesOfTask = state.tasks[taskKey(f.projectId, f.taskId)].packages;
+  for (const item of Object.values(packagesOfTask)) delete item.deliveredAt;
+  packagesOfTask.delivered.attempts = 2;
+  await writeFile(stateFile, JSON.stringify(state));
+  await packages(f, [
+    { packageId: 'delivered', status: 'dispatched' },
+    { packageId: 'consumed', status: 'dispatched' },
+    { packageId: 'failed', status: 'dispatched' },
+  ]);
+  const task = await taskOf();
+  assert.equal(task.packages.delivered.attempts, 3);
+  assert.equal(task.packages.consumed.attempts, 1);
+  // 旧记录从未交付：不凭“非 dispatched”猜测历史返修。
+  assert.equal(task.packages.failed.attempts, 0);
+});
+
 test('压缩后 compact SessionStart 上下文含紧凑账本且不含结果正文', async () => {
   const f = await fixture();
   await delegated(f);

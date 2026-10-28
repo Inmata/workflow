@@ -143,7 +143,7 @@ node "<入口>" signal task-update ... --id update-3 --paths docs/new.md --paths
 
 Lead 的活动任务结束回合时，Stop 会挡一次（等待用户、本回合已挡过时不挡）：有在途工作包时要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明为什么暂停（在途包全是 `builtin:` 通道时，宿主会通知结果，只要求说明在等什么）；没有在途包而未发 task-end 时给出缺项，按提示补齐后发 task-end，或向用户说明还没完成的部分。
 
-用户指定了各角色用哪个智能体时，task-start 加 `"channels": {"worker": "codeg:claude_code", "reviewer": "codeg:codex"}`，每个工作包填 `channel`。与声明不一致，或 delegated 任务的 worker 包由 Lead 实施（`channel: "lead"` 或 `handle: "lead-direct"`），须在同一 packages 信号附 `change` 列出该包，否则回执 `CHANNEL`。换新 packageId 返修时新包带 `"supersedes": "<旧包>"`，轮次累计、旧包自动收尾。已有审查结论的 worker 包（含它接替过的旧包），审查缺项不能用 waivers 豁免，也不能改标 waived：重新送审最终交付版本，或用 supersedes 接替、canceled 放弃。`task show` 显示 `channels`。
+用户指定了各角色用哪个智能体时，task-start 加 `"channels": {"worker": "codeg:claude_code", "reviewer": "codeg:codex"}`，每个工作包填 `channel`。与声明不一致，或 delegated 任务的 worker 包由 Lead 实施（`channel: "lead"` 或 `handle: "lead-direct"`），须在同一 packages 信号附 `change` 列出该包，否则回执 `CHANNEL`。换新 packageId 返修时新包带 `"supersedes": "<旧包>"`，已交付或审查要求修订的轮次累计、旧包自动收尾；从未产出的启动失败重派不增加返修。已有审查结论的 worker 包（含它接替过的旧包），审查缺项不能用 waivers 豁免，也不能改标 waived：重新送审最终交付版本，或用 supersedes 接替、canceled 放弃。`task show` 显示 `channels`。
 
 ### spec 检查
 
