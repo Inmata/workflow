@@ -308,10 +308,10 @@ Reviewer 包交付 PASS/FIX/BLOCKED、具体位置、可复现场景与最小建
 | 冲突 | 当前代码事实 | 对应处理 |
 | --- | --- | --- |
 | 对齐提示说增量核对变化文件即可，apply 后却继续提示同一来源变化 | 只更新对齐输出/决定和目录信息，没有更新已确认来源的文件基线 | P04 补来源确认与复核，更新 alignment/context 提示（已于 `3323d75` 处理） |
-| 协议及注释说交付/消费后的重派计返修 | upsertPackages 对所有非 dispatched→dispatched 累加，含未产出的 failed/canceled | P08 按交付事实修正，不只改注释掩盖行为 |
+| 协议及注释说交付/消费后的重派计返修 | upsertPackages 对所有非 dispatched→dispatched 累加，含未产出的 failed/canceled | P08 按交付事实修正，不只改注释掩盖行为（已于 `5421e06` 按交付轮次处理） |
 | spec-plan 和错误提示强调 Spec-OK 空提交 | 内容提交已有 Spec-OK 支持；空提交另有覆盖祖先的语义 | P05 修说明并保留两种语义测试（已于 `b407e1b` 处理；`docs/acceptance.md` 中旧错误文本属历史验收记录，保留） |
 | 历史 ref 说明表示检查指定版本 | collectSpecs 读取当前磁盘，后续 Git 查询读取目标 ref | P05 使定义与内容都来自同一固定提交（已于 `ec5d9e9` 处理；`--ref HEAD` 例外沿用 worktree 语义，文档已注明） |
-| 接入/上下文固定说代理执行会被审批拦截 | 没有统一禁止，是否拦截取决于实际宿主权限与本次操作 | P06 按真实结果提示 |
+| 接入/上下文固定说代理执行会被审批拦截 | 没有统一禁止，是否拦截取决于实际宿主权限与本次操作 | P06 按真实结果提示（已于 `47376e4` 处理） |
 | 旧 efficiency-first 及 0.6.2 后续链接称尚未实施/下次从第一批开始 | 0.6.3 已完成三批，第二批经用户裁决取消快照方案 | 本次只修计划状态和承接链接，保留历史方案及完成记录 |
 
 本计划整理已纠正最后一项历史状态；前五项列为待实施，未将计划行为写成现状。第一轮其余误读见第 3 节，不能当作新的文档/代码冲突重复计数。
@@ -328,7 +328,10 @@ Reviewer 包交付 PASS/FIX/BLOCKED、具体位置、可复现场景与最小建
 - [x] 完成阶段 B（集成验证 `npm test` 209/209、`npm run check` 0 错误）。
   - [x] P04 完成于 `3323d75`（`6ee2369`→`6929391`→`3323d75`，提交 `fix(alignment): P04 增量对齐来源基线收尾`）。r2：小 `--max-files` 扫描得到的空索引以 `generatedAt` 作为已扫描标记、不每回合重扫；确认来源在索引达 300 条时拒绝新增（`reason:'limit'`）。Lead 裁定的追加已知边界：恰好 300 条时先列新路径的重命名会被 `limit` 拒绝、重新提交即可；中间目录为符号链接时不拒绝；旧索引超过 300 条不收缩。`apply`/`decide`/`suggest` 支持 `sources` 显式确认本次重读来源，按 `size`/`mtimeMs` 快照提交前复核，只刷新确认来源的基线并处理新增/删除相关目录；未传 `sources` 保持旧保守行为，`changed` 附当前快照供确认。r1 修订（提交 `fix(alignment): P04-r1 新目录未确认来源不被掩盖`）：确认新目录时只有目录及其祖先内所有候选资料都已收录才登记当前 mtime，未收录搜索不再让已收录文件占用名额，避免部分确认后漏报后续来源。已知边界：只传路径字符串时按提交时状态确认，无法检测读取后到提交前的改动；快照复核与状态落盘之间仍有极小竞争窗口；目录基线按有界搜索判断（深度 4、未收录候选最多 2 个），超出该范围的来源需要全量 scan 才能发现。
   - [x] P05 完成于 `ec5d9e9`（`b407e1b`→`979add8`→`ec5d9e9`）。显式非 HEAD ref 先 `rev-parse` 为 OID，spec 列表、正文与代码都从该提交树读取，目标提交无 `.spec` 返回 `skipped:'no-spec'`、读取失败/非 Git/无效 ref 返回 `error:'git'`；`--ref HEAD`（或默认）沿用当前 worktree 文件与 dirty 检查语义。门禁、`task show`、Stop、计划未改核对改用 hook 解析出的 worktree 根；CLI `spec check` 从子目录运行时回到可信 worktree/Git 顶层。r2：任务门禁（`specMissing`）对“非 Git 且无 `.spec`”的接入项目保持跳过，避免带 `finalRef` 收尾新增 `spec-check:git` 阻断；CLI 显式 ref 仍严格。Lead 裁定的已知边界：Git 仓库子目录被绑定为项目根时以绑定目录为检查根（与 hook 一致），仓库顶层 `.spec` 不纳入；Git 身份解析失败时 CLI 退回当前目录；浅克隆仍先报 `shallow`。
-- [ ] 按实际需要完成阶段 C。
+- [x] 完成阶段 C（集成验证 `npm test` 249/249、`npm run check` 0 错误）。
+  - [x] P06 完成于 `c3045d9`（`47376e4`→`c3045d9`）。install 在 already-installed 前核对 current 实际目标：自有入口（目标在 `<state-dir>/releases/` 下）断链/错链/缺失时只重建 current，返回 `repaired`，不重写宿主配置；用户目录、外部链接、另一宿主登记的有效快照一律保留并返回 `conflict`。onboard 核心接入与学习预检分离：未请求学习时学习问题只提示；显式 `--enable-learning` 失败返回 `status:'partial'`、CLI 退出码 1，核心字段照常保留；已启用项目重复接入按接入前/后实际登记报告。审批文案改为按本次权限给下一步。已知边界：归属仅凭链接目标位于 `releases/` 下判断；安装 `conflict` 经 CLI 退出码仍为 0；学习先 `disable` 再显式启用且预检失败时 `schedule` 字段可能报 `not-registered`（顶层已为 `partial`，Lead 裁定为报告字段瑕疵）；共享 current 分步升级期间另一宿主 doctor 暂时不通过（既有行为）。
+  - [x] P07 完成于 `a0a021e`（`929e7e3`→`bff4d8b`→`a0a021e`）。新增独立信号 `task-update`：仅绑定该任务且 active 的 Lead 可改 goal 与 `permissions.mode/allowedPaths`（`allowedPathsMode: replace|append`），宿主 plan/read-only 下拒绝扩大、允许缩小；route/channels/packages 等返回 `UNSUPPORTED`；变更追加到 `task.updates`，回执含有效权限与变更摘要；task-start 接续回执新增 `kept`。CLI 与 `--input` 的 permissions 按子字段合并、冲突报 `INPUT`；task-update 对实际传入的任何非白名单参数报 `UNSUPPORTED`。已知边界：多 Lead 会话按过期视图 replace 为 last-writer-wins；挂起任务需先 task-start 恢复；公共选项清单硬编码，新增公共选项需同步。
+  - [x] P08 完成于 `5421e06`（`c36ed55`→`3d82550`→`e242362`→`5421e06`，共 4 轮）。返修计数改为“一轮返修 = 一个交付轮次”：进入 delivered、出现新 deliveredRef 或无交付时的 reviewer FIX 开启轮次；`delivered→consumed` 与无 ref 的失败 consumed 不开轮；迟到 ref/FIX 归入同轮；重派仅在 `deliverySeq > countedRound` 时 +1，supersedes 继承；批内 reviewer 按整批最终状态计算；旧账本仅缺 `deliverySeq` 时回填，历史 attempts 不重算。已知边界：第二轮未改代码以相同 ref 直接记 consumed 会少计；首次建包直接记无 ref consumed 后重派计 1；未发布的 r1/r2 中间格式迁移不作兼容承诺；`deliveryRefs` 保留最近 50 条。
 - [ ] 按实际收益完成或明确延期阶段 D。
 
 ## 13. spec 影响
