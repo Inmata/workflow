@@ -319,7 +319,7 @@ try {
     notes.push(`lock-retired-growth: ${operations} 次 mutate 新增 ${after - before} 个归档文件（${((after - before) / operations).toFixed(2)}/次）`);
   }
 
-  // 5. 预检：相同配置重复执行的开销（4 次真实子进程调用）。
+  // 5. 预检：相同配置重复执行的开销（5 次真实子进程调用）。
   {
     const fake = path.join(area, 'fake-cli.mjs');
     await fsp.writeFile(fake, `const args = process.argv.slice(2);
