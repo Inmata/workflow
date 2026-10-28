@@ -321,7 +321,10 @@ Reviewer 包交付 PASS/FIX/BLOCKED、具体位置、可复现场景与最小建
 - [x] 合并两轮结论，恢复第一轮 13 项原文并逐项校正。
 - [x] 区分已复现缺陷、能力缺口、流程偏好和待测机会。
 - [x] 给出分阶段范围、执行通道、依赖、验收与停止条件。
-- [ ] 用户授权实施后完成阶段 A。
+- [x] 用户授权实施后完成阶段 A（分支 `efficiency-review`，集成验证 `npm test` 193/193、`npm run check` 0 错误）。
+  - P01 完成于 `7341a2c`（`34dd9c3`→`815dbf8`→`2602add`→`7341a2c`）。偏离：恢复锁未采用第 4 节的 guard `targetPid`/`targetToken` 复核，改为每个持有者唯一票据文件 `locks/<prefix>.lock.<pid>.<token>.wait|hold` 两阶段扫描，死票据按唯一名归档到 `retired-locks/`；以代码为准。r3 后剩余审查意见经用户裁定为已知理论边界、不再返修：同 turnId 票据轮换后迟到的结束回调按入口时票据读取；事件落盘失败兜底路径锁前不比对票据；无 hostEventId 时 `lifecycleScope` 不含票据；旧 `event:` 回执兼容只按 ID 保守跳过；死 PID 且正文损坏的 `.hold` 按文件名 PID 归档（`src/store.mjs`），与 `docs/design/protocol.md` “保留 LOCKED”措辞略有出入；首次 deferred 原因文件写失败时提示指向状态而非内联正文；新旧版本混跑过渡窗口与 PID 复用时保守等待。
+  - P02 完成于 `1b11760`（`d292d33`→`1b11760`）。入口先存核心身份/回合，再在锁外读可选上下文并回锁复核；召回逐条解析（含字段类型校验），维护写路径仍严格；excluded 10 条/1200 字符预算带总数，完整诊断走 `knowledge select|explain`；单文件读取故障不写索引缓存（schemaVersion 3）。偏离：同一未修复故障每回合仍给一句短降级提示，未加失败消息去重状态。已知边界：已建立的索引按 `(name,size,mtimeMs)` 命中，事后仅撤销读权限时可能继续命中旧缓存；入口多一次状态锁获取。
+  - P03 完成于 `0448113`（`e9fd576`→`399e7d1`→`0448113`）。新增 deferred/conflict/kept 运行状态，有提案的延期/恢复只重试提交不再调用模型；新增 `learning resolve --run <ID> --keep|--discard`，作废仅在知识文件均未偏离写入前快照时允许，并只重排本运行消费的材料、关闭本运行知识待办；锁争用/BUSY 不推进 `lastCheckedAt`，`nextCheckAt` 有界退避。偏离/已知边界：计划任务仍按 `checkIntervalMinutes` 触发，不注册一次性重试，短延期在下一次触发接续（Lead 裁定，不额外等一个周期即满足验收）；正常周期已到期时连续 tick 不受 `nextCheckAt` 约束；`conflict` 阻止新模型调用直至显式 resolve；人工编辑造成的偏离也会拒绝作废，需 `--keep` 后 `recover`。未做真实宿主计划任务与真实模型验证。
 - [ ] 完成阶段 B。
 - [ ] 按实际需要完成阶段 C。
 - [ ] 按实际收益完成或明确延期阶段 D。
