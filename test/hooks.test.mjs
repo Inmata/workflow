@@ -3,9 +3,27 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { handleHook } from '../src/hooks.mjs';
-import { readState, withLock } from '../src/store.mjs';
+import { mutate, readState, withLock } from '../src/store.mjs';
 import { cli, deliver, emit, entry, event, fixture, identity, start } from './helpers.mjs';
 
+test('P11 未接入目录不先核验发布副本，已接入项目仍按指纹拦截', async () => {
+  const f = await fixture();
+  const release = path.join(f.area, 'release');
+  await mkdir(release, { recursive: true });
+  await writeFile(path.join(release, 'entry.js'), '被修改的发布副本');
+  await mutate(f.directory, async state => {
+    state.install = { status: 'installed', releaseRoot: release, files: [{ path: 'entry.js', hash: '0'.repeat(64) }] };
+  });
+  const revision = (await readState(f.directory)).revision;
+  const outside = path.join(f.area, 'outside');
+  await mkdir(outside, { recursive: true });
+  // 未接入目录：不读取发布副本、不写状态，也不声称维护不可用。
+  assert.deepEqual(await handleHook(f.directory, { hook_event_name: 'UserPromptSubmit', cwd: outside, session_id: 'other-session', turn_id: 'turn-other' }), {});
+  assert.equal((await readState(f.directory)).revision, revision);
+  // 已接入项目：保守放行的提示仍在，校验没有被移除。
+  const output = await handleHook(f.directory, { hook_event_name: 'UserPromptSubmit', cwd: f.project, session_id: f.sessionId, turn_id: 'turn-2' });
+  assert.match(output.systemMessage || '', /发布副本指纹变化/);
+});
 test('V10 显式 null transcript 后台过滤，缺字段仍接受正常入口', async () => {
   const f = await fixture();
   const before = await readFile(path.join(f.directory, 'state.json'), 'utf8');

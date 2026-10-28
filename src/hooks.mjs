@@ -151,15 +151,15 @@ export async function handleHook(directory, event, options = {}) {
     // Codex 每个事件都带 turn_id；Claude Code 的入口事件带 prompt_id，用宿主值建立回合，缺失时才本机生成。
     const hostTurn = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : typeof event.prompt_id === 'string' && event.prompt_id ? event.prompt_id : null;
     const turnId = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : null;
-    // Avoid creating even a lock or empty state for unregistered projects.
     const existing = await readState(directory);
+    const probe = { identities: new Map() };
+    const initial = await resolveProject(existing, event.cwd, probe);
+    // 未接入目录不会写维护状态，不必先逐文件核验发布副本；确认项目后再做重检查。
+    if (!initial) return {};
     if (existing.install?.status === 'installed' && !options.synthetic) {
       const { verifyRelease } = await import('./install.mjs');
       if (!await verifyRelease(existing.install)) return { systemMessage: 'workflow 发布副本指纹变化，维护不可用；已保守放行。' };
     }
-    const probe = { identities: new Map() };
-    const initial = await resolveProject(existing, event.cwd, probe);
-    if (!initial) return {};
     // 委派状态查询只读核对账本，不写状态：每次等待都落盘会放大锁竞争。
     if (name === 'PostToolUse' && delegationStatus) return delegationHint(existing, initial.project, event, turnId);
     if (LIFECYCLE_EVENTS.includes(name)) {

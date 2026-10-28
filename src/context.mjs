@@ -74,7 +74,8 @@ export async function readOptionalContext(state, resolved, sessionId, options = 
   try { optional.alignment = await inspectAlignment(project); }
   catch (error) { optional.alignment = { error: { code: error.code || 'IO' } }; }
   if (options.directory && task?.lifecycle === 'active') {
-    try { optional.knowledge = await selectKnowledge(options.directory, project.root, { text: task.goal, paths: task.permissions.allowedPaths }); }
+    // 入口已经解析出项目（含本回合提交的状态快照），复用记录，避免为同一次检索再拉起 Git 身份解析。
+    try { optional.knowledge = await selectKnowledge(options.directory, project.root, { text: task.goal, paths: task.permissions.allowedPaths }, { project }); }
     catch (error) { optional.knowledge = { error: { code: error.code || 'IO' } }; }
   }
   return optional;

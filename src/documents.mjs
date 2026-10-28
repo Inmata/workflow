@@ -19,6 +19,24 @@ export async function safePath(root, relative, extensions = ['.md', '.txt', '.rs
   return cursor;
 }
 export const safeDocument = (root, relative) => safePath(root, relative);
+const SENSITIVE_DIRECTORIES = /^(?:\.(?:git|aws|codex|agents|ssh)|credentials?|secrets?|backups)$/i;
+// 批量读取同一目录时只校验一次目录链；单文件仍由调用方逐条 lstat 并拒绝链接。
+// 返回目录绝对路径；目录不存在返回 null，链接、硬链接或越界直接拒绝。
+export async function safeDirectory(root, relative) {
+  if (typeof relative !== 'string' || !relative || path.isAbsolute(relative) || relative.includes('\\') || relative.includes(':')) fail('PATH', '需要项目内规范相对路径');
+  const base = await canonical(root);
+  let cursor = base;
+  for (const part of relative.split('/')) {
+    if (!part || part === '.' || part === '..' || SENSITIVE_DIRECTORIES.test(part)) fail('PATH', '只能维护非敏感项目资料');
+    cursor = path.join(cursor, part);
+    let info;
+    try { info = await lstat(cursor); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    if (info.isSymbolicLink() || !info.isDirectory()) fail('LINK', '路径含链接或不是目录');
+    if (!within(base, await realpath(cursor))) fail('PATH', '真实路径超出项目');
+  }
+  return cursor;
+}
 export async function document(file) {
   let bytes;
   try { bytes = await readFile(file); } catch (error) { if (error.code === 'ENOENT') return { exists: false, content: '', fingerprint: null }; throw error; }

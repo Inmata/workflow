@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises';
 import { capture, feedback, maturityFor, putItem, readEntries, readItems, renderEntry, reviseKnowledge, selectKnowledge } from '../src/learning.mjs';
 import { projectContext } from '../src/context.mjs';
 import { learningConfig, setLearningConfig, setLearningEnabled, projectFor } from '../src/learning-config.mjs';
@@ -109,6 +109,40 @@ test('明确反例立即停止召回；只读业务期间不写知识；未相�
   await observe(f, 2, { kind: 'correction', explicit: true, verified: false, knowledgeId: 'K-o1', summary: '用户指出这个登录建议不适用' });
   assert.equal((await selectKnowledge(f.directory, f.project, { text: '登录超时', paths: ['src/login.mjs'] })).selected.length, 0);
   await assert.rejects(reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true })), { code: 'BUSY' });
+});
+test('P11 复用已解析项目时仍随知识内容变化重新解析', async () => {
+  const f = await fixture();
+  const folder = path.join(f.project, '.workflow', 'knowledge');
+  await mkdir(folder, { recursive: true });
+  const value = {
+    schemaVersion: 1, id: 'K-reuse', status: 'active', type: 'method', maturity: 'verified', importance: 'normal',
+    title: '检索缓存验证', summary: 'alpha 检索词', conditions: '通用', evidence: [{ kind: 'success', verified: true, incidentId: 'incident-reuse', summary: '合成证据' }],
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const file = path.join(folder, 'K-reuse.md');
+  await writeFile(file, renderEntry(value));
+  const project = await projectFor(f.directory, f.project);
+  // 入口复用本回合已解析的项目记录，仍必须读到最新内容。
+  assert.equal((await selectKnowledge(f.directory, f.project, { text: 'alpha', paths: [] }, { project })).selected.length, 1);
+  await writeFile(file, renderEntry({ ...value, summary: 'beta 检索词，内容更长以改变大小', conditions: '通用条件也换了' }));
+  assert.deepEqual((await selectKnowledge(f.directory, f.project, { text: 'beta', paths: [] }, { project })).selected.map(item => item.id), ['K-reuse']);
+  assert.equal((await selectKnowledge(f.directory, f.project, { text: 'alpha', paths: [] }, { project })).selected.length, 0);
+});
+test('P11 知识目录链为链接时不读取外部条目', async () => {
+  const f = await fixture();
+  const outside = path.join(f.area, 'outside-knowledge');
+  await mkdir(outside, { recursive: true });
+  await writeFile(path.join(outside, 'K-out.md'), renderEntry({
+    schemaVersion: 1, id: 'K-out', status: 'active', type: 'method', maturity: 'verified', importance: 'normal',
+    title: '外部条目', summary: '登录超时修复', conditions: '通用', evidence: [{ kind: 'success', verified: true, incidentId: 'incident-out', summary: '合成证据' }],
+    createdAt: '2026-01-01T00:00:00.000Z',
+  }));
+  await mkdir(path.join(f.project, '.workflow'), { recursive: true });
+  await symlink(outside, path.join(f.project, '.workflow', 'knowledge'), process.platform === 'win32' ? 'junction' : 'dir');
+  const result = await selectKnowledge(f.directory, f.project, { text: '登录超时', paths: [] });
+  assert.equal(result.selected.length, 0);
+  assert.equal(result.skippedTotal, 1);
+  assert.equal(result.skipped[0].code, 'LINK');
 });
 test('知识写后崩溃恢复不再调用模型且不重复消费', async () => {
   const f = await fixture(); await start(f); await observe(f, 1); await finish(f);

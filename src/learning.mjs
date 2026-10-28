@@ -2,7 +2,7 @@ import path from 'node:path';
 import { readdir, lstat } from 'node:fs/promises';
 import { digest, fail, mutate, readState, readText, SCHEMA_VERSION, writeJSON } from './store.mjs';
 import { currentIdentity, identifier, sessionKey, textField, taskKey } from './protocol.mjs';
-import { document, safeDocument, SENSITIVE, writeDocuments } from './documents.mjs';
+import { document, safeDirectory, safeDocument, SENSITIVE, writeDocuments } from './documents.mjs';
 import { projectFor, learningConfig } from './learning-config.mjs';
 
 export const projectData = (directory, project) => path.join(directory, 'projects', project.projectId);
@@ -214,13 +214,21 @@ async function indexedEntries(directory, project) {
   try { names = await readdir(folder); }
   catch (error) { if (error.code === 'ENOENT') return { entries: [], skipped: [], missing: true }; throw error; }
   const files = [], scanSkipped = [], readable = [];
+  // 目录链（含 .workflow 与 knowledge）每次召回只校验一次；不再为每个文件重复 lstat/realpath 整条路径。
+  try {
+    if (!await safeDirectory(project.knowledgeRoot, '.workflow/knowledge')) fail('ENOENT', '知识目录在扫描期间消失');
+  } catch (error) {
+    return { entries: [], skipped: [{ path: KNOWLEDGE_FOLDER, code: error.code || 'IO', message: error.message }], missing: false };
+  }
   for (const name of names.filter(n => n.endsWith('.md')).sort()) {
     const relative = KNOWLEDGE_FOLDER + name;
+    const file = path.join(folder, name);
     try {
-      const file = await safeDocument(project.knowledgeRoot, relative);
       const info = await lstat(file);
+      // 目录链已确认；文件本身仍逐条核对，避免用链接替换条目绕过读取边界。
+      if (info.isSymbolicLink() || (!info.isDirectory() && info.nlink > 1)) fail('LINK', '知识文件是链接或硬链接');
       files.push([name, info.size, info.mtimeMs]);
-      readable.push(relative);
+      readable.push({ relative, file });
     } catch (error) { scanSkipped.push({ path: relative, code: error.code || 'IO', message: error.message }); }
   }
   const signature = digest(JSON.stringify(files));
@@ -234,11 +242,11 @@ async function indexedEntries(directory, project) {
     }
   } catch {}
   const entries = [], readSkipped = [], parseSkipped = [];
-  for (const relative of readable) {
+  for (const { relative, file } of readable) {
     let doc;
     try {
       await runKnowledgeHook('beforeRead', { relative });
-      doc = await document(await safeDocument(project.knowledgeRoot, relative));
+      doc = await document(file);
       // 读取期间文件消失属于阶段性故障，不能当作确定性的内容损坏缓存。
       if (!doc.exists) fail('ENOENT', '读取期间知识文件消失');
     } catch (error) {
@@ -269,8 +277,9 @@ export function maturityFor(evidence, type, status) {
   return incidents.size >= 3 && dates.size >= 2 ? 'stable' : 'verified';
 }
 const tokens = text => [...new Set((text.toLowerCase().match(/[a-z0-9_-]{2,}|[\u3400-\u9fff]{2,}/g) || []).flatMap(w => /[\u3400-\u9fff]/.test(w) ? Array.from({ length: w.length - 1 }, (_, i) => w.slice(i, i + 2)) : [w]))];
-export async function selectKnowledge(directory, root, query = {}) {
-  const project = await projectFor(directory, root);
+export async function selectKnowledge(directory, root, query = {}, options = {}) {
+  // 调用方已按本回合状态解析出项目时可传入，省掉一次 Git 身份解析；CLI 仍按 root 解析。
+  const project = options.project || await projectFor(directory, root);
   const { values: config } = await learningConfig(directory, project);
   let index;
   try { index = await indexedEntries(directory, project); }
