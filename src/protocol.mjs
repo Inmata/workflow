@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
-import { deferredLifecycleEvents, digest, fail, id, lifecycleEvents, readDeferredLifecycleNote, SCHEMA_VERSION, WorkflowError } from './store.mjs';
+import { deferredLifecycleEvents, digest, fail, id, lifecycleEvents, lifecycleScope, readDeferredLifecycleNote, SCHEMA_VERSION, WorkflowError } from './store.mjs';
 import { checkSpecs, describeFindings } from './spec.mjs';
 
 export const PHASES = ['unknown', 'operation-only', 'executing', 'waiting-user', 'delivering'];
@@ -482,7 +482,8 @@ export async function consumeLifecycleEvents(directory, state, options = {}) {
     if (reason) {
       if (from === 'queue') {
         archive.push({ name, from, to: 'deferred', reason });
-        state.lifecycleDeferred[name] = { attempts: 1, firstSeenAt: new Date(now).toISOString(), lastAttemptAt: new Date(now).toISOString(), reason };
+        // 初始原因也写进状态：原因文件写入失败时，下一次入口据此补写，不依赖已经丢失的返回值。
+        state.lifecycleDeferred[name] = { attempts: 1, firstSeenAt: new Date(now).toISOString(), lastAttemptAt: new Date(now).toISOString(), reason, note: reason, notePending: true };
         // 缺回合标识的记录不会因会话登记而变可信；有仍 active 的任务时立即留可操作待办，不中断当前回合。
         if (!record.turnId) lifecycleTaskPending(state, record, reason);
         deferred.push({ name, from, reason, attempts: 1 });
@@ -494,34 +495,49 @@ export async function consumeLifecycleEvents(directory, state, options = {}) {
       // 首次重入立即重试（入口登记与结束事件交错）；之后按间隔，超过次数或时限后升级诊断。
       const due = attempts < 2 || now - lastAttempt >= retryIntervalMs || now - firstSeen >= maxAgeMs;
       if (!due) {
-        deferred.push({ name, from, reason, attempts });
+        // 关联重试未到期，但原因文件只是可重建的副本：首次写入失败时在这里补写。
+        const note = typeof meta?.note === 'string' && meta.note ? meta.note : reason;
+        const notePending = await readDeferredLifecycleNote(directory, name) !== `${note}\n`;
+        if (notePending) archive.push({ name, from: 'deferred', to: 'deferred-note', reason: note });
+        if (meta && (meta.note !== note || meta.notePending !== notePending)) state.lifecycleDeferred[name] = { ...meta, note, notePending };
+        deferred.push({ name, from, reason, attempts, ...(notePending ? { notePending: true, note } : {}) });
         continue;
       }
       const nextAttempts = attempts + 1;
       const escalated = nextAttempts >= maxAttempts || now - firstSeen >= maxAgeMs;
-      const note = escalated ? escalationNote(reason, nextAttempts) : null;
-      state.lifecycleDeferred[name] = { ...meta, attempts: nextAttempts, lastAttemptAt: new Date(now).toISOString(), reason, ...(escalated ? { escalated: true, escalatedAt: new Date(now).toISOString(), note, notePending: true } : {}) };
       if (escalated) {
+        const note = escalationNote(reason, nextAttempts);
+        state.lifecycleDeferred[name] = { ...meta, attempts: nextAttempts, lastAttemptAt: new Date(now).toISOString(), reason, escalated: true, escalatedAt: new Date(now).toISOString(), note, notePending: true };
         lifecycleTaskPending(state, record, reason);
         archive.push({ name, from: 'deferred', to: 'deferred-note', reason: note });
+        deferred.push({ name, from, reason, attempts: nextAttempts, escalated: true, notePending: true, note });
+        continue;
       }
-      deferred.push({ name, from, reason, attempts: nextAttempts, ...(escalated ? { escalated: true, notePending: true, note } : {}) });
+      // 未升级：原因文本随关联状态更新；原因文件不一致或缺失时重试写入。
+      const notePending = await readDeferredLifecycleNote(directory, name) !== `${reason}\n`;
+      state.lifecycleDeferred[name] = { ...meta, attempts: nextAttempts, lastAttemptAt: new Date(now).toISOString(), reason, note: reason, notePending };
+      if (notePending) archive.push({ name, from: 'deferred', to: 'deferred-note', reason });
+      deferred.push({ name, from, reason, attempts: nextAttempts, ...(notePending ? { notePending: true, note: reason } : {}) });
       continue;
     }
-    // 重放只生效一次：同一宿主事件 ID 或同一 event+turn 已消费过时直接归档。
+    // 重放只生效一次：归档去重与消费回执共用 event+project+session+turn+宿主事件 ID 的组合作用域；
+    // 旧版只按宿主事件 ID（或 event+turn）记的回执仍兼容读取，避免升级后重复生效。
     const key = lifecycleReceiptKey(record);
-    if (session.lifecycleReceipts?.[key]) {
+    if (lifecycleReceipt(session, record)) {
       archive.push({ name, from, to: 'consumed', outcome: 'duplicate' });
       delete state.lifecycleDeferred[name];
       continue;
     }
-    if (session.turnId !== record.turnId) {
-      // 旧回合迟到：不撤销新回合票据；事件记录的 taskId 仍 active 时只保存待办，不自动继续。
+    // 事件只对"同一回合且仍是记录时那张票据"生效：会话中断后入口可能用相同 turnId 重建新票据，
+    // 旧事件不能凭 turnId 撤销新票据；事件缺少票据记录时同样不推断归属。
+    const ticketMatches = typeof record.ticket === 'string' && record.ticket.length > 0 && record.ticket === session.ticket;
+    if (session.turnId !== record.turnId || !ticketMatches) {
+      // 旧回合或旧票据迟到：不撤销新回合票据；事件记录的 taskId 仍 active 时只保存待办，不自动继续。
       session.lifecycleReceipts ||= {};
       session.lifecycleReceipts[key] = { event: record.event, turnId: record.turnId, at: new Date().toISOString(), outcome: 'late' };
       const task = record.taskId ? state.tasks[taskKey(record.projectId, record.taskId)] : null;
-      if (task?.lifecycle === 'active') pendingFor(state, record.projectId, task.taskId, `${record.event} 属于回合 ${record.turnId}，晚于新回合到达；已保存，不自动继续`, 'business-incomplete', { turnId: record.turnId, event: record.event });
-      late.push({ event: record.event, turnId: record.turnId, currentTurnId: session.turnId });
+      if (task?.lifecycle === 'active') pendingFor(state, record.projectId, task.taskId, lateLifecycleReason(record, session), 'business-incomplete', { turnId: record.turnId, event: record.event });
+      late.push({ event: record.event, turnId: record.turnId, currentTurnId: session.turnId, ticketMatched: ticketMatches });
       archive.push({ name, from, to: 'consumed', outcome: 'late' });
       delete state.lifecycleDeferred[name];
       continue;
@@ -544,6 +560,22 @@ function lifecycleTaskPending(state, record, reason) {
     `${record.event} 事件无法确认属于当前回合（${reason}）；未中断任何回合，任务 ${task.taskId} 仍为 active，请核对后显式收尾或接续`,
     'business-incomplete', { event: record.event, turnId: record.turnId || null, source: 'lifecycle-deferred' });
 }
+// 迟到事件的原因要说明是回合不同、票据已更换，还是事件本身没记录票据；三者都不能推断中断。
+function lateLifecycleReason(record, session) {
+  if (session.turnId !== record.turnId) return `${record.event} 属于回合 ${record.turnId}，晚于新回合到达；已保存，不自动继续`;
+  return record.ticket
+    ? `${record.event} 记录的票据与当前回合不一致（回合 ${record.turnId}）：票据在会话重建后已更换；已保存，不撤销新票据，不自动继续`
+    : `${record.event} 未记录可信票据（回合 ${record.turnId}）：无法确认属于当前会话；已保存，不撤销新票据，不自动继续`;
+}
+// 归档去重与消费回执的同一组合作用域；旧版两种回执键只读兼容，新记录只写组合键。
 function lifecycleReceiptKey(record) {
+  return `scope:${lifecycleScope(record)}`;
+}
+function legacyLifecycleReceiptKey(record) {
   return typeof record.hostEventId === 'string' && record.hostEventId ? `event:${record.hostEventId}` : `turn:${record.event}\0${record.turnId}`;
+}
+function lifecycleReceipt(session, record) {
+  const receipts = session.lifecycleReceipts;
+  if (!receipts) return null;
+  return receipts[lifecycleReceiptKey(record)] || receipts[legacyLifecycleReceiptKey(record)] || null;
 }

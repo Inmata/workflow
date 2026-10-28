@@ -273,16 +273,22 @@ export async function handleHook(directory, event, options = {}) {
     }, { budgetMs: lockBudget(name) });
     // 状态已提交：此时再归档事件；归档失败不影响已保存的回执，下次消费幂等跳过。
     const archived = await archiveLifecycleEvents(directory, lifecycleArchive);
-    // 失败分类如实说明：原因文件写入与事件归档是两种不同后果，不能混为一谈。
+    // 失败分类如实说明：原因文件写入与事件移动是两种不同后果，不能混为一谈。
     // 即使本次入口原本没有提示，失败也要让用户看见；否则诊断可能长期静默重试。
     const notice = text => {
       if (!output || typeof output !== 'object') return;
       output.systemMessage = output.systemMessage ? `${output.systemMessage}；${text}` : `workflow ${text}`;
     };
-    const failedNotes = archived.failed.filter(item => item.to === 'deferred-note');
-    const failedMoves = archived.failed.filter(item => item.to !== 'deferred-note');
-    if (failedNotes.length) notice(`原因文件写入失败（${failedNotes.map(item => item.code || 'IO').join('、')}），诊断内容已保存在状态中，下一次入口会重试。`);
-    if (failedMoves.length) notice(`事件归档失败（${failedMoves.map(item => item.code || 'IO').join('、')}），事件仍在原处，下一次入口会按回执幂等跳过。`);
+    const failedNotes = archived.failed.filter(item => item.stage === 'note' || item.to === 'deferred-note');
+    const failedMoves = archived.failed.filter(item => !failedNotes.includes(item));
+    if (failedNotes.length) {
+      // 事件已经移入 deferred/，只有原因副本没写成功；正文保存在状态里，下一次入口重试。
+      notice(`原因文件写入失败（${failedNotes.map(item => item.code || 'IO').join('、')}），事件已在 deferred/ 中；诊断内容已保存在状态中，下一次入口会重试。`);
+    }
+    if (failedMoves.length) {
+      const places = [...new Set(failedMoves.map(item => item.location === 'deferred' ? 'deferred/' : '原处 lifecycle-events/'))].join('、');
+      notice(`事件归档失败（${failedMoves.map(item => item.code || 'IO').join('、')}），事件仍在${places}，下一次入口会按回执幂等跳过。`);
+    }
     return output;
   } catch (error) {
     // Never return a continuation when identity, persistence, schema or locking failed.

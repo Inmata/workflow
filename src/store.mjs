@@ -95,11 +95,11 @@ async function hold(deadline, state) {
   return Date.now() < deadline;
 }
 const lockDiagnostic = (file, action) => `锁内容不可辨认（${file}）：保留原文件不回收。先确认没有进程正在使用本状态目录，再把它移到 retired-locks/${path.basename(file)} 后重试${action ? `；${action}` : ''}`;
-// 仅测试使用的交错点钩子：未设置时是空操作，不改变生产行为，也不写入公开 API 文档。
+// 仅测试使用的交错点钩子：挂在全局符号上，不作为 store 的导出句柄；未设置时是空操作。
 // beforeArchive 在确认某张死票据后、按唯一名归档前调用，用于确定性复现"读取后延迟归档"的交错。
-export const __lockTestHooks = { beforeArchive: null };
+const LOCK_TEST_HOOKS = Symbol.for('workflow.lock-test-hooks');
 async function runLockHook(name, context) {
-  const hook = __lockTestHooks[name];
+  const hook = globalThis[LOCK_TEST_HOOKS]?.[name];
   if (typeof hook === 'function') await hook(context);
 }
 // 锁目录协议：每个等待者/持有者用唯一票据文件表示，票据名本身携带 pid 与 token。
@@ -152,12 +152,14 @@ async function inspectLocks(locks, plan, ownNames) {
     const { missing, holder } = await readLockHolder(file);
     if (missing) continue;
     if (kind.kind === 'ticket') {
-      const pid = Number.isSafeInteger(holder?.pid) ? holder.pid : kind.pid;
-      const token = typeof holder?.token === 'string' && holder.token ? holder.token : kind.token;
-      const alive = liveness(pid);
-      if (alive === false) { found.dead.push({ name, file, pid, token, state: kind.state }); continue; }
-      if (!holder) {
-        // 正文尚未写入：宽限期内可能是正在创建的票据；过了宽限仍不可辨认的持有票据需要诊断，不猜死。
+      // 身份以票据文件名里的 pid、token 为准：正文只作旁证。若让正文 pid 决定判活，
+      // 一个正文损坏（但仍是合法 JSON）的活票据会被当成死票据归档，后来者误入临界区。
+      const pid = kind.pid;
+      const token = kind.token;
+      if (liveness(pid) === false) { found.dead.push({ name, file, pid, token, state: kind.state }); continue; }
+      const consistent = holder && holder.pid === pid && holder.token === token;
+      if (!consistent) {
+        // 正文缺失或与文件名不一致：宽限期内可能正在写入；之后按损坏票据保留文件并给 LOCKED 诊断，不回收。
         if (Date.now() - info.mtimeMs < LOCK_WRITE_GRACE_MS) {
           if (kind.state === 'hold') found.liveHolds.push({ name, file, pid, token });
           continue;
@@ -352,8 +354,8 @@ export async function retireLifecycleEvent(directory, name, from = 'queue') {
 }
 // 缺可信关联的事件不丢弃，移到 deferred/ 并附原因；后续入口按有界重试重新尝试。
 // 同一事件（event+project+session+turn+宿主事件 ID）重复落盘时只保留一份，其余归入 consumed/。
-// 去重键带项目与宿主事件 ID，避免把不同项目/不同宿主事件合并成一条。
-const lifecycleScope = record => [record.event, record.projectId ?? '', record.sessionId ?? '', record.turnId ?? '', record.hostEventId ?? ''].join('\0');
+// 去重键带项目与宿主事件 ID，避免把不同项目/不同宿主事件合并成一条；消费回执复用同一作用域。
+export const lifecycleScope = record => [record.event, record.projectId ?? '', record.sessionId ?? '', record.turnId ?? '', record.hostEventId ?? ''].join('\0');
 export async function deferLifecycleEvent(directory, name, reason, from = 'queue') {
   const folder = path.join(directory, LIFECYCLE_DIRECTORY);
   const deferred = path.join(folder, 'deferred');
@@ -371,13 +373,20 @@ export async function deferLifecycleEvent(directory, name, reason, from = 'queue
     try { item = text ? JSON.parse(text) : null; } catch { item = null; }
     if (item && lifecycleScope(item) === scope) {
       await rename(source, path.join(consumed, `${randomUUID()}.duplicate.json`)).catch(error => { if (error.code !== 'ENOENT') throw error; });
-      return { name: other, reason: 'duplicate' };
+      return { name: other, reason: 'duplicate', moved: true, note: 'duplicate' };
     }
   }
   const target = path.join(deferred, name);
   await rename(source, target).catch(error => { if (error.code !== 'ENOENT') throw error; });
-  await atomicWrite(`${target}.reason.txt`, `${reason}\n`);
-  return { name, reason };
+  // 到这里移动已经发生或源已被并发移走。原因文件只是副本：写入失败不能报成"事件仍在原处"，
+  // 交给调用方如实报告位置，并由状态里的待写诊断在下一次入口重试。
+  if (await readText(target, null) === null) return { name, reason, moved: false, note: 'missing' };
+  try {
+    await atomicWrite(`${target}.reason.txt`, `${reason}\n`);
+    return { name, reason, moved: true, note: 'written' };
+  } catch (error) {
+    return { name, reason, moved: true, note: 'failed', code: error.code || 'IO', message: error.message };
+  }
 }
 // 诊断写入是可恢复动作：先读现有内容，只有不一致时才重写；事件已被移走时不再写孤儿原因文件。
 // 原因路径不可读（例如被同名目录占住）按"尚未写好"处理，交给写入失败上报与下一次重试，不阻断消费。
@@ -396,17 +405,24 @@ export async function noteDeferredLifecycleEvent(directory, name, reason) {
 }
 // 状态提交成功后才执行文件归档：状态写入失败或进程在保存后、归档前退出时，事件仍留在扫描范围，
 // 下一次入口靠已持久化的回执幂等跳过。单个归档失败不回滚状态；失败项带回调用方，便于如实提示。
+// 失败区分"移动失败"（事件仍在原位置）与"原因文件写入失败"（事件已移入 deferred/，只缺副本）。
 export async function archiveLifecycleEvents(directory, actions) {
   const written = [], failed = [];
   for (const action of actions || []) {
     try {
       if (action.to === 'consumed') await retireLifecycleEvent(directory, action.name, action.from);
-      else if (action.to === 'deferred') await deferLifecycleEvent(directory, action.name, action.reason, action.from);
+      else if (action.to === 'deferred') {
+        const result = await deferLifecycleEvent(directory, action.name, action.reason, action.from);
+        if (result.note === 'failed') {
+          failed.push({ name: action.name, to: action.to, from: action.from, stage: 'note', location: 'deferred', code: result.code || 'IO', message: result.message });
+          continue;
+        }
+      }
       else if (action.to === 'deferred-note') await noteDeferredLifecycleEvent(directory, action.name, action.reason);
       written.push(action.name);
     } catch (error) {
-      // 事件仍在原处；已保存的 receipt 会让下次消费变成幂等跳过；诊断写入失败由状态里的待写标记重试。
-      failed.push({ name: action.name, to: action.to, code: error.code || 'IO', message: error.message });
+      // 移动失败：事件仍在原位置；已保存的 receipt 会让下次消费变成幂等跳过。
+      failed.push({ name: action.name, to: action.to, from: action.from, stage: 'move', location: action.from || 'queue', code: error.code || 'IO', message: error.message });
     }
   }
   return { written, failed };

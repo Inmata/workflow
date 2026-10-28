@@ -5,9 +5,9 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, readdir, utimes, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
-import { digest, readState, withLock, recordLifecycleEvent, pendingLifecycleEvents, __lockTestHooks } from '../src/store.mjs';
+import { digest, readState, withLock, recordLifecycleEvent, pendingLifecycleEvents } from '../src/store.mjs';
 import { applyKnowledge, inspectKnowledge, recoverTransaction } from '../src/knowledge.mjs';
-import { deadPid, event, fixture, identity, root, start, temporary } from './helpers.mjs';
+import { deadPid, event, fixture, identity, LOCK_TEST_HOOKS, root, start, temporary } from './helpers.mjs';
 
 test('V11 活锁竞争不抢占，持有者释放后可继续', async () => {
   const directory = await temporary('lock-');
@@ -84,12 +84,12 @@ test('P01 恢复者延迟归档不会移走后来者的活跃持有者（A/B/C �
   const pausedGate = new Promise(resolve => { pausedB = resolve; });
   const bGate = new Promise(resolve => { releaseB = resolve; });
   let pauseB = true;
-  __lockTestHooks.beforeArchive = async () => {
+  globalThis[LOCK_TEST_HOOKS] = { beforeArchive: async () => {
     if (!pauseB) return;
     pauseB = false;
     pausedB();
     await bGate;
-  };
+  } };
   let releaseAOperation, holdingA;
   const holdingGate = new Promise(resolve => { holdingA = resolve; });
   const aOperationGate = new Promise(resolve => { releaseAOperation = resolve; });
@@ -123,8 +123,30 @@ test('P01 恢复者延迟归档不会移走后来者的活跃持有者（A/B/C �
     assert.deepEqual((await Promise.all([a, b, c])).sort(), ['A', 'B', 'C']);
     assert.equal(maxActive, 1);
   } finally {
-    __lockTestHooks.beforeArchive = null;
+    globalThis[LOCK_TEST_HOOKS].beforeArchive = null;
   }
+});
+test('P01 持有票据身份以文件名为准：正文 pid 指向死进程时活持有者不被归档', async () => {
+  const directory = await temporary('lock-corrupt-');
+  const locks = path.join(directory, 'locks');
+  const retired = path.join(directory, 'retired-locks');
+  await mkdir(locks, { recursive: true });
+  const prefix = digest('state');
+  const token = randomUUID();
+  const liveTicket = path.join(locks, `${prefix}.lock.${process.pid}.${token}.hold`);
+  // 文件名 pid 是活进程，正文却指向已退出进程：不能按正文 pid 把活票据当成死锁移走。
+  await writeFile(liveTicket, JSON.stringify({ pid: deadPid(), token, name: 'state', createdAt: new Date(0).toISOString() }));
+  const old = new Date(Date.now() - 60_000);
+  await utimes(liveTicket, old, old);
+  await assert.rejects(withLock(directory, 'state', async () => 'bad', { budgetMs: 150 }), error => {
+    assert.equal(error.code, 'LOCKED');
+    assert.match(error.message, /锁内容不可辨认/);
+    assert.ok(error.message.includes(path.basename(liveTicket)));
+    return true;
+  });
+  // 保留现场：既不归档也不删除，等待持有者自行释放或人工核对。
+  assert.ok(await readFile(liveTicket, 'utf8'));
+  assert.equal((await readdir(retired)).filter(name => name.endsWith('dead-holder.lock')).length, 0);
 });
 test('P01 多竞争者并发：同一时刻只有一个持有者，全部最终完成', async () => {
   const dead = deadPid();
