@@ -157,7 +157,11 @@ test('旧状态无 deliveredAt 仍可读取：按既有交付引用/状态推断
   // 模拟旧版本写入的账本：没有新增标记，历史 attempts 原样保留。
   const state = JSON.parse(await readFile(stateFile, 'utf8'));
   const packagesOfTask = state.tasks[taskKey(f.projectId, f.taskId)].packages;
-  for (const item of Object.values(packagesOfTask)) delete item.deliveredAt;
+  for (const item of Object.values(packagesOfTask)) {
+    delete item.deliveredAt;
+    delete item.deliverySeq;
+    delete item.countedRepair;
+  }
   packagesOfTask.delivered.attempts = 2;
   await writeFile(stateFile, JSON.stringify(state));
   await packages(f, [
@@ -170,6 +174,109 @@ test('旧状态无 deliveredAt 仍可读取：按既有交付引用/状态推断
   assert.equal(task.packages.consumed.attempts, 1);
   // 旧记录从未交付：不凭“非 dispatched”猜测历史返修。
   assert.equal(task.packages.failed.attempts, 0);
+});
+
+test('已计入的交付/FIX 事实不会被后续启动失败重派重复使用，只有新事实才进入下一轮', async () => {
+  const f = await fixture();
+  await delegated(f);
+  const taskOf = async () => (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
+  await packages(f, [
+    { packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v1' },
+    { packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', reviewedRef: 'v1', verdict: 'FIX' },
+  ]);
+  let result = (await packages(f, [{ packageId: 'w1', status: 'dispatched' }])).result;
+  assert.equal((await taskOf()).packages.w1.attempts, 1);
+  assert.equal(result.repairLimit, undefined);
+  // 这轮返修连续两次启动失败：旧交付与 FIX 已经计过数，重派保持第 1 轮。
+  for (let round = 0; round < 2; round++) {
+    await packages(f, [{ packageId: 'w1', status: 'failed' }]);
+    result = (await packages(f, [{ packageId: 'w1', status: 'dispatched' }])).result;
+    assert.equal((await taskOf()).packages.w1.attempts, 1, `第 ${round + 1} 次启动失败重派不应重复计数`);
+    assert.equal(result.repairLimit, undefined);
+  }
+  // 真实再交付并由审查再次 FIX 后重派，才进入第二轮。
+  await packages(f, [{ packageId: 'w1', status: 'consumed', deliveredRef: 'v2' }]);
+  await packages(f, [{ packageId: 'r1', status: 'consumed', verdict: 'FIX' }]);
+  await packages(f, [{ packageId: 'w1', status: 'dispatched' }]);
+  assert.equal((await taskOf()).packages.w1.attempts, 2);
+  // Reviewer 包重派同样按已计入事实判定：连续启动失败不重复累计。
+  await packages(f, [{ packageId: 'rev', role: 'reviewer', status: 'consumed', reviews: 'w1', reviewedRef: 'v2', verdict: 'FIX' }]);
+  await packages(f, [{ packageId: 'rev', status: 'dispatched' }]);
+  assert.equal((await taskOf()).packages.rev.attempts, 1);
+  for (let round = 0; round < 2; round++) {
+    await packages(f, [{ packageId: 'rev', status: 'failed' }]);
+    await packages(f, [{ packageId: 'rev', status: 'dispatched' }]);
+    assert.equal((await taskOf()).packages.rev.attempts, 1, `Reviewer 第 ${round + 1} 次启动失败重派不应重复计数`);
+  }
+});
+
+test('旧账本只有 delivered/consumed 状态时，转 failed/canceled 仍补记交付事实，重派照常计数', async () => {
+  const f = await fixture();
+  await delegated(f);
+  const stateFile = path.join(f.directory, 'state.json');
+  const taskOf = async () => (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
+  // 模拟旧版本账本：只在 status 上留下交付事实，没有 deliveredAt/deliverySeq/countedRepair。
+  await packages(f, [
+    { packageId: 'failedAfter', role: 'worker', status: 'delivered', deliveredRef: 'v1' },
+    { packageId: 'canceledAfter', role: 'worker', status: 'consumed' },
+  ]);
+  const state = JSON.parse(await readFile(stateFile, 'utf8'));
+  const packagesOfTask = state.tasks[taskKey(f.projectId, f.taskId)].packages;
+  for (const item of Object.values(packagesOfTask)) {
+    delete item.deliveredAt;
+    delete item.deliverySeq;
+    delete item.countedRepair;
+  }
+  packagesOfTask.failedAfter.attempts = 1;
+  await writeFile(stateFile, JSON.stringify(state));
+  // 状态先被改写也不会丢掉此前的交付；历史 attempts 不因状态变化本身改动。
+  await packages(f, [{ packageId: 'failedAfter', status: 'failed' }, { packageId: 'canceledAfter', status: 'canceled' }]);
+  let task = await taskOf();
+  assert.equal(task.packages.failedAfter.attempts, 1);
+  assert.ok(task.packages.failedAfter.deliveredAt);
+  assert.ok(task.packages.canceledAfter.deliveredAt);
+  await packages(f, [{ packageId: 'failedAfter', status: 'dispatched' }, { packageId: 'canceledAfter', status: 'dispatched' }]);
+  task = await taskOf();
+  assert.equal(task.packages.failedAfter.attempts, 2);
+  assert.equal(task.packages.canceledAfter.attempts, 1);
+
+  // supersedes 接替旧账本里的交付包时同样先补记事实，再按同一判定累计。
+  const g = await fixture();
+  await delegated(g);
+  const gStateFile = path.join(g.directory, 'state.json');
+  await packages(g, [{ packageId: 'old', role: 'worker', status: 'delivered' }]);
+  const gState = JSON.parse(await readFile(gStateFile, 'utf8'));
+  const oldPackage = gState.tasks[taskKey(g.projectId, g.taskId)].packages.old;
+  delete oldPackage.deliveredAt;
+  delete oldPackage.deliverySeq;
+  delete oldPackage.countedRepair;
+  await writeFile(gStateFile, JSON.stringify(gState));
+  await packages(g, [{ packageId: 'next', role: 'worker', status: 'dispatched', supersedes: 'old' }]);
+  const gTask = (await readState(g.directory)).tasks[taskKey(g.projectId, g.taskId)];
+  assert.equal(gTask.packages.next.attempts, 1);
+  assert.ok(gTask.packages.old.deliveredAt);
+});
+
+test('同一批 packages 里审查 FIX 与重派顺序无关，supersedes 同样适用', async () => {
+  for (const fixFirst of [true, false]) {
+    const f = await fixture();
+    await delegated(f);
+    const taskOf = async () => (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
+    // 包本身从未交付：唯一返修事实是本批的审查 FIX。
+    await packages(f, [{ packageId: 'w1', role: 'worker', status: 'failed' }]);
+    const fix = { packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', verdict: 'FIX' };
+    const redispatch = { packageId: 'w1', status: 'dispatched' };
+    await packages(f, fixFirst ? [fix, redispatch] : [redispatch, fix]);
+    assert.equal((await taskOf()).packages.w1.attempts, 1, `同包重派 fixFirst=${fixFirst}`);
+
+    const g = await fixture();
+    await delegated(g);
+    await packages(g, [{ packageId: 'w1', role: 'worker', status: 'failed' }]);
+    const supersede = { packageId: 'w2', role: 'worker', status: 'dispatched', supersedes: 'w1' };
+    await packages(g, fixFirst ? [fix, supersede] : [supersede, fix]);
+    const gTask = (await readState(g.directory)).tasks[taskKey(g.projectId, g.taskId)];
+    assert.equal(gTask.packages.w2.attempts, 1, `supersedes fixFirst=${fixFirst}`);
+  }
 });
 
 test('压缩后 compact SessionStart 上下文含紧凑账本且不含结果正文', async () => {
