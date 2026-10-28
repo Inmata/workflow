@@ -108,6 +108,40 @@ test('task-update 子命令只带显式字段，paths-mode 缺省 replace；接�
   assert.deepEqual(sent.receipt.permissions.allowedPaths, ['README.md']);
   assert.deepEqual(sent.receipt.change.permissions.allowedPaths.removed, ['LESSONS.md', 'docs/说明.md']);
 });
+test('task-update 命令行与 --input 的 permissions 按子字段合并，收缩路径不被丢弃', async () => {
+  const f = await fixture();
+  await start(f);
+  const file = path.join(f.area, 'update.json');
+  await writeFile(file, JSON.stringify({ permissions: { allowedPaths: ['README.md'] } }));
+  const built = JSON.parse(build(f, 'task-update', ['--id', 'u1', '--mode', 'write', '--input', file]).stdout).workflow_signal;
+  assert.deepEqual(built.permissions, { mode: 'write', allowedPaths: ['README.md'] });
+  const sent = await accept(f, 'task-update', ['--id', 'u2', '--mode', 'write', '--input', file]);
+  assert.equal(sent.receipt.accepted, true, JSON.stringify(sent));
+  assert.deepEqual(sent.receipt.permissions.allowedPaths, ['README.md']);
+  assert.deepEqual(sent.receipt.change.permissions.allowedPaths.removed, ['LESSONS.md', 'docs/说明.md']);
+});
+test('task-update 同一 permissions 子字段两处冲突返回 INPUT；相同值可合并', async () => {
+  const f = await fixture();
+  await start(f);
+  const file = path.join(f.area, 'update.json');
+  await writeFile(file, JSON.stringify({ permissions: { mode: 'read-only', allowedPaths: ['README.md'] } }));
+  const conflict = JSON.parse(build(f, 'task-update', ['--id', 'u1', '--mode', 'write', '--input', file]).stdout);
+  assert.equal(conflict.error, 'INPUT');
+  await writeFile(file, JSON.stringify({ permissions: { mode: 'write' } }));
+  const same = JSON.parse(build(f, 'task-update', ['--id', 'u2', '--mode', 'write', '--paths', 'README.md', '--input', file]).stdout).workflow_signal;
+  assert.deepEqual(same.permissions, { mode: 'write', allowedPaths: ['README.md'] });
+});
+test('task-update 当前动作不支持的便捷参数直接报错，不再静默忽略', async () => {
+  const f = await fixture();
+  await start(f);
+  const before = JSON.stringify(await readState(f.directory));
+  for (const [key, value] of [['route', 'delegated'], ['channels', 'worker=lead'], ['plans', 'docs/a.md'], ['parent', 'task-0'], ['phase', 'executing'], ['delivery', 'd1'], ['role', 'worker'], ['package', 'w1'], ['final-ref', 'abc']]) {
+    const result = JSON.parse(build(f, 'task-update', ['--id', `bad-${key}`, '--goal', '新目标', `--${key}`, value]).stdout);
+    assert.equal(result.error, 'UNSUPPORTED', `${key}: ${result.message}`);
+    assert.match(result.message, new RegExp(`--${key}`));
+  }
+  assert.equal(JSON.stringify(await readState(f.directory)), before);
+});
 test('委派子会话不带 --task 也能 role-claim；声明后入口换成角色指引', async () => {
   const f = await fixture();
   await start(f);

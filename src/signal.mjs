@@ -4,7 +4,26 @@ import { identifier, sessionKey } from './protocol.mjs';
 export const SIGNAL_ACTIONS = ['task-start', 'task-update', 'phase', 'packages', 'role-claim', 'task-end', 'disposition'];
 const IDENTITY_FIELDS = ['schemaVersion', 'projectId', 'sessionId', 'turnId', 'ticket', 'interruptEpoch', 'expectedRevision', 'signalId', 'action'];
 const FIELD_OPTIONS = ['task', 'goal', 'route', 'mode', 'paths', 'paths-mode', 'plans', 'channels', 'parent', 'phase', 'delivery', 'role', 'package', 'final-ref'];
+// task-update 只接受这些便捷字段；其余字段属于其他动作，给出即报错，不能静默丢弃。
+const TASK_UPDATE_OPTIONS = ['task', 'goal', 'mode', 'paths', 'paths-mode'];
 const list = value => value === undefined ? undefined : value.split(',').map(item => item.trim()).filter(Boolean);
+// 命令行与 --input 可各给一半权限：按 mode/allowedPaths 子字段合并；同一子字段两处冲突时拒绝，避免整体覆盖后静默丢字段。
+function mergePermissions(cli, input) {
+  if (input === undefined) return cli;
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    if (Object.keys(cli).length) fail('INPUT', '--input 的 permissions 需为 {mode?, allowedPaths?} 对象，才能与命令行字段合并');
+    return input;
+  }
+  const merged = { ...input };
+  for (const key of ['mode', 'allowedPaths']) {
+    if (cli[key] === undefined) continue;
+    if (merged[key] !== undefined && JSON.stringify(merged[key]) !== JSON.stringify(cli[key])) {
+      fail('INPUT', `--${key === 'mode' ? 'mode' : 'paths'} 与 --input 的 permissions.${key} 不一致；同一个值只在一处给出`);
+    }
+    merged[key] = cli[key];
+  }
+  return merged;
+}
 // worker=codeg:claude_code,reviewer=codeg:codex
 function channels(value) {
   if (value === undefined) return undefined;
@@ -38,18 +57,29 @@ export function buildSignal(state, resolved, action, options, extra = {}) {
   const expectedRevision = Number.isSafeInteger(receipt?.result?.revision) ? receipt.result.revision - 1 : session.revision;
   const fields = {};
   if (action === 'task-start') {
+    const cli = {};
+    if (options.mode !== undefined) cli.mode = options.mode;
+    if (options.paths !== undefined) cli.allowedPaths = list(options.paths) || [];
+    const permissions = Object.keys(cli).length || extra.permissions !== undefined ? mergePermissions(cli, extra.permissions) : undefined;
+    // 新任务要求 permissions 完整：只给 --mode 时仍按空数组补全 allowedPaths。
+    if (permissions && typeof permissions === 'object' && !Array.isArray(permissions) && permissions.allowedPaths === undefined && options.mode !== undefined) permissions.allowedPaths = [];
+    if (permissions !== undefined) delete extra.permissions;
     Object.assign(fields, {
       goal: options.goal, route: options.route, parentTaskId: options.parent, plans: list(options.plans), channels: channels(options.channels),
-      ...(options.mode !== undefined || options.paths !== undefined ? { permissions: { mode: options.mode, allowedPaths: list(options.paths) || [] } } : {}),
+      ...(permissions !== undefined ? { permissions } : {}),
     });
   } else if (action === 'task-update') {
+    const unsupported = FIELD_OPTIONS.filter(key => !TASK_UPDATE_OPTIONS.includes(key) && options[key] !== undefined);
+    if (unsupported.length) fail('UNSUPPORTED', `task-update 不支持 ${unsupported.map(key => `--${key}`).join('、')}；只能用 --goal、--mode、--paths 与 --paths-mode`);
     // 只带调用方明确给出的字段；省略的 mode/allowedPaths 保持原值。allowedPathsMode 缺省按 replace。
-    const permissions = {};
-    if (options.mode !== undefined) permissions.mode = options.mode;
-    if (options.paths !== undefined) permissions.allowedPaths = list(options.paths) || [];
+    const cli = {};
+    if (options.mode !== undefined) cli.mode = options.mode;
+    if (options.paths !== undefined) cli.allowedPaths = list(options.paths) || [];
+    const permissions = Object.keys(cli).length || extra.permissions !== undefined ? mergePermissions(cli, extra.permissions) : undefined;
+    if (permissions !== undefined) delete extra.permissions;
     Object.assign(fields, {
       goal: options.goal,
-      ...(Object.keys(permissions).length ? { permissions } : {}),
+      ...(permissions !== undefined ? { permissions } : {}),
       ...(options['paths-mode'] !== undefined ? { allowedPathsMode: options['paths-mode'] } : {}),
     });
   } else if (action === 'phase') Object.assign(fields, { phase: options.phase, deliveryId: options.delivery });
