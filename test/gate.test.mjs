@@ -394,12 +394,12 @@ test('r1 账本的 countedRepair 迁移为轮次标记：已计入的轮次不�
   await packages(f, [{ packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v1' }]);
   const state = JSON.parse(await readFile(stateFile, 'utf8'));
   const item = state.tasks[taskKey(f.projectId, f.taskId)].packages.w1;
-  // 模拟 r1 写出的状态：只有令牌，没有 countedRound/deliveryRecorded。
+  // 模拟 r1 写出的状态：只有令牌，没有 countedRound/roundRef。
   item.attempts = 1;
   item.deliverySeq = 1;
   item.countedRepair = ['w1:delivery:1', 'w1:ref:v1'];
   delete item.countedRound;
-  delete item.deliveryRecorded;
+  delete item.roundRef;
   await writeFile(stateFile, JSON.stringify(state));
   // 已计入的第 1 轮不会因重派再次计数。
   await packages(f, [{ packageId: 'w1', status: 'dispatched' }]);
@@ -413,6 +413,90 @@ test('r1 账本的 countedRepair 迁移为轮次标记：已计入的轮次不�
   current = (await taskOf()).packages.w1;
   assert.equal(current.attempts, 2);
   assert.equal(current.deliverySeq, 2);
+});
+
+test('从未开启交付轮次时 consumed 不写 deliveredAt，同包重派与 supersedes 都不计返修', async () => {
+  const f = await fixture();
+  await delegated(f);
+  const taskOf = async () => (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
+  await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched' }]);
+  // 启动失败只留 consumed 状态，没有引用也没有交付轮次：不能回填成第 1 轮。
+  for (let round = 0; round < 3; round++) {
+    await packages(f, [{ packageId: 'w1', status: 'consumed' }]);
+    await packages(f, [{ packageId: 'w1', status: 'dispatched' }]);
+    const item = (await taskOf()).packages.w1;
+    assert.equal(item.attempts, 0, `第 ${round + 1} 次无引用 consumed 后重派不应计返修`);
+    assert.equal(item.deliverySeq, 0);
+    assert.equal(item.deliveredAt, undefined);
+  }
+  // 换成 supersedes 接替同样没有已交付的轮次，连续接替也不增加。
+  const g = await fixture();
+  await delegated(g);
+  const gTaskOf = async () => (await readState(g.directory)).tasks[taskKey(g.projectId, g.taskId)];
+  await packages(g, [{ packageId: 'w1', role: 'worker', status: 'dispatched' }]);
+  for (const [index, id] of ['w2', 'w3'].entries()) {
+    await packages(g, [{ packageId: index ? 'w2' : 'w1', status: 'consumed' }]);
+    await packages(g, [{ packageId: id, role: 'worker', status: 'dispatched', supersedes: index ? 'w2' : 'w1' }]);
+    const item = (await gTaskOf()).packages[id];
+    assert.equal(item.attempts, 0, `${id} 接替未交付的包不应计返修`);
+    assert.equal(item.deliverySeq, 0);
+    assert.equal(item.deliveredAt, undefined);
+  }
+});
+
+test('首轮交付后 consumed、FIX、重派，再交付并 PASS：只有第一次重派计 1', async () => {
+  const f = await fixture();
+  await delegated(f);
+  const taskOf = async () => (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
+  await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched' }]);
+  await packages(f, [{ packageId: 'w1', status: 'delivered', deliveredRef: 'v1' }]);
+  await packages(f, [{ packageId: 'w1', status: 'consumed' }]);
+  await packages(f, [{ packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', reviewedRef: 'v1', verdict: 'FIX' }]);
+  await packages(f, [{ packageId: 'w1', status: 'dispatched' }]);
+  assert.equal((await taskOf()).packages.w1.attempts, 1);
+  // 返修后的再交付与 PASS 都不额外计轮，计数停在 1。
+  await packages(f, [{ packageId: 'w1', status: 'delivered', deliveredRef: 'v2' }]);
+  await packages(f, [{ packageId: 'r1', status: 'consumed', reviewedRef: 'v2', verdict: 'PASS' }]);
+  const item = (await taskOf()).packages.w1;
+  assert.equal(item.attempts, 1);
+  assert.equal(item.deliverySeq, 2);
+});
+
+test('新包直接以 consumed 建账并带新引用，FIX 后重派计 1（验收文档写法）', async () => {
+  const f = await fixture();
+  await delegated(f);
+  const taskOf = async () => (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
+  await packages(f, [{ packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'abc123' }]);
+  await packages(f, [{ packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', reviewedRef: 'abc123', verdict: 'FIX' }]);
+  await packages(f, [{ packageId: 'w1', status: 'dispatched' }]);
+  const item = (await taskOf()).packages.w1;
+  assert.equal(item.attempts, 1);
+  assert.equal(item.deliverySeq, 1);
+});
+
+test('第二轮交付未带引用、之后迟到补记新引用：归入同一轮，重派不重复计数', async () => {
+  const f = await fixture();
+  await delegated(f);
+  const taskOf = async () => (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
+  await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched' }]);
+  await packages(f, [{ packageId: 'w1', status: 'delivered', deliveredRef: 'v1' }]);
+  await packages(f, [{ packageId: 'w1', status: 'dispatched' }]);
+  assert.equal((await taskOf()).packages.w1.attempts, 1);
+  // 第二轮交付没带引用；重派后该轮已计入。
+  await packages(f, [{ packageId: 'w1', status: 'delivered' }]);
+  await packages(f, [{ packageId: 'w1', status: 'dispatched' }]);
+  let item = (await taskOf()).packages.w1;
+  assert.equal(item.attempts, 2, '第二轮交付后重派应计 1 次');
+  assert.equal(item.deliverySeq, 2);
+  assert.equal(item.roundRef, null);
+  // 迟到补记的 v2 属于第二轮，不开启第三轮；再次重派保持 2。
+  await packages(f, [{ packageId: 'w1', deliveredRef: 'v2' }]);
+  await packages(f, [{ packageId: 'w1', status: 'consumed' }]);
+  await packages(f, [{ packageId: 'w1', status: 'dispatched' }]);
+  item = (await taskOf()).packages.w1;
+  assert.equal(item.attempts, 2);
+  assert.equal(item.deliverySeq, 2);
+  assert.equal(item.roundRef, 'v2');
 });
 
 test('压缩后 compact SessionStart 上下文含紧凑账本且不含结果正文', async () => {
