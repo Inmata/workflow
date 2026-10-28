@@ -5,7 +5,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { readState } from '../src/store.mjs';
 import { taskKey } from '../src/protocol.mjs';
-import { cli, emit, entry, event, fixture } from './helpers.mjs';
+import { cli, emit, entry, event, fixture, gitFixture } from './helpers.mjs';
 
 const delegated = (f, extra = {}) => emit(f, { action: 'task-start', goal: '分工任务', route: 'delegated', permissions: { mode: 'write', allowedPaths: ['README.md'] }, ...extra });
 const packages = (f, items, extra = {}) => emit(f, { action: 'packages', packages: items, ...extra });
@@ -64,7 +64,7 @@ test('channels：分工任务的 worker 包由 Lead 实施须附 change；未声
 });
 
 test('supersedes：换新 packageId 返修继承轮次、旧包收尾，被接替的包不再要求审查', async () => {
-  const f = await fixture();
+  const f = await gitFixture(['m1']);
   await delegated(f);
   await packages(f, [{ packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v1' }, { packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', reviewedRef: 'v1', verdict: 'FIX' }]);
   let result;
@@ -99,7 +99,7 @@ test('supersedes：在途旧包记为 canceled；目标不存在、异角色、�
 });
 
 test('已安排审查的 worker 包：审查缺项不能豁免、不能改标 waived；canceled 仍可放弃，从未审查的包照常豁免', async () => {
-  const f = await fixture();
+  const f = await gitFixture(['m1']);
   await delegated(f);
   await packages(f, [{ packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v2' }, { packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', reviewedRef: 'v1', verdict: 'PASS' }], { validation });
   for (const step of ['review', 'review:w1']) {
@@ -112,18 +112,18 @@ test('已安排审查的 worker 包：审查缺项不能豁免、不能改标 wa
   await packages(f, [{ packageId: 'w1', status: 'canceled' }]);
   assert.equal((await emit(f, { action: 'task-end', finalRef: 'm1' })).result.accepted, true);
 
-  const g = await fixture();
+  const g = await gitFixture(['m1']);
   await delegated(g);
   await packages(g, [{ packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v1' }], { validation });
   assert.equal((await emit(g, { action: 'task-end', finalRef: 'm1', waivers: [{ step: 'review:w1', reason: '只改文档，用户同意免审' }] })).result.accepted, true);
-  const h = await fixture();
+  const h = await gitFixture(['m1']);
   await delegated(h);
   await packages(h, [{ packageId: 'w1', role: 'worker', status: 'waived' }], { validation });
   assert.equal((await emit(h, { action: 'task-end', finalRef: 'm1' })).result.accepted, true);
 });
 
 test('已审结论沿 supersedes 继承：接替包不能借新包号豁免；取消而无结论的审查不算已审；被接替的包不能再改状态', async () => {
-  const f = await fixture();
+  const f = await gitFixture(['m1']);
   await delegated(f);
   await packages(f, [{ packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v1' }, { packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', reviewedRef: 'v1', verdict: 'FIX' }]);
   await packages(f, [{ packageId: 'w2', role: 'worker', status: 'consumed', deliveredRef: 'v2', supersedes: 'w1' }], { validation });
@@ -132,7 +132,7 @@ test('已审结论沿 supersedes 继承：接替包不能借新包号豁免；�
   assert.equal((await packages(f, [{ packageId: 'w2', status: 'waived' }])).result.reason, 'PACKAGE');
   assert.equal((await packages(f, [{ packageId: 'w1', status: 'dispatched' }])).result.reason, 'PACKAGE');
 
-  const g = await fixture();
+  const g = await gitFixture(['m1']);
   await delegated(g);
   await packages(g, [{ packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v1' }, { packageId: 'r1', role: 'reviewer', status: 'canceled', reviews: 'w1' }], { validation });
   const waived = await emit(g, { action: 'task-end', finalRef: 'm1', waivers: [{ step: 'review:w1', reason: '审查人中途取消，用户同意免审' }] });

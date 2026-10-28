@@ -46,6 +46,14 @@ export async function fixture(options = {}) {
   else await event(f, 'UserPromptSubmit');
   return f;
 }
+// 需要具体 ref 的用例用真实 Git 仓库：finalRef 等标签必须能解析成提交，显式 ref 才不按读取失败处理。
+export async function gitFixture(tags = []) {
+  const f = await fixture({ git: true });
+  git(f.project, ['add', '-A']);
+  git(f.project, ['commit', '-q', '-m', 'init']);
+  for (const tag of tags) git(f.project, ['tag', tag]);
+  return f;
+}
 export async function event(f, name, extra = {}) {
   return handleHook(f.directory, { hook_event_name: name, cwd: f.project, session_id: f.sessionId, turn_id: f.turnId, permission_mode: 'default', ...extra }, { synthetic: true, entry });
 }

@@ -131,7 +131,7 @@ node "<入口>" spec check --project "<项目目录>"
 node "<入口>" spec check --project "<项目目录>" --ref "<commit>"
 ```
 
-检查根是命令所在目录对应的当前 worktree（附加 worktree 就检查该 worktree），不是项目主目录。缺省检查 `HEAD` 与未提交改动；指定 `--ref` 时先固定成提交，spec 清单、正文、`code:` 路径和文件存在性都取自该提交，输出里的 `ref` 也是固定后的提交 OID。
+检查根是命令所在目录对应的当前 worktree（附加 worktree 就检查该 worktree），不是项目主目录；从项目子目录运行也回到 worktree 根。缺省检查 `HEAD` 与未提交改动；指定 `--ref` 时先固定成提交，spec 清单、正文、`code:` 路径和文件存在性都取自该提交，输出里的 `ref` 也是固定后的提交 OID。例外：`--ref HEAD`（或直接用默认值）仍按当前 worktree 的文件与未提交改动检查，不固定成 OID。
 
 有发现时退出码为 1，`findings` 列出 spec、文件、类型（drift/uncommitted-drift/missing/duplicate-id）和未被 spec 见过的提交。处理办法：更新 spec 后提交；或代码改动不影响 spec 时，在内容提交上附 `Spec-OK`，理由写进提交正文：
 

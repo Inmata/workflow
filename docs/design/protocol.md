@@ -46,7 +46,7 @@ task-end 门禁：父任务有 active 子任务（`parentTaskId`）时列 `child
 
 spec 位于 `.spec/<id>/spec.md`，`<id>` 为目录名，可嵌套，`.spec` 内不得重名。frontmatter 的 `code:` 只列具体文件（不写目录或通配），`related:` 只供阅读；其他字段忽略。格式与 [SpexCode](https://github.com/shuxueshuxue/spexcode) 一致，检测由 workflow 自己实现。
 
-对每个 spec 的每个 `code:` 文件，从检查版本（finalRef，缺省 `HEAD`）往回看：缺省 `HEAD` 时看当前 worktree 的文件和未提交改动；显式 `finalRef`/`--ref` 先固定成提交 OID，spec 清单、正文、`code:` 路径和存在性都从该提交读取。
+对每个 spec 的每个 `code:` 文件，从检查版本（finalRef，缺省 `HEAD`）往回看：缺省 `HEAD`（含显式 `--ref HEAD`）时看当前 worktree 的文件和未提交改动；显式 `finalRef`/`--ref` 先固定成提交 OID，spec 清单、正文、`code:` 路径和存在性都从该提交读取。
 
 | kind | 条件 |
 | --- | --- |
@@ -55,9 +55,9 @@ spec 位于 `.spec/<id>/spec.md`，`<id>` 为目录名，可嵌套，`.spec` 内
 | `missing` | 被管辖文件在检查版本中不存在 |
 | `duplicate-id` | `.spec` 内两个目录同名 |
 
-放行用提交信息的 `Spec-OK: <id>[, <id>]` trailer，按 id 匹配：写在空提交（单父且树与父提交相同）上覆盖它可达的全部祖先；写在内容提交上只豁免该提交。优先在内容提交上附 Spec-OK；空提交用于追认既有历史。每次从 git 历史现算，不保存哈希。浅克隆返回 `error:'shallow'`，git 不可用或超时（10 秒）返回 `error:'git'`，并在 `detail` 附 git 的第一行报错（例如沙箱用户不是仓库所有者时的 dubious ownership），门禁中显示为 `spec-check:<原因>`；没有 `.spec` 目录时 `skipped:'no-spec'`，不报缺项；显式版本按目标提交判断，目标提交没有 `.spec` 同样跳过，不混入当前磁盘定义，读取失败则返回 `error:'git'`，不回退到 HEAD。git 调用不经 shell，参数逐个传入并带 `--literal-pathspecs`。
+放行用提交信息的 `Spec-OK: <id>[, <id>]` trailer，按 id 匹配：写在空提交（单父且树与父提交相同）上覆盖它可达的全部祖先；写在内容提交上只豁免该提交。优先在内容提交上附 Spec-OK；空提交用于追认既有历史。每次从 git 历史现算，不保存哈希。浅克隆返回 `error:'shallow'`，git 不可用或超时（10 秒）返回 `error:'git'`，并在 `detail` 附 git 的第一行报错（例如沙箱用户不是仓库所有者时的 dubious ownership），门禁中显示为 `spec-check:<原因>`；工作区没有 `.spec` 目录时（HEAD 检查）`skipped:'no-spec'`，不报缺项；显式版本先解析 ref，再按目标提交判断，目标提交没有 `.spec` 同样跳过，不混入当前磁盘定义；非 Git 目录或 ref 无效一律 `error:'git'`，不回退到 HEAD。git 调用不经 shell，参数逐个传入并带 `--literal-pathspecs`。
 
-`spec check --project <root> [--ref <commit>]` 只读输出 `{ok, ref, findings:[{id, spec, code, kind, commits}], error?, detail?, skipped?}`；指定 `--ref` 时 `ref` 为固定后的提交 OID，否则为 `HEAD`。有发现或检查失败时退出码为 1。task-end 自带同一检查，显式命令只用于提前诊断。
+`spec check --project <root> [--ref <commit>]` 只读输出 `{ok, ref, findings:[{id, spec, code, kind, commits}], error?, detail?, skipped?}`；检查根是命令所在目录对应的当前 worktree（从子目录运行也回到 worktree 根），指定 `--ref` 时 `ref` 为固定后的提交 OID，否则为 `HEAD`；例外是 `--ref HEAD`，它按当前 worktree 检查、`ref` 仍为 `HEAD`。有发现或检查失败时退出码为 1。task-end 自带同一检查，显式命令只用于提前诊断。
 
 role-claim 的 taskId 填工作包所属的 Lead 任务 ID（仅作标识，不绑定任务）；只能在会话没有自己的活动任务时发出，同一会话不能改声明其他角色；声明后该会话的 task-start、packages、task-end 等业务信号返回 `ROLE`。宿主内置子代理的事件带 `agent_id`（Claude Agent 工具、Codex spawn_agent 均实测，`session_id` 与父会话相同），整体放行，不开回合。内置子代理与 Lead 共用会话，没有自己的 workflow 身份：它调用本插件 signal（直接或组合命令）时只回一条说明，信号不记录、状态不变，让它直接完成工作包交回 Lead。
 

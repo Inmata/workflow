@@ -2,7 +2,7 @@
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { fail, readState, stateDirectory } from '../src/store.mjs';
-import { resolveProject } from '../src/projects.mjs';
+import { identity, resolveProject } from '../src/projects.mjs';
 import { getContext } from '../src/context.mjs';
 import { handleHook, HOSTS as AGENTS } from '../src/hooks.mjs';
 import { gateReport, taskKey, unchangedPlans } from '../src/protocol.mjs';
@@ -41,7 +41,7 @@ const help = {
     'project align apply|decide|suggest --root <目录> --input <JSON文件>（sources 增量确认来源基线）',
     'context --role lead|worker|reviewer [--project <目录>] [--session <sessionId>]',
     'task show --task <taskId> [--project <目录>]（只读查看分流、工作包账本、变更条数与门禁缺项）',
-    'spec check [--project <目录>] [--ref <提交>]（只读检查 .spec 管辖文件是否漂移；指定 ref 时 spec 与代码均取自该提交；有发现或失败时退出码 1）',
+    'spec check [--project <目录>] [--ref <提交>]（只读检查 .spec 管辖文件是否漂移；指定 ref 时 spec 与代码均取自该提交，HEAD 仍按当前 worktree；有发现或失败时退出码 1）',
     'signal <task-start|phase|role-claim|task-end|packages> --session <id> --turn <id> --id <signalId> [--task <id>] [--goal --route --mode --paths a,b --plans a,b --channels worker=x,reviewer=y --parent | --phase --delivery | --role --package | --final-ref] [--input <补充字段 JSON>]（推荐：身份由本机状态补齐）',
     'signal --input <JSON文件> | --base64 <UTF-8 JSON>（完整 payload，兼容写法）',
     'knowledge inspect --path <资料路径> [--project <目录>]',
@@ -85,6 +85,17 @@ async function showTask(state, root, taskId) {
   const planUnchanged = lifecycle === 'active' ? unchangedPlans(state, task, resolved.worktree) : [];
   return { taskId: id, goal, parentTaskId, route, channels, lifecycle, packages: Object.values(packages), validation, waivers, finalRef, changes: changes.length, gateMissing: gate.missing, specFindings: gate.findings, plans, planUnchanged, note: '门禁核对声明记录一致性，不证明审查或测试真实发生' };
 }
+// spec check 的检查根：先按本机绑定找到当前 worktree（与 hook 同一解析，--project 已在此前的 root 中生效），
+// 未接入或不在绑定时退回 Git 顶层目录；都不是 Git 目录就按给定目录检查。
+async function specCheckRoot(directory, root) {
+  const actual = path.resolve(root);
+  const state = await readState(directory).catch(() => null);
+  const resolved = state ? await resolveProject(state, actual).catch(() => null) : null;
+  if (resolved) return resolved.worktree;
+  // 未接入或不在绑定时用同一身份解析取 Git 顶层；解析失败时退回给定目录，由 spec 检查如实报 git 原因。
+  const current = await identity(actual).catch(() => null);
+  return current?.gitRoot || actual;
+}
 async function main() {
   const { options, commands } = argumentsFor(process.argv.slice(2));
   const [command, action, subaction] = commands;
@@ -108,11 +119,11 @@ async function main() {
     if (!options.task) fail('ARGUMENT', 'task show 需要 --task');
     return showTask(await readState(directory), root, options.task);
   }
-  // 只读：不需要项目绑定，CI 里也能直接运行。
+  // 只读：不需要项目绑定，CI 里也能直接运行；检查根取当前 worktree，而不是命令所在子目录。
   if (command === 'spec' && action === 'check') {
     if (options.ref !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_.\/~^@{}-]{0,199}$/.test(options.ref)) fail('ARGUMENT', '--ref 不是有效的提交引用');
     const { checkSpecs } = await import('../src/spec.mjs');
-    const result = checkSpecs(path.resolve(root), { ref: options.ref });
+    const result = checkSpecs(await specCheckRoot(directory, root), { ref: options.ref });
     if (!result.ok) process.exitCode = 1;
     return result;
   }

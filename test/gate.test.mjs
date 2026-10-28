@@ -7,7 +7,7 @@ import { emptyState, readState } from '../src/store.mjs';
 import { acceptSignal, openTurn, taskKey } from '../src/protocol.mjs';
 import { codexQuestionFeature, doctor } from '../src/install.mjs';
 import { attachWorktree } from '../src/projects.mjs';
-import { cli, emit, event, fixture, git, start, temporary } from './helpers.mjs';
+import { cli, emit, event, fixture, git, gitFixture, start, temporary } from './helpers.mjs';
 
 const delegated = (f, extra = {}) => emit(f, { action: 'task-start', goal: '分工任务', route: 'delegated', permissions: { mode: 'write', allowedPaths: ['README.md'] }, ...extra });
 const packages = (f, items, extra = {}) => emit(f, { action: 'packages', packages: items, ...extra });
@@ -46,7 +46,7 @@ test('报告内存实验（synthetic）：父任务有活动子任务时 task-en
 });
 
 test('delegated 缺审查、审查版本不符、缺验证均拒绝且状态不变；豁免后接受', async () => {
-  const f = await fixture();
+  const f = await gitFixture(['merge1']);
   await delegated(f);
   await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched', baseRef: 'base0' }]);
   let ended = await emit(f, { action: 'task-end' });
@@ -75,7 +75,7 @@ test('delegated 缺审查、审查版本不符、缺验证均拒绝且状态不�
 });
 
 test('delegated 记录齐全时接受，验证绑定最终版本', async () => {
-  const f = await fixture();
+  const f = await gitFixture(['merge1']);
   await delegated(f);
   await packages(f, ready, { validation: { ref: 'merge1', evidence: ['npm test 通过'] } });
   const ended = await emit(f, { action: 'task-end', finalRef: 'merge1' });

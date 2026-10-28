@@ -144,7 +144,7 @@ git commit -m "refactor: search 无需更新" -m "重命名内部变量，行为
 {"ok": false, "ref": "HEAD", "findings": [{"id": "search", "spec": ".spec/search/spec.md", "code": "src/search.mjs", "kind": "drift", "commits": ["a1b2c3d"]}]}
 ```
 
-Lead 和 Worker 都可以在交付前运行它。指定 `--ref` 时先固定成提交 OID，spec 清单、正文、`code:` 路径和文件存在性都从该提交读取；输出里的 `ref` 也是该 OID。未指定时检查当前 worktree 的 `HEAD` 与未提交改动。task-end 自带同一检查，显式命令只用于提前诊断。git 调用沿用 `src/projects.mjs` 的 `spawnSync` 方式：设超时，不经 shell，参数逐个传入。
+Lead 和 Worker 都可以在交付前运行它。指定 `--ref` 时先固定成提交 OID，spec 清单、正文、`code:` 路径和文件存在性都从该提交读取；输出里的 `ref` 也是该 OID。未指定时（以及指定 `--ref HEAD` 时）检查当前 worktree 的 `HEAD` 与未提交改动。检查根是命令所在目录对应的当前 worktree，从子目录运行也回到 worktree 根。task-end 自带同一检查，显式命令只用于提前诊断。git 调用沿用 `src/projects.mjs` 的 `spawnSync` 方式：设超时，不经 shell，参数逐个传入。
 
 ## 接入 task-end 门禁
 
