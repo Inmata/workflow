@@ -110,11 +110,11 @@ node bin/workflow.mjs learning config set --global --input learning-config.json
 ```powershell
 node "<hook 给出的入口>" knowledge select --root "D:/项目" --query "修复登录请求超时" --path "src/login.mjs"
 node "<hook 给出的入口>" knowledge explain --root "D:/项目" --query "修复登录请求超时" --path "src/login.mjs"
-node "<hook 给出的入口>" knowledge capture --session <sessionId> --turn <turnId> --id obs-1 --kind failure --summary "一句话材料" --conditions "适用条件" --evidence "test:可定位证据"
+node "<hook 给出的入口>" knowledge capture --session <sessionId> --turn <turnId> --id obs-1 --incident <事件ID> --kind failure --summary "一句话材料" --conditions "适用条件" --evidence "test:可定位证据"
 node "<hook 给出的入口>" knowledge capture --input observation.json
 ```
 
-短材料可用便捷字段（身份由本机状态补齐，`--evidence` 可重复；`--incident` 缺省用当前 taskId）；多字段或复杂材料仍用完整 JSON 文件。
+短材料可用便捷字段（身份由本机状态补齐，`--evidence` 可重复）；`id`、`incidentId`（`--incident`）、`kind`、`summary`、`conditions`、`evidence` 必填。同一事件跨会话/任务要复用同一个 `--incident` 值，成熟度按独立事件计数，不能拿 taskId 代替；多字段或复杂材料仍用完整 JSON 文件。
 
 采集输入示例，身份取本次 `context.identity`，不得猜测或复制历史票据：
 

@@ -141,6 +141,43 @@ test('便捷字段用错动作或含 shell 元字符时由 CLI 先返回 INPUT',
   // 新包用 --ref 但没给角色，无法判断写 deliveredRef 还是 reviewedRef。
   assert.equal(JSON.parse(build(f, 'packages', ['--id', 'x9', '--package', 'new1', '--status', 'dispatched', '--ref', 'abc123']).stdout).error, 'INPUT');
 });
+test('packages 便捷字段缺 --package 时返回 INPUT，--input 批量载荷不被改写', async () => {
+  const f = await fixture();
+  await start(f);
+  const before = JSON.stringify(await readState(f.directory));
+  const file = path.join(f.area, 'multi.json');
+  await writeFile(file, JSON.stringify({ packages: [
+    { packageId: 'w1', role: 'worker', status: 'dispatched' },
+    { packageId: 'w2', role: 'worker', status: 'dispatched' },
+  ] }));
+  const status = JSON.parse(build(f, 'packages', ['--id', 'm1', '--input', file, '--status', 'consumed']).stdout);
+  assert.equal(status.error, 'INPUT');
+  assert.match(status.message, /--status/);
+  assert.match(status.message, /--package/);
+  assert.match(status.message, /--input/);
+  // 只给 --role 也同样拒绝，而不是按批量载荷静默丢弃。
+  const role = JSON.parse(build(f, 'packages', ['--id', 'm2', '--input', file, '--role', 'worker']).stdout);
+  assert.equal(role.error, 'INPUT');
+  assert.match(role.message, /--role/);
+  assert.equal(JSON.stringify(await readState(f.directory)), before);
+});
+test('task-start/phase/task-end 收到包字段也返回 INPUT，不再静默丢弃', async () => {
+  const f = await fixture();
+  await start(f);
+  const before = JSON.stringify(await readState(f.directory));
+  const cases = [
+    ['task-start', startArgs('s2', ['--status', 'dispatched'])],
+    ['task-start', startArgs('s3', ['--package', 'w1'])],
+    ['phase', ['--id', 'ph1', '--phase', 'executing', '--role', 'worker']],
+    ['task-end', ['--id', 'te1', '--final-ref', 'abc123', '--package', 'w1']],
+    ['task-end', ['--id', 'te2', '--final-ref', 'abc123', '--verdict', 'PASS']],
+  ];
+  for (const [action, args] of cases) {
+    const result = JSON.parse(build(f, action, args).stdout);
+    assert.equal(result.error, 'INPUT', `${action} ${args.join(' ')}: ${result.message}`);
+  }
+  assert.equal(JSON.stringify(await readState(f.directory)), before);
+});
 test('中文、引号和旧接口命令文本经 PostToolUse 正常接受', async () => {
   const f = await fixture();
   await start(f);

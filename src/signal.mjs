@@ -6,6 +6,8 @@ const IDENTITY_FIELDS = ['schemaVersion', 'projectId', 'sessionId', 'turnId', 't
 const FIELD_OPTIONS = ['task', 'goal', 'route', 'mode', 'paths', 'paths-mode', 'plans', 'channels', 'parent', 'phase', 'delivery', 'role', 'package', 'final-ref', 'status', 'handle', 'channel', 'ref', 'depends-on', 'supersedes', 'verdict', 'reviews', 'base-ref', 'note', 'worktree', 'validation-ref', 'evidence'];
 // 单个工作包的便捷字段；同批多个包、change 等深层结构仍用 --input。
 const PACKAGE_OPTIONS = ['status', 'channel', 'handle', 'ref', 'depends-on', 'supersedes', 'verdict', 'reviews', 'base-ref', 'note', 'worktree'];
+// --package 与 --role 只属于 packages/role-claim；给错动作同样报错，不能静默丢弃。
+const PACKAGE_SINGLE_OPTIONS = ['package', 'role', ...PACKAGE_OPTIONS];
 const VALIDATION_OPTIONS = ['validation-ref', 'evidence'];
 // task-update 只接受这些便捷字段；其余字段属于其他动作，给出即报错，不能静默丢弃。
 const TASK_UPDATE_OPTIONS = ['task', 'goal', 'mode', 'paths', 'paths-mode'];
@@ -91,7 +93,8 @@ export function buildSignal(state, resolved, action, options, extra = {}) {
   // 新便捷字段只在对应动作生效；给错动作直接报错，避免看起来成功却没有写入。
   // task-update 自己会按公共选项清单报 UNSUPPORTED，这里不抢先改变它的错误码。
   if (action !== 'packages' && action !== 'task-update') {
-    const stray = PACKAGE_OPTIONS.filter(key => options[key] !== undefined);
+    // role-claim 也要 --role 与 --package；其余动作收到任一个包字段都拒绝。
+    const stray = PACKAGE_SINGLE_OPTIONS.filter(key => options[key] !== undefined && !(action === 'role-claim' && ['role', 'package'].includes(key)));
     if (stray.length) fail('INPUT', `${stray.map(key => `--${key}`).join('、')} 只用于 packages 信号${action === 'task-end' ? '；验证证据用 --validation-ref 与 --evidence' : ''}`);
   }
   if (action !== 'task-end') {
@@ -140,6 +143,10 @@ export function buildSignal(state, resolved, action, options, extra = {}) {
       const item = packageFromCli(state, projectId, taskId, options);
       if (!Object.keys(item).length) fail('INPUT', '--package 需要至少一个包字段（如 --status、--role、--ref、--verdict）');
       fields.packages = [{ packageId: identifier(options.package, '--package'), ...item }];
+    } else {
+      // --input 带 packages 时，单包便捷字段没有包 ID 可落，不能当作已生效；直接拒绝并指向批量写法。
+      const stray = PACKAGE_SINGLE_OPTIONS.filter(key => options[key] !== undefined);
+      if (stray.length) fail('INPUT', `${stray.map(key => `--${key}`).join('、')}：单包便捷字段需配 --package；同批多包请全部写进 --input`);
     }
   } else if (action === 'task-end') {
     Object.assign(fields, { finalRef: options['final-ref'] });

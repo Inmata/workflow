@@ -86,16 +86,16 @@ node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionI
 node "<本次hook提供的bin/workflow.mjs>" signal task-end --session <sessionId> --turn <turnId> --id end-1 --final-ref <交付提交> --evidence "npm test 250/250 通过" --evidence "npm run check 0 错误"
 ```
 
-CLI 只读当前状态补齐 projectId、ticket、epoch 和 revision，输出信号，由当前 PostToolUse 接受；字段参数见[协议](design/protocol.md#信号)。便捷参数一次只表达一个工作包：`--ref` 对 worker 记 `deliveredRef`、对 reviewer 记 `reviewedRef`，新包需要同时给 `--role`；task-end 的 `validation.ref` 缺省取 `--final-ref`，`--evidence` 可重复。一次消费并派下一阶段等**同批多个包**、`change`、`waivers` 以及 disposition 等深层结构仍写进 UTF-8 JSON 文件，用 `--input` 附上（文件只放业务字段，不放身份字段）：
+CLI 只读当前状态补齐 projectId、ticket、epoch 和 revision，输出信号，由当前 PostToolUse 接受；字段参数见[协议](design/protocol.md#信号)。便捷参数一次只表达一个工作包：`--ref` 对 worker 记 `deliveredRef`、对 reviewer 记 `reviewedRef`，新包需要同时给 `--role`；单包便捷字段必须配 `--package`，否则直接返回 INPUT，不会静默丢弃。task-end 的 `validation.ref` 缺省取 `--final-ref`，`--evidence` 可重复。一次消费并派下一阶段等**同批多个包**、`change`、`waivers` 以及 disposition 等深层结构仍写进 UTF-8 JSON 文件，用 `--input` 附上（文件只放业务字段，不放身份字段）：
 
 ```powershell
 node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-batch-1 --input "<同批 packages/change JSON文件>"
 ```
 
-一条简短经验材料也可直接 `knowledge capture`，身份同样由本机状态补齐（完整材料仍用 `--input`）：
+一条简短经验材料也可直接 `knowledge capture`，身份同样由本机状态补齐；`--incident` 是必填的事件 ID，同一事件跨会话/任务用同一个值（完整材料仍用 `--input`）：
 
 ```powershell
-node "<入口>" knowledge capture --session <sessionId> --turn <turnId> --id obs-1 --kind failure --summary "一句话材料" --conditions "适用条件" --evidence "test:可定位证据" --evidence "path:资料位置"
+node "<入口>" knowledge capture --session <sessionId> --turn <turnId> --id obs-1 --incident <事件ID> --kind failure --summary "一句话材料" --conditions "适用条件" --evidence "test:可定位证据" --evidence "path:资料位置"
 ```
 
 完整 payload 仍可用（兼容写法），身份必须替换为本次 context 原值：

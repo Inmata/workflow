@@ -86,6 +86,11 @@ export function buildCapture(state, resolved, options, extra = {}) {
   const misplaced = Object.keys(extra).filter(key => CAPTURE_IDENTITY_FIELDS.includes(key));
   if (misplaced.length) fail('INPUT', `--input 不要带身份字段（${misplaced.join('、')}），由命令行参数和本机状态补齐`);
   const supplement = extra.observation && typeof extra.observation === 'object' && !Array.isArray(extra.observation) ? extra.observation : extra;
+  // 展开时 supplement 的字段会覆盖自动补齐的身份；嵌套 observation 也要检查，不能只在顶层挡。
+  if (supplement !== extra) {
+    const nested = Object.keys(supplement).filter(key => CAPTURE_IDENTITY_FIELDS.includes(key));
+    if (nested.length) fail('INPUT', `--input 的 observation 不要带身份字段（${nested.join('、')}），由命令行参数和本机状态补齐`);
+  }
   const taskId = identifier(options.task || session.taskId, '--task');
   const cli = {};
   for (const [flag, key] of Object.entries({ id: 'id', kind: 'kind', summary: 'summary', conditions: 'conditions', knowledge: 'knowledgeId' })) {
@@ -101,10 +106,14 @@ export function buildCapture(state, resolved, options, extra = {}) {
     if (merged[key] !== undefined && JSON.stringify(merged[key]) !== JSON.stringify(cli[key])) fail('INPUT', `便捷参数与 --input 的 ${key} 不一致；同一个值只在一处给出`);
     merged[key] = cli[key];
   }
-  if (merged.incidentId === undefined) merged.incidentId = taskId;
   // 必填项先在 CLI 点名，免得多跑一轮才由 capture 报 INPUT；完整材料仍可走 --input。
-  const missing = ['id', 'kind', 'summary', 'conditions', 'evidence'].filter(key => merged[key] === undefined || (Array.isArray(merged[key]) && !merged[key].length));
-  if (missing.length) fail('INPUT', `便捷 capture 缺少 ${missing.map(key => `--${key}`).join('、')}；完整材料可改用 --input <JSON文件>`);
+  // incidentId 不按 taskId 缺省：成熟度按独立事件计数，同任务多事件或跨任务同一事件都会因此失真。
+  const missing = ['id', 'kind', 'summary', 'conditions', 'evidence', 'incidentId'].filter(key => merged[key] === undefined || (Array.isArray(merged[key]) && !merged[key].length));
+  if (missing.length) {
+    const flags = missing.map(key => `--${key === 'incidentId' ? 'incident' : key}`).join('、');
+    const hint = missing.includes('incidentId') ? '；--incident 是事件 ID，同一事件跨会话/任务用同一个事件 ID' : '';
+    fail('INPUT', `便捷 capture 缺少 ${flags}${hint}；完整材料可改用 --input <JSON文件>`);
+  }
   return { schemaVersion: SCHEMA_VERSION, projectId, sessionId, turnId, taskId, ticket: session.ticket, interruptEpoch: session.interruptEpoch, expectedRevision: session.revision, ...merged };
 }
 export async function migrateCandidates(directory, root) {

@@ -51,7 +51,7 @@ const help = {
     'signal --input <JSON文件> | --base64 <UTF-8 JSON>（完整 payload，兼容写法）',
     'knowledge inspect --path <资料路径> [--project <目录>]',
     'knowledge apply --input <JSON文件>', 'knowledge recover --transaction <id> [--project <目录>]',
-    'knowledge capture --session <id> --turn <id> --id <材料ID> --kind correction|failure|success|method|preference --summary "<摘要>" --conditions "<条件>" --evidence "<证据>" [--evidence ...] [--paths a,b] [--knowledge <ID>] [--incident <ID>] [--explicit|--verified]（单条简短材料）',
+    'knowledge capture --session <id> --turn <id> --id <材料ID> --incident <事件ID> --kind correction|failure|success|method|preference --summary "<摘要>" --conditions "<条件>" --evidence "<证据>" [--evidence ...] [--paths a,b] [--knowledge <ID>] [--explicit|--verified]（单条简短材料；同一事件跨会话/任务用同一个 --incident）',
     'knowledge capture|feedback|revise --input <JSON文件> [--root <项目>]（完整材料/兼容写法）',
     'knowledge select|explain --query <任务描述> [--path <当前路径>] [--root <项目>]',
     'learning config get|set [--global] [--input <JSON文件>] [--root <项目>]',
