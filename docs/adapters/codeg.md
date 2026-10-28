@@ -14,7 +14,7 @@
 
 用户级宿主配置（Codex `hooks.json`、Claude `settings.json`）作为本版唯一注册途径，发布副本和文档一起固定版本。元数据不另外自动注册同一事件。安装不写 trust 记录；发现与信任需实际宿主核对。修改配置后新会话/新连接验证，复用旧连接可能仍加载旧配置。全局 CLI 版本不代表 ACP 内嵌版本。Claude 侧字段差异见[适配说明](claude.md)。
 
-SessionStart/UserPromptSubmit 提供入口；PostToolUse 限定本插件 signal 输出；Stop 做回合结束核对（见[协议](../design/protocol.md)）；Interrupt 保存而不续轮；压缩保留任务与预算。明确 transcript_path=null 才按后台过滤，缺字段不当后台；未知事件/损坏状态放行。等待工具或文本反问先 waiting-user，插件不读问号/关键词猜测。
+SessionStart/UserPromptSubmit 提供入口；PostToolUse 限定本插件 signal 输出；Stop 做回合结束核对（见[协议](../design/protocol.md)）；Interrupt 保存而不续轮；压缩保留任务与预算。明确 transcript_path=null 才按后台过滤，缺字段不当后台；未知事件/损坏状态放行。已识别的等待工具在 PostToolUse 自动记 waiting-user，普通文本反问由 Lead 显式声明；插件不读问号/关键词猜测。
 
 Codex 0.160.1 的 PostCompact 不支持 additionalContext，安装不为它设置 additionalContextLimit，回调仅记录观测并保留状态。压缩后的入口和既有票据由支持附加上下文的 compact SessionStart 提供；是否实际触发该入口须在真实宿主核验，不能用合成压缩事件代替。
 
@@ -36,7 +36,7 @@ Codeg 不会在委派结束时唤醒父会话：Lead 回合一结束，子任务
 ### 规则
 
 - 等待集合：一次调用批量传入所有在途 `task_id`，用 `wait_ms: 0` 阻塞等待（`get_delegation_status` 遇 `blocked_on` 会提前返回，不会卡死在子会话的用户审批上）；终态 ID 首次消费后移出集合，并在账本把该包记为 consumed。压缩后按 context `ledger` 判断哪些结果已消费，不重读。插件在 `get_delegation_status` 的 PostToolUse 里按 `handle` 比对账本：等待集合含已终态包时提示移出，委派已结束但包仍是 dispatched 时提示记账。只追加提示，不改宿主输出，也不写状态。
-- 中途纠正：能力表没有“运行中追加消息”时，先核对磁盘上已有成果，再取消该任务并确认已停止，然后以新基准、用户原话和已完成工作重新派发；同包返修沿用 packageId（插件自动 attempts+1），范围变化用新 packageId；新 packageId 只是同一修复的下一轮时带 `supersedes` 接上旧包，轮次照样累计。delegated 任务有 dispatched 包时，新用户回合的入口指令会列出在途包并提示这一流程；是否需要纠正仍由 Lead 判断。
+- 中途纠正：能力表没有“运行中追加消息”时，先核对磁盘上已有成果，再取消该任务并确认已停止，然后以新基准、用户原话和已完成工作重新派发；同包返修沿用 packageId（交付或审查要求修订后插件自动 attempts+1，同一交付轮次只计一次；交付后启动失败记为 consumed 再重派不增加，从未产出的启动失败重派也不增加），范围变化用新 packageId；新 packageId 只是同一修复的下一轮时带 `supersedes` 接上旧包，轮次照样累计。delegated 任务有 dispatched 包时，新用户回合的入口指令会列出在途包并提示这一流程；是否需要纠正仍由 Lead 判断。
 - 通道沿用：用户指定了 Codeg 智能体（如 worker 用 claude_code、reviewer 用 codex）时，task-start 带 `channels:{worker:"codeg:claude_code", reviewer:"codeg:codex"}`，每包 `channel` 填实际通道。委派被拒、额度用尽等需要改用宿主内置子代理或 Lead 自己实施时，先告诉用户，再在 packages 附 `change`；不静默换路。
 - 委派工作包写明 packageId，并要求子会话有 workflow 身份时先发 `role-claim`。未声明的子会话按 Lead 处理，拿到的是 Lead 指引。
 

@@ -87,14 +87,14 @@ related:
 
 放行规则与 SpexCode 一致，用提交信息里的 `Spec-OK: <id>` trailer：
 
-- 写在空提交上（树与父提交相同）：覆盖它所有可达的祖先。
-- 写在内容提交上：只豁免这一个提交。
+- 写在内容提交上：只豁免这一个提交（优先方式）。
+- 写在空提交上（树与父提交相同）：覆盖它所有可达的祖先；只在需要追认既有历史时使用。
 - 一个 trailer 可写多个 id，用逗号分隔；只对列出的 id 生效。
 
 放行命令示例，理由写在提交正文里：
 
 ```text
-git commit --allow-empty -m "spec: search 无需更新" -m "重命名内部变量，行为不变。" --trailer "Spec-OK: search"
+git commit -m "refactor: search 无需更新" -m "重命名内部变量，行为不变。" --trailer "Spec-OK: search"
 ```
 
 漂移每次从 git 历史现算，不保存哈希，因此 rebase、cherry-pick 和合并后结果仍然正确。
@@ -103,7 +103,7 @@ git commit --allow-empty -m "spec: search 无需更新" -m "重命名内部变�
 
 - 浅克隆：提交历史不完整，无法判断哪些提交没被 spec 见过。返回 `spec-check:shallow`。
 - git 不可用或超时：返回 `spec-check:git`。
-- 项目没有 `.spec` 目录：跳过，不报缺项。
+- 项目没有 `.spec` 目录：跳过，不报缺项。非 Git 的接入项目即使 task-end 带了 `finalRef` 也按此处理；非 Git 但存在 `.spec` 时仍报 `spec-check:git`。
 
 前两种是“没法检查”，不是漂移。Lead 写明理由后可以用 waiver 跳过（step 写 `spec-check` 或完整条目），跳过记入任务。
 
@@ -144,14 +144,14 @@ git commit --allow-empty -m "spec: search 无需更新" -m "重命名内部变�
 {"ok": false, "ref": "HEAD", "findings": [{"id": "search", "spec": ".spec/search/spec.md", "code": "src/search.mjs", "kind": "drift", "commits": ["a1b2c3d"]}]}
 ```
 
-Lead 和 Worker 都可以在交付前运行它。git 调用沿用 `src/projects.mjs` 的 `spawnSync` 方式：设超时，不经 shell，参数逐个传入。
+Lead 和 Worker 都可以在交付前运行它。指定 `--ref` 时先固定成提交 OID，spec 清单、正文、`code:` 路径和文件存在性都从该提交读取；输出里的 `ref` 也是该 OID。未指定时（以及指定 `--ref HEAD` 时）检查当前 worktree 的 `HEAD` 与未提交改动。检查根是命令所在目录对应的当前 worktree，从子目录运行也回到 worktree 根。task-end 自带同一检查，显式命令只用于提前诊断。git 调用沿用 `src/projects.mjs` 的 `spawnSync` 方式：设超时，不经 shell，参数逐个传入。
 
 ## 接入 task-end 门禁
 
 门禁的 `missing` 新增 `spec:<id>`，每个有问题的 spec 列一条，消息里附 findings。规则：
 
 - 对 `delegated` 和 `lead-direct` 两种路线都生效；`operation-only` 不检查。未声明 route 的旧任务同样检查。
-- 只能靠两种方式消除：更新 spec，或做 Spec-OK 空提交。`waivers` 中 `spec` 类别和 `spec:<id>` 条目都不接受，回执返回 `WAIVER`。这样每次“代码改了但 spec 不用改”的判断都留在 git 历史里。`spec-check:<原因>` 不受此限。
+- 只能靠两种方式消除：更新 spec，或在内容提交上附 `Spec-OK`；需要追认既有历史时才用空提交。`waivers` 中 `spec` 类别和 `spec:<id>` 条目都不接受，回执返回 `WAIVER`。这样每次“代码改了但 spec 不用改”的判断都留在 git 历史里。`spec-check:<原因>` 不受此限。
 - 放行权限：Lead 写明理由后可以放行纯重构；修改 spec 的目标、原因、验收、边界正文，必须先经用户同意。只同步 `code:` 路径（文件改名或删除时，在同一提交里修改）不算改动需求原文，Lead 可以直接处理。
 - 检查在 `acceptSignal` 内同步执行，失败时与其他缺项一样整体回滚，不留下部分状态。
 
@@ -166,6 +166,8 @@ Lead 和 Worker 都可以在交付前运行它。git 调用沿用 `src/projects.
 - 当前会话角色是 Lead，绑定的任务仍为 active，route 不是 `operation-only`；
 - phase 不是 `waiting-user`；
 - `stop_hook_active` 不为 true，且本回合还没挡过。
+
+计划模式的计划交付核对只在本回合显式 `task-start`/`phase`（`session.phase` 不跨回合继承）时触发，历史 `task.plans` 不跨回合推断；仅有 `mode=plan` 的普通解释与讨论放行，也不落到通用门禁阻挡，不扫描自然语言或文件名猜意图。提示一次列明分包与各包所用通道：已声明的 `channels` 或包通道直接沿用，Lead 直接执行的任务不问 Worker，只有真实新增的角色或通道才请用户确认。
 
 有 dispatched 工作包时（0.6.0 起）：返回 `{decision: 'block', reason}`，列出在途包和 handle，要求 Lead 继续有界等待结果，或向用户说明暂停原因。Codeg 不会在委派结束时唤醒父会话，0.5.x 在此放行，Lead 结束回合后就收不到子任务结果。
 
@@ -183,7 +185,7 @@ Lead 和 Worker 都可以在交付前运行它。git 调用沿用 `src/projects.
 - Lead 从没发过 `task-start`，或某项工作从未记进工作包。插件只知道已记录的内容。
 - hook 没有执行（宿主信任失效等）。
 
-误挡：Lead 用普通文字中途汇报、没用提问工具时也会被挡一次，代价是多一轮简短回复，不影响之后的 `task-end`。
+误挡：非计划模式下，Lead 用普通文字中途汇报但任务仍为 active、未发 `task-end` 时也会被挡一次，代价是多一轮简短回复，不影响之后的 `task-end`。计划模式的普通讨论不再单独触发。
 
 远端 CI 加分支保护能强制阻止带漂移的代码进入 main，但只能看到 git 里的内容（审查与验证记录在本机），而且需要改成走 PR 合并。第一期不提供，需要时 `spec check` 可以直接在 CI 里运行。
 
@@ -193,7 +195,7 @@ Lead 和 Worker 都可以在交付前运行它。git 调用沿用 `src/projects.
 
 - 协调第 1 条的每包字段新增“相关 spec：路径列表；无则写无”。
 - 协调第 5 条：派 Reviewer 时附同一组 spec 路径。
-- 协调第 7 条：集成后发 `task-end` 前运行 `spec check`，逐条处理结果。
+- 协调第 7 条：集成后发 `task-end`，由它做权威 spec 检查并逐条处理结果；需要提前定位时再运行 `spec check`。
 - 新增“整体结构检查”和“中途变更”两段，内容见下文。
 - “设计”段改写为四种 UI 场景流程。
 

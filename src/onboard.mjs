@@ -81,31 +81,93 @@ async function bindingProblems(directory, state, root) {
   return { problems, previous };
 }
 
-// 一步接入：先做全部检查，任何一项不过都不写入，并一次列出所有问题和修复命令。
+// 学习结果单独成形：调用方据此区分“核心接入完成”和“可选学习未启用”，不把学习失败写成全部成功。
+function learningResult(learning, { requested, enabled, schedule, failure } = {}) {
+  if (!learning) return { status: 'skipped', requested: false };
+  return {
+    status: learning.status,
+    requested,
+    ...(enabled === undefined ? {} : { enabled }),
+    ...(schedule ? { schedule } : {}),
+    ...(failure ? { failure } : {}),
+    executor: learning.executor,
+    model: learning.model,
+    ...(learning.executor === 'codex' ? { profile: learning.profile } : { claudeSettings: learning.claudeSettings }),
+    ...(learning.error ? { error: learning.error } : {}),
+    ...(learning.message ? { message: learning.message } : {}),
+  };
+}
+// 学习登记状态按实际读取：重复接入或启用失败时，既有开关和计划任务可能仍然有效。
+function registeredLearning(previous) {
+  return {
+    enabled: previous?.learning?.enabled === true,
+    schedule: previous?.learning?.schedule?.taskName || 'not-registered',
+  };
+}
+async function currentLearning(directory, projectId) {
+  const project = (await readState(directory)).projects?.[projectId];
+  return registeredLearning(project);
+}
+// 一步接入：核心检查全部通过才写入；可选学习预检单独报告，未请求启用时只提示，不阻断核心接入。
 export async function onboardProject(directory, root, options = {}) {
   root = await canonical(root);
   const state = await readState(directory);
   const install = options.allowUninstalled ? [] : await installProblems(directory, state);
   const binding = await bindingProblems(directory, state, root);
+  const learningRequested = Boolean(options.enableLearning) && !options.skipLearning;
   const learning = options.skipLearning ? null : await learningDoctor(directory, { projectId: binding.previous?.projectId, knowledgeRoot: root }, { root, execute: options.execute });
+  const learningReady = Boolean(learning && learning.status === 'capabilities-verified');
+  const learningCommands = [
+    command(['learning', 'doctor', '--global'], { stateDir: directory }),
+    command(['project', 'onboard', '--root', root, '--enable-learning'], { stateDir: directory }),
+  ];
+  const report = extra => learningResult(learning, { requested: learningRequested, ...extra });
   const problems = [...install, ...binding.problems];
-  if (learning && !['capabilities-verified'].includes(learning.status)) problems.push({ code: 'LEARNING', message: `后台复盘执行器预检未通过：${learning.message} 修好配置后重试；不打算启用后台复盘时，加 --skip-learning 接入。`, commands: [command(['learning', 'doctor', '--global'], { stateDir: directory }), command(['project', 'onboard', '--root', root, '--skip-learning'], { stateDir: directory })] });
-  if (problems.length) return { status: 'blocked', root, written: false, problems, warnings: learning?.warnings || [] };
+  if (problems.length) return { status: 'blocked', root, written: false, problems, learning: report({ enabled: false }), warnings: learning?.warnings || [] };
   const enabled = await enableProject(directory, root, { coexistenceMode: options.coexistenceMode });
   const scanned = await scanAlignment(directory, root);
   if (options.skipLearning) await setLearningEnabled(directory, root, false);
-  const run = args => command([...args, '--root', root], { stateDir: directory });
   const next = [];
-  // 宿主的自动审批会拦截代理启用学习和注册计划任务；用户在终端加 --enable-learning 一次完成。
-  const enabledLearning = !options.skipLearning && options.enableLearning ? await enableLearning(directory, root, options) : null;
-  if (enabledLearning && enabledLearning.status !== 'enabled') next.push({ step: `后台复盘未完全启用：${enabledLearning.message}修好后补跑`, commands: enabledLearning.commands });
-  const alreadyLearning = binding.previous?.learning?.enabled === true;
-  if (!options.skipLearning && !options.enableLearning && !alreadyLearning) next.push({ step: '启用后台复盘（会按配置真实调用模型并消耗额度，需用户同意）。代理执行会被宿主审批拦截，由用户在终端执行', commands: [command(['project', 'onboard', '--root', root, '--enable-learning'], { stateDir: directory })] });
+  const previousLearning = registeredLearning(binding.previous);
+  const alreadyLearning = previousLearning.enabled;
+  const preflightReason = learning?.message || learning?.error || learning?.status;
+  let learningOutcome;
+  if (options.skipLearning) learningOutcome = { status: 'skipped', requested: false };
+  else if (learningRequested) {
+    if (!learningReady) {
+      // 显式请求学习但预检未过：核心接入照常完成；既有学习登记保持不变，只报告本次预检失败。
+      learningOutcome = report({
+        enabled: alreadyLearning,
+        schedule: alreadyLearning ? previousLearning.schedule : 'not-registered',
+        failure: 'preflight',
+      });
+      next.push({
+        step: alreadyLearning
+          ? `核心接入已完成。本次执行器预检未通过（${preflightReason}），未改动现有后台复盘登记：仍为已启用（计划任务 ${previousLearning.schedule}）。修好后可重新执行 --enable-learning 核对`
+          : `核心接入已完成，但后台复盘未启用：执行器预检未通过（${preflightReason}）。修好后重新执行 --enable-learning`,
+        commands: learningCommands,
+      });
+    } else {
+      const attempted = await enableLearning(directory, root, options);
+      // 失败时按状态文件里的实际登记报告，不把既有开关或计划任务写成未启用。
+      const registration = attempted.status === 'enabled' ? { enabled: true, schedule: attempted.schedule } : await currentLearning(directory, enabled.projectId);
+      learningOutcome = report({ ...registration, ...(attempted.status === 'enabled' ? {} : { failure: attempted.status }) });
+      if (attempted.status !== 'enabled') next.push({ step: `后台复盘未完全启用：${attempted.message}修好后补跑`, commands: attempted.commands });
+    }
+  } else {
+    learningOutcome = report(alreadyLearning ? { enabled: true, schedule: previousLearning.schedule } : { enabled: false });
+    // 已启用学习的项目保持原登记，不因本次预检失败提示“未启用”，也不再建议重复启用。
+    if (!alreadyLearning && !learningReady) next.push({ step: `核心接入已完成，后台复盘未启用：执行器预检未通过（${preflightReason}）。这不影响核心接入；修好后可加 --enable-learning 启用`, commands: learningCommands });
+    // 是否拦截取决于当前宿主的实际权限；保留用户终端入口，不把代理执行一律说成会被拦截。
+    else if (!alreadyLearning) next.push({ step: '启用后台复盘（会按配置真实调用模型并消耗额度，需用户同意）。可在你自己的终端执行，也可在当前会话权限允许时由代理直接执行', commands: [command(['project', 'onboard', '--root', root, '--enable-learning'], { stateDir: directory })] });
+  }
   next.push({ step: '在项目目录开一个新会话。hook 会注入 workflow 入口，Lead 按 alignmentGuide 完成项目对齐。' });
+  // 显式请求学习但未完整生效时用 partial 标记：核心接入字段照常保留，调用方可据此返回非零退出码。
+  const learningSatisfied = !learningRequested || (!learningOutcome.failure && learningOutcome.enabled === true);
   return {
-    status: 'onboarded', root, projectId: enabled.projectId, agentsChanged: enabled.agentsChanged,
+    status: learningSatisfied ? 'onboarded' : 'partial', root, written: true, projectId: enabled.projectId, agentsChanged: enabled.agentsChanged,
     alignment: { docPath: scanned.docPath, indexedFiles: scanned.files.length, truncated: scanned.truncated },
-    learning: learning ? { status: learning.status, executor: learning.executor, model: learning.model, ...(learning.executor === 'codex' ? { profile: learning.profile } : { claudeSettings: learning.claudeSettings }), ...(enabledLearning ? { enabled: enabledLearning.status !== 'failed', schedule: enabledLearning.schedule || 'not-registered' } : alreadyLearning ? { enabled: true, schedule: binding.previous.learning.schedule?.taskName || 'not-registered' } : {}) } : { status: 'skipped' },
+    learning: learningOutcome,
     warnings: learning?.warnings || [], next,
   };
 }

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { link, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { applyKnowledge, createPending, inspectKnowledge, recoverTransaction, safeDocument } from '../src/knowledge.mjs';
 import { readState } from '../src/store.mjs';
-import { assertRoundCheck, deliver, event, fixture, identity, start } from './helpers.mjs';
+import { assertRoundCheck, cli, deliver, event, fixture, identity, start } from './helpers.mjs';
 
 const candidate = (taskId, id = 'finding-1') => ({ id, taskId, workPackage: 'A1', conditions: '当前隔离项目', finding: '资料缺少已核实前置条件', recommendation: '补写条件并引用证据', evidence: ['test:已核实的输入'] });
 async function input(f, changes, candidates = [candidate(f.taskId)]) {
@@ -129,4 +129,51 @@ test('目录 Junction 逃逸拒绝且不读取目标正文', async () => {
   await writeFile(path.join(outside, 'secret.md'), '非本项目内容');
   await symlink(outside, path.join(f.project, 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(safeDocument(f.project, 'linked/secret.md'), { code: 'LINK' });
+});
+test('P10 knowledge capture 便捷字段一条命令保存短材料，冲突与缺字段返回 INPUT', async () => {
+  const f = await fixture();
+  await start(f);
+  const captureCli = extra => cli(['knowledge', 'capture', '--state-dir', f.directory, '--root', f.project, '--session', f.sessionId, '--turn', f.turnId, ...extra]);
+  const base = ['--id', 'obs-cli', '--incident', 'incident-cli', '--kind', 'success', '--summary', '中文摘要，"引号"', '--conditions', '登录接口', '--evidence', 'test:login-1', '--evidence', 'test:login-2', '--paths', 'src/login.mjs'];
+  const run = captureCli(base);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout), { id: 'obs-cli', saved: true, status: 'pending' });
+  const saved = JSON.parse(await readFile(path.join(f.directory, 'projects', f.projectId, 'inbox', 'obs-cli.json'), 'utf8'));
+  assert.equal(saved.incidentId, 'incident-cli');
+  assert.deepEqual(saved.evidence, ['test:login-1', 'test:login-2']);
+  assert.deepEqual(saved.paths, ['src/login.mjs']);
+  assert.equal(saved.summary, '中文摘要，"引号"');
+  // 同一材料 ID 与正文重放。
+  assert.equal(JSON.parse(captureCli(base).stdout).replayed, true);
+  // incidentId 必填：不能再用 taskId 冒充事件 ID。
+  const missingIncident = JSON.parse(captureCli(['--id', 'obs-no-incident', '--kind', 'success', '--summary', '缺事件', '--conditions', '登录接口', '--evidence', 'test:x']).stdout);
+  assert.equal(missingIncident.error, 'INPUT');
+  assert.match(missingIncident.message, /--incident/);
+  assert.match(missingIncident.message, /同一个/);
+  // 可选字段：knowledgeId 与 explicit 落到材料记录。
+  const explicit = captureCli(['--id', 'obs-explicit', '--incident', 'incident-explicit', '--kind', 'correction', '--summary', '纠正旧经验', '--conditions', '登录接口', '--evidence', 'test:correction', '--knowledge', 'kb-1', '--explicit']);
+  assert.equal(JSON.parse(explicit.stdout).saved, true);
+  const correction = JSON.parse(await readFile(path.join(f.directory, 'projects', f.projectId, 'inbox', 'obs-explicit.json'), 'utf8'));
+  assert.equal(correction.knowledgeId, 'kb-1');
+  assert.equal(correction.explicit, true);
+  // 缺必填字段、同字段冲突、--input 夹带身份字段都返回 INPUT，状态不变。
+  assert.equal(JSON.parse(captureCli(['--id', 'obs-missing', '--kind', 'success', '--summary', '缺条件', '--evidence', 'x']).stdout).error, 'INPUT');
+  const conflict = path.join(f.area, 'capture-conflict.json');
+  await writeFile(conflict, JSON.stringify({ summary: '另一份摘要' }));
+  assert.equal(JSON.parse(captureCli([...base, '--input', conflict]).stdout).error, 'INPUT');
+  const identityFile = path.join(f.area, 'capture-identity.json');
+  await writeFile(identityFile, JSON.stringify({ projectId: 'forged' }));
+  assert.equal(JSON.parse(captureCli([...base, '--input', identityFile]).stdout).error, 'INPUT');
+  // 嵌套 observation 里的身份字段同样拒绝：展开时会覆盖本机补齐的身份。
+  const nestedIdentity = path.join(f.area, 'capture-nested-identity.json');
+  await writeFile(nestedIdentity, JSON.stringify({ observation: { taskId: 'forged-task' } }));
+  const nested = JSON.parse(captureCli([...base, '--input', nestedIdentity]).stdout);
+  assert.equal(nested.error, 'INPUT');
+  assert.match(nested.message, /taskId/);
+  // 旧完整 JSON 入口保留。
+  const legacy = path.join(f.area, 'capture-legacy.json');
+  await writeFile(legacy, JSON.stringify({ ...await identity(f), observation: { id: 'obs-legacy', incidentId: 'incident-legacy', kind: 'method', summary: '旧接口材料', conditions: '条件', evidence: ['test:legacy'] } }));
+  const old = cli(['knowledge', 'capture', '--state-dir', f.directory, '--input', legacy]);
+  assert.equal(old.status, 0, old.stdout + old.stderr);
+  assert.equal(JSON.parse(old.stdout).saved, true);
 });

@@ -27,7 +27,7 @@ Claude Code 事件没有 `turn_id`，用宿主 `prompt_id` 关联一次用户输
 | SessionEnd | 保存未完成任务待办，票据失效 |
 | PreCompact / PostCompact | 只记录观测，不输出上下文 |
 
-宿主提供 `prompt_id` 时用它建立回合；入口事件缺失该字段时本机生成，后续事件按当前会话回合关联，不因标识缺失丢弃工具回执。
+宿主提供 `prompt_id` 时用它建立回合；入口事件缺失该字段时本机生成，后续事件按当前会话回合关联，不因标识缺失丢弃工具回执。StopFailure、SessionEnd 缺少 `prompt_id` 时不推断当前回合：事件保留在 `deferred/` 按关联不足处理，任务仍 active 时留待办，不撤销新回合票据。
 
 `hookSpecificOutput.additionalContext` 只在 SessionStart、UserPromptSubmit、PostToolUse、Stop 返回；StopFailure、SessionEnd、PreCompact、PostCompact 仅记录观测，避免事件名不匹配的输出被宿主拒绝。
 
@@ -63,6 +63,6 @@ Claude Code 的 Bash `tool_response` 把命令输出放在 `stdout`。只认 std
 | 信号载荷脱敏 | 长 base64 串可能被宿主当作密钥脱敏成占位符，信号随之变成无效 JSON（记录：Codeg Claude ACP Lead 会话）；推荐常用动作用 `signal <action>` 子命令，结构化字段先写 JSON 文件再 `--input` | 记录 |
 | 运行中追加消息 / 暂停 / 取消 / 中断恢复 / 批量 wait（Codeg 委派） | 见 [Codeg 能力表](codeg.md#宿主能力表) | — |
 
-插件据此：带 `agent_id` 的事件整体放行，子代理调用本插件 signal 时只回一条“没有 workflow 身份、信号不记录”的说明；内置子代理结束时宿主会通知父会话，派给它的包填 `channel: builtin:<类型>`，Stop 不再要求阻塞等待。Codeg 委派子会话按工作包 `role-claim`；`AskUserQuestion` 与 Codeg MCP 名称都置 waiting-user。若某路径 PostToolUse 实际不触发，Lead 显式发 waiting-user。
+插件据此：带 `agent_id` 的事件整体放行，子代理调用本插件 signal 时只回一条“没有 workflow 身份、信号不记录”的说明；内置子代理结束时宿主会通知父会话，派给它的包填 `channel: builtin:<类型>`，Stop 不再要求阻塞等待。Codeg 委派子会话按工作包 `role-claim`；`AskUserQuestion` 与 Codeg MCP 名称在 PostToolUse 自动置 waiting-user，同一回合不重复修改。若某路径 PostToolUse 实际不触发，Lead 显式发 waiting-user。
 
 Codeg/ACP 侧的角色分工与委派约定见[Codeg 适配](codeg.md)。

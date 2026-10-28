@@ -28,11 +28,11 @@ node bin/workflow.mjs doctor --agent codex
 node bin/workflow.mjs project onboard --root "D:/某个已明确允许接入的项目"
 ```
 
-`onboard` 先核对安装版本、目录与 Git 身份、`AGENTS.md` 残留管理区和后台复盘执行器，全部通过才写入；不通过时不写任何东西，并列出每个问题的修复命令。加 `--enable-learning` 时同时启用后台复盘并注册计划任务（会按配置真实调用模型并消耗额度）；这条命令由用户在自己的终端执行，代理执行会被宿主的自动审批拦截。不打算启用后台复盘时加 `--skip-learning`。解绑用 `project remove --root <项目>`：删除计划任务、AGENTS 管理区、本机状态记录和数据目录，项目内的对齐文件与 `.workflow/` 只列出不删除。底层的 `project enable` 仍可用，但不做预检。
+`onboard` 分开核对核心接入与可选后台复盘：核心检查（宿主安装与版本、目录与 Git 身份、`AGENTS.md` 残留管理区）全部通过才写入，不通过时不写任何东西，并列出每个问题的修复命令；后台复盘执行器只核对能力、不调用模型，预检问题单独报告，未加 `--enable-learning` 时不阻断核心接入。加 `--enable-learning` 时同时启用后台复盘并注册计划任务（会按配置真实调用模型并消耗额度，需用户同意）；当前会话权限允许时可由代理直接执行，否则请在用户自己的终端执行。显式请求时分别报告接入与学习结果，学习失败不会写成全部成功：核心接入完成但学习未完整生效时返回 `status: partial`，CLI 退出码为 1；未加 `--enable-learning` 时预检问题只提示，退出码仍为 0。已启用后台复盘的项目重复接入时，现有开关与计划任务保持不变，预检失败只报告本次核对结果。不打算启用后台复盘时加 `--skip-learning`，状态记为未启用。解绑用 `project remove --root <项目>`：删除计划任务、AGENTS 管理区、本机状态记录和数据目录，项目内的对齐文件与 `.workflow/` 只列出不删除。底层的 `project enable` 仍可用，但不做预检。
 
 同一本机目录的绑定由两种宿主共用，切换已安装适配的宿主不必重新接入。同一项目可以同时开多个 Lead 会话，都能写共享资料；并发改同一文件时，后写的一方收到 `CONFLICT`，重读后再写。
 
-`install` 修改所选宿主的实际用户 hooks 注册，只在已决定安装时执行。安装生成带摘要的发布副本，并用固定入口 `current` 指向它；hook 命令只含 `current` 路径，升级时路径不变，宿主信任只需做一次。没有需要用户配置的运行时依赖。状态默认 `%LOCALAPPDATA%/workflow`；隔离试用为每条命令指定相同 `--state-dir`，安装另指定临时 `--user-dir`（直接指向宿主配置目录，如 `.codex` 或 `.claude`，不是用户根）。发布副本与公共资料固定同一版本，活动任务/prepared 事务导致升级延期，完成或明确结束后再安装。安装副本被用户改写时停止覆盖并报告差异。
+`install` 修改所选宿主的实际用户 hooks 注册，只在已决定安装时执行。安装生成带摘要的发布副本，并用固定入口 `current` 指向它；hook 命令只含 `current` 路径，升级时路径不变，宿主信任只需做一次。重复执行会核对 `current` 的实际目标：自有入口被删除、断链或错链时只重建或改指该链接，不重写宿主配置、不新建发布副本；`current` 被替换成用户自己的目录或指向安装目录外的链接时保留现场，返回 `conflict` 与路径，不自动删除或接管。两个宿主共用一个 `current`，重复安装只修自己的入口：如果 `current` 已指向另一个已安装宿主登记且完整的发布快照，不会改指，而是返回 `conflict` 并提示先统一升级两个宿主。没有需要用户配置的运行时依赖。状态默认 `%LOCALAPPDATA%/workflow`；隔离试用为每条命令指定相同 `--state-dir`，安装另指定临时 `--user-dir`（直接指向宿主配置目录，如 `.codex` 或 `.claude`，不是用户根）。发布副本与公共资料固定同一版本，活动任务/prepared 事务导致升级延期，完成或明确结束后再安装。安装副本被用户改写时停止覆盖并报告差异。
 
 新副本先在状态根 `release-staging/` 中复制并核对完整性，完成后才切换到正式发布目录。复制失败或中断不改用户配置；残留暂存目录保留供核查，可直接重试安装，清理时使用系统回收站。
 
@@ -69,23 +69,33 @@ node bin/workflow.mjs project align decide --root "D:/已接入项目" --input d
 node bin/workflow.mjs project align suggest --root "D:/已接入项目" --input finding.json
 ```
 
-`scan` 只记录路径、大小、mtime 和分类，不读正文；符号链接、硬链接和构建目录不进入索引。`apply`/`decide`/`suggest` 需要有效 write 身份、目标路径权限和明确 baseline，写入前核对文档指纹，用户或其他会话改过文档时返回 `CONFLICT` 并保留原文，重新读取正文并用 `knowledge inspect` 取得新基线后再写。会话上下文新增 `alignment` 字段：`exists=false` 表示未对齐，`stale=true` 表示索引文件或目录变化，`pendingDecisions`/`pendingFindings` 提醒还有多少项待确认。hook 只读状态，不自动写项目文件；对齐不新增 phase，也不派 Worker。
+`scan` 只记录路径、大小、mtime 和分类，不读正文；符号链接、硬链接和构建目录不进入索引。`apply`/`decide`/`suggest` 需要有效 write 身份、目标路径权限和明确 baseline，写入前核对文档指纹，用户或其他会话改过文档时返回 `CONFLICT` 并保留原文，重新读取正文并用 `knowledge inspect` 取得新基线后再写。输入可带 `sources` 增量确认本次重读的来源（可附 `size`/`mtimeMs` 快照，删除项用 `deleted: true`），只刷新这些来源的索引基线；不传时保持旧行为，不会因为写入成功就确认整个项目。会话上下文新增 `alignment` 字段：`exists=false` 表示未对齐，`stale=true` 表示索引文件或目录变化，`pendingDecisions`/`pendingFindings` 提醒还有多少项待确认。hook 只读状态，不自动写项目文件；对齐不新增 phase，也不派 Worker。
 
 ### 任务与回执
 
-hook 提供 project/session/turn/ticket/interruptEpoch/expectedRevision。context 只读当前身份和最多一项本项目知识待办。每个新用户回合 phase=unknown；新业务创建稳定 taskId，后续回合/恢复显式沿用原 ID。跨会话接续也沿用任务预算和原权限。
+hook 提供 project/session/turn/ticket/interruptEpoch/expectedRevision。context 只读当前身份和最多一项本项目知识待办。每个新用户回合 phase=unknown；新业务创建稳定 taskId，后续回合/恢复显式沿用原 ID。跨会话接续也沿用任务预算和原权限。入口先保存身份和回合状态，再读取对齐与知识；可选读取失败只给短降级说明，不回滚入口。自动入口的知识只带命中、重要遗漏摘要和总数，完整排除/跳过诊断用 `knowledge select|explain` 显式查询。
 
 常用动作用子命令，一条命令完成，不需要临时文件（`<sessionId>`、`<turnId>` 取本次入口的 identity；`--id` 是 signalId，每个新动作唯一，重试同一动作时命令保持不变）：
 
 ```powershell
-node "<本次hook提供的bin/workflow.mjs>" signal task-start --session <sessionId> --turn <turnId> --id start-1 --task task-readme --route lead-direct --goal "本次已授权目标" --mode write --paths README.md,LESSONS.md
-node "<本次hook提供的bin/workflow.mjs>" signal task-end --session <sessionId> --turn <turnId> --id end-1
+node "<本次hook提供的bin/workflow.mjs>" signal task-start --session <sessionId> --turn <turnId> --id start-1 --task task-readme --route delegated --goal "本次已授权目标" --mode write --paths README.md,LESSONS.md
+node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-1 --package w1 --role worker --status dispatched --channel codeg:claude_code --handle <委派ID>
+node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-2 --package w1 --status consumed --ref <交付提交>
+node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-3 --package r1 --role reviewer --status dispatched --channel codeg:codex --handle <委派ID> --reviews w1
+node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-4 --package r1 --status consumed --verdict PASS --ref <被审提交>
+node "<本次hook提供的bin/workflow.mjs>" signal task-end --session <sessionId> --turn <turnId> --id end-1 --final-ref <交付提交> --evidence "npm test 250/250 通过" --evidence "npm run check 0 错误"
 ```
 
-CLI 只读当前状态补齐 projectId、ticket、epoch 和 revision，输出信号，由当前 PostToolUse 接受；字段参数见[协议](design/protocol.md#信号)。packages、disposition 等结构化字段写进 UTF-8 JSON 文件，用 `--input` 附上（文件只放业务字段，不放身份字段）：
+CLI 只读当前状态补齐 projectId、ticket、epoch 和 revision，输出信号，由当前 PostToolUse 接受；字段参数见[协议](design/protocol.md#信号)。便捷参数一次只表达一个工作包：`--ref` 对 worker 记 `deliveredRef`、对 reviewer 记 `reviewedRef`，新包需要同时给 `--role`；单包便捷字段必须配 `--package`，否则直接返回 INPUT，不会静默丢弃。task-end 的 `validation.ref` 缺省取 `--final-ref`，`--evidence` 可重复。一次消费并派下一阶段等**同批多个包**、`change`、`waivers` 以及 disposition 等深层结构仍写进 UTF-8 JSON 文件，用 `--input` 附上（文件只放业务字段，不放身份字段）：
 
 ```powershell
-node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-1 --input "<packages JSON文件>"
+node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-batch-1 --input "<同批 packages/change JSON文件>"
+```
+
+一条简短经验材料也可直接 `knowledge capture`，身份同样由本机状态补齐；`--incident` 是必填的事件 ID，同一事件跨会话/任务用同一个值（完整材料仍用 `--input`）：
+
+```powershell
+node "<入口>" knowledge capture --session <sessionId> --turn <turnId> --id obs-1 --incident <事件ID> --kind failure --summary "一句话材料" --conditions "适用条件" --evidence "test:可定位证据" --evidence "path:资料位置"
 ```
 
 完整 payload 仍可用（兼容写法），身份必须替换为本次 context 原值：
@@ -108,7 +118,7 @@ node "<本次hook提供的bin/workflow.mjs>" signal --input "<任务JSON文件>"
 
 使用独立直接 shell 调用，当前支持 node/实际 Node 路径加本插件绝对入口；不串接其他 shell 命令（包括前置 `cd`；组合命令只得到“须单独直接调用”的提示，不更新状态）。PowerShell 中文 JSON 用 UTF-8 文件加 --input，不通过 5.1 原生文本管道；--base64 仅作兼容，长串可能被宿主脱敏成占位符而失效。signal 只输出 workflow_signal，当前 PostToolUse 接受回执才表示状态更新；拒绝时用 context 重读 identity/revision，不换 ID 绕过。权限系统或分类器拒绝命令时同样不换写法重试，向用户说明未记录的步骤。
 
-`action=phase` 声明 executing/operation-only/waiting-user/delivering；delivering 加 deliveryId，可同时提交 disposition。普通查看、指定提交 push、明确快进 pull 用 operation-only，默认零 Worker/Reviewer；低风险单点 Lead 实施，关键行为安排必要独立审查。工具提问和普通文本反问均先 waiting-user。
+`action=phase` 声明 executing/operation-only/waiting-user/delivering；delivering 加 deliveryId，可同时提交 disposition。普通查看、指定提交 push、明确快进 pull 用 operation-only，默认零 Worker/Reviewer；低风险单点 Lead 实施，是否独立审查按行为与失败代价决定。结构化提问工具由 hook 自动记 waiting-user；普通文本反问和未识别工具先发 phase waiting-user。
 
 旧交付处置保留兼容：`no-new-learning`、引用真实成功事务的 `updated`、引用已保存待办的 `pending-recovery`。新任务无需每次提交处置，Stop 不追加经验轮次。出现有据材料时按[经验学习](learning.md)采集，复盘由独立调度决定。
 
@@ -116,26 +126,53 @@ node "<本次hook提供的bin/workflow.mjs>" signal --input "<任务JSON文件>"
 
 按计划实施的任务在 task-start 加 `"plans": ["docs/plans/xxx.md"]`（项目内相对路径，1-10 项），插件记下当时的内容摘要。这是软门禁：计划到收尾仍未改动时，Stop 的那一次阻挡附上回写提醒，task-end 照常接受，回执带 `planUnchanged` 和 `reminder`；不进缺项，也不需要豁免。计划改过或已移走（归档）时不提醒。`task show` 显示 `plans` 与 `planUnchanged`。
 
-中断或 SessionEnd 将未完任务标为 suspended 并撤销票据，保留业务未完成记录；显式 task-start 才恢复。挂起任务不再以 active 永久挡住升级，未辨认的写事务仍需恢复。
+中断或 SessionEnd 将未完任务标为 suspended 并撤销票据，保留业务未完成记录；显式 task-start 才恢复。重发 task-start 接续沿用原 goal 与 permissions，回执带 `kept:{goal,permissions}` 和提示；本次附带的 goal/permissions 不生效。挂起任务不再以 active 永久挡住升级，未辨认的写事务仍需恢复。
 
-Lead 的活动任务结束回合时，Stop 会挡一次（等待用户、本回合已挡过时不挡）：有在途工作包时要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明为什么暂停（在途包全是 `builtin:` 通道时，宿主会通知结果，只要求说明在等什么）；没有在途包而未发 task-end 时给出缺项，按提示补齐后发 task-end，或向用户说明还没完成的部分。
+### 同任务变更目标或权限（task-update）
 
-用户指定了各角色用哪个智能体时，task-start 加 `"channels": {"worker": "codeg:claude_code", "reviewer": "codeg:codex"}`，每个工作包填 `channel`。与声明不一致，或 delegated 任务的 worker 包由 Lead 实施（`channel: "lead"` 或 `handle: "lead-direct"`），须在同一 packages 信号附 `change` 列出该包，否则回执 `CHANNEL`。换新 packageId 返修时新包带 `"supersedes": "<旧包>"`，轮次累计、旧包自动收尾。已有审查结论的 worker 包（含它接替过的旧包），审查缺项不能用 waivers 豁免，也不能改标 waived：重新送审最终交付版本，或用 supersedes 接替、canceled 放弃。`task show` 显示 `channels`。
+同一任务需要显式改 goal 或增/减 allowedPaths 时，用 `task-update`，不必结束重开。只有绑定该任务的有效 Lead 会话能改；已声明为 Worker/Reviewer 的会话返回 `ROLE`，状态不变。
+
+```powershell
+# 只改目标
+node "<入口>" signal task-update --session <sessionId> --turn <turnId> --id update-1 --task <taskId> --goal "新目标"
+# plan→write
+node "<入口>" signal task-update ... --id update-2 --mode write
+# 追加路径（去重）；省略 --paths-mode 时按 replace 整体替换
+node "<入口>" signal task-update ... --id update-3 --paths docs/new.md --paths-mode append
+```
+
+`permissions` 可只给 `mode` 或 `allowedPaths`；`allowedPathsMode=append` 追加去重，`replace`（缺省）用新集合替换。命令行与 `--input` 同时给出 `permissions` 时按 mode、allowedPaths 子字段合并（同一子字段两处值不同返回 `INPUT`）；`task-update` 只接受 `--goal`、`--mode`、`--paths`、`--paths-mode`，给出 `--route`、`--channels` 等其他动作的参数返回 `UNSUPPORTED`。宿主当前为只读/计划模式时，把 mode 提到 write 或追加路径返回 `PERMISSION`（缩小范围和只改 goal 仍可记录）：插件只更新本机任务声明，不改宿主全局配置。首版不改 route/channels/计划/历史工作包，也不替代用户授权。
+
+回执返回有效权限和变更摘要，例如：
+
+```json
+{"accepted":true,"revision":8,"taskId":"task-1","goal":"新目标","permissions":{"mode":"write","allowedPaths":["README.md","docs/new.md"]},"change":{"permissions":{"mode":{"from":"plan","to":"write"},"allowedPaths":{"mode":"append","added":["docs/new.md"],"removed":[]}}},"hostPermissionMode":"default","note":"已更新本机任务声明；实际写入仍受宿主当前只读/计划权限约束，插件只记录声明，不自动证明用户授权真实存在"}
+```
+
+变更追加到任务的 `updates`（`task show` 显示条数）；历史回执不改写，旧任务兼容。权限收缩不追溯取消已完成的产物，后续知识/对齐写入按新范围检查；直接 Edit/Write 不受本插件拦截。
+
+Lead 的活动任务结束回合时，Stop 会挡一次（等待用户、本回合已挡过时不挡）：有在途工作包时要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明为什么暂停（在途包全是 `builtin:` 通道时，宿主会通知结果，只要求说明在等什么）；没有在途包而未发 task-end 时给出缺项，按提示补齐后发 task-end，或向用户说明还没完成的部分。计划模式下，仅本回合显式 task-start/phase 才核对计划交付：一次列明分包与各包所用通道，已声明的 `channels`/包通道直接沿用，Lead 直接执行的任务不问 Worker，只有真实新增的角色或通道才请用户确认；历史 `plans` 和普通解释、讨论不因 `mode=plan` 单独挡，也不落到通用门禁阻挡。
+
+用户指定了各角色用哪个智能体时，task-start 加 `"channels": {"worker": "codeg:claude_code", "reviewer": "codeg:codex"}`，每个工作包填 `channel`。与声明不一致，或 delegated 任务的 worker 包由 Lead 实施（`channel: "lead"` 或 `handle: "lead-direct"`），须在同一 packages 信号附 `change` 列出该包，否则回执 `CHANNEL`。换新 packageId 返修时新包带 `"supersedes": "<旧包>"`，已交付或审查要求修订的轮次累计（同一交付轮次只计一次，同一轮迟到的交付引用或 FIX 不重复累计）、旧包自动收尾；从未产出的启动失败重派不增加返修。已有审查结论的 worker 包（含它接替过的旧包），审查缺项不能用 waivers 豁免，也不能改标 waived：重新送审最终交付版本，或用 supersedes 接替、canceled 放弃。`task show` 显示 `channels`。
 
 ### spec 检查
 
-项目有 `.spec/<id>/spec.md` 时，task-end 前检查被管辖文件（frontmatter 的 `code:`）改了而 spec 没跟着更新的情况：
+项目有 `.spec/<id>/spec.md` 时，task-end 会检查被管辖文件（frontmatter 的 `code:`）改了而 spec 没跟着更新的情况；正常收尾不必先单独运行同一份检查。需要提前诊断时用只读命令：
 
 ```powershell
 node "<入口>" spec check --project "<项目目录>"
 node "<入口>" spec check --project "<项目目录>" --ref "<commit>"
 ```
 
-有发现时退出码为 1，`findings` 列出 spec、文件、类型（drift/uncommitted-drift/missing/duplicate-id）和未被 spec 见过的提交。处理办法：更新 spec 后提交；或代码改动不影响 spec 时做一次放行空提交，理由写进正文：
+检查根是命令所在目录对应的当前 worktree（附加 worktree 就检查该 worktree），不是项目主目录；从项目子目录运行也回到 worktree 根。缺省检查 `HEAD` 与未提交改动；指定 `--ref` 时先固定成提交，spec 清单、正文、`code:` 路径和文件存在性都取自该提交，输出里的 `ref` 也是固定后的提交 OID。例外：`--ref HEAD`（或直接用默认值）仍按当前 worktree 的文件与未提交改动检查，不固定成 OID。
+
+有发现时退出码为 1，`findings` 列出 spec、文件、类型（drift/uncommitted-drift/missing/duplicate-id）和未被 spec 见过的提交。处理办法：更新 spec 后提交；或代码改动不影响 spec 时，在内容提交上附 `Spec-OK`，理由写进提交正文：
 
 ```powershell
-git commit --allow-empty -m "spec: search 无需更新" -m "重命名内部变量，行为不变。" --trailer "Spec-OK: search"
+git commit -m "refactor: search 无需更新" -m "重命名内部变量，行为不变。" --trailer "Spec-OK: search"
 ```
+
+需要追认既有的历史提交时，才按现有空提交语义做一次放行（`git commit --allow-empty` 加同一 trailer）；空提交覆盖其全部祖先。
 
 spec 缺项不能用 waivers 豁免；浅克隆或 git 失败导致的 `spec-check:<原因>` 可以豁免。完整规则见[协议](design/protocol.md#spec-检查)。
 
@@ -169,6 +206,6 @@ disable 先停用绑定，仅在管理区指纹一致时撤下该区；用户手
 
 ### 常见阻塞
 
-启动/认证/余额/能力问题先看真实错误，不循环重启或静默换代理。Codeg 正常完成任务接续新会话，中断先核对停止与检查点，见[适配](adapters/codeg.md)。测试宿主未进入路径、缺接口、文件占用按[验证约定](references/validation.md)收敛。陌生 schema/损坏状态保留原文并停维护；锁只在进程已被操作系统确认为退出时回收，不按年龄抢活锁。权限拒绝不靠改信任记录绕过。
+启动/认证/余额/能力问题先看真实错误，不循环重启或静默换代理。Codeg 正常完成任务接续新会话，中断先核对停止与检查点，见[适配](adapters/codeg.md)。测试宿主未进入路径、缺接口、文件占用按[验证约定](references/validation.md)收敛。陌生 schema/损坏状态保留原文并停维护；锁只在进程已被操作系统确认为退出时回收，不按年龄抢活锁；短暂争用会按有界预算等待，超时只给恢复提示，不冒充已保存。中断与会话结束事件先独立落盘，状态提交后才归档，下一次入口幂等消费；缺可信回合标识时保留待办、不推断当前回合；同一任务仍被其他 Lead 会话使用时不挂起。权限拒绝不靠改信任记录绕过。
 
 教学案例：[独立并行](../examples/parallel-change/README.md)、[依赖与返修](../examples/dependency-and-repair/README.md)、[例行及小任务](../examples/routine/README.md)。仅需计划时不实施；UI 图片先确认只有用户要求才安排；接口经确认冻结后停止追加。报告按任务规模，用户实际反馈才标人工通过；本地提交、push、改版本、Release 分别按明确授权执行。

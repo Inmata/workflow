@@ -40,17 +40,59 @@ async function environment({ installed = true, settings = true } = {}) {
   return { area, directory, project, sessionId: 'session-1', turnId: 'turn-1', taskId: 'task-align' };
 }
 
-test('onboard 预检不过时一次列出全部问题且不写入', async () => {
+test('onboard 核心预检不过时一次列出全部问题且不写入，学习问题单独报告', async () => {
   const f = await environment({ installed: false });
   await writeFile(path.join(f.project, 'AGENTS.md'), `# 约定\n${BEGIN}\n复制来的管理区\n<!-- workflow:end -->\n`);
   const result = await onboardProject(f.directory, f.project, { execute: async () => ({ code: 1, stdout: '', stderr: '' }) });
   assert.equal(result.status, 'blocked');
   assert.equal(result.written, false);
-  assert.deepEqual(result.problems.map(p => p.code).sort(), ['AGENTS', 'LEARNING', 'NOT_INSTALLED']);
+  assert.deepEqual(result.problems.map(p => p.code).sort(), ['AGENTS', 'NOT_INSTALLED']);
+  assert.equal(result.learning.status, 'failed');
+  assert.equal(result.learning.requested, false);
+  assert.equal(result.learning.enabled, false);
   assert.ok(result.problems.every(p => p.message));
   assert.ok(result.problems.find(p => p.code === 'NOT_INSTALLED').commands.every(c => c.startsWith('node ')));
   assert.deepEqual(Object.keys((await readState(f.directory)).projects), []);
   assert.ok((await readFile(path.join(f.project, 'AGENTS.md'), 'utf8')).includes('复制来的管理区'));
+});
+
+test('未请求启用学习时，学习预检失败只提示且核心接入仍完成', async () => {
+  const f = await environment();
+  const failing = async (file, args) => args[0] === '--version' ? { code: 1, stdout: '', stderr: 'not found' } : fakeExecute()(file, args);
+  const result = await onboardProject(f.directory, f.project, { execute: failing });
+  assert.equal(result.status, 'onboarded', JSON.stringify(result));
+  assert.equal(result.written, true);
+  assert.equal(result.learning.status, 'failed');
+  assert.equal(result.learning.requested, false);
+  assert.equal(result.learning.enabled, false);
+  assert.ok(result.next.some(step => step.step.includes('预检未通过') && step.commands.some(c => c.includes('--enable-learning'))));
+  assert.ok((await readFile(path.join(f.project, 'AGENTS.md'), 'utf8')).includes(BEGIN));
+  const project = Object.values((await readState(f.directory)).projects)[0];
+  assert.notEqual(project.learning?.enabled, true);
+  // 既有 --skip-learning 出口仍可用：跳过预检并记下不启用。
+  const g = await environment();
+  const skipped = await onboardProject(g.directory, g.project, { skipLearning: true, execute: async () => { throw new Error('不应执行学习预检'); } });
+  assert.equal(skipped.status, 'onboarded', JSON.stringify(skipped));
+  assert.deepEqual(skipped.learning, { status: 'skipped', requested: false });
+  assert.ok((await readFile(path.join(g.project, 'AGENTS.md'), 'utf8')).includes(BEGIN));
+});
+
+test('显式 --enable-learning 预检失败时核心与学习分别报告，学习不写成已启用', async () => {
+  const f = await environment();
+  const failing = async (file, args) => args[0] === '--version' ? { code: 1, stdout: '', stderr: 'not found' } : fakeExecute()(file, args);
+  const result = await onboardProject(f.directory, f.project, { enableLearning: true, execute: failing });
+  assert.equal(result.status, 'partial', JSON.stringify(result));
+  assert.equal(result.written, true);
+  assert.equal(result.learning.requested, true);
+  assert.equal(result.learning.failure, 'preflight');
+  assert.equal(result.learning.enabled, false);
+  assert.equal(result.learning.schedule, 'not-registered');
+  assert.notEqual(result.learning.status, 'capabilities-verified');
+  assert.ok(result.next.some(step => step.step.includes('核心接入已完成') && step.commands.some(c => c.includes('--enable-learning'))));
+  assert.ok(!result.next.some(step => step.step.includes('在项目目录开一个新会话') && step.commands));
+  assert.ok((await readFile(path.join(f.project, 'AGENTS.md'), 'utf8')).includes(BEGIN));
+  const project = Object.values((await readState(f.directory)).projects)[0];
+  assert.notEqual(project.learning?.enabled, true);
 });
 
 test('onboard → 对齐 → 裁决 → 启用学习 → remove 全流程无残留', async () => {
@@ -153,13 +195,66 @@ test('onboard --enable-learning 一次启用学习并注册计划任务；注册
   const g = await environment();
   const failing = async (file, args) => file === 'schtasks.exe' && args[0] === '/Create' ? { code: 1, stdout: '', stderr: '拒绝访问' } : fresh(fakeExecute())(file, args);
   const partial = await onboardProject(g.directory, g.project, { enableLearning: true, execute: failing });
-  assert.equal(partial.status, 'onboarded');
+  assert.equal(partial.status, 'partial');
+  assert.equal(partial.written, true);
   assert.equal(partial.learning.enabled, true);
   assert.equal(partial.learning.schedule, 'not-registered');
   assert.ok(partial.next[0].step.includes('计划任务注册失败'));
   assert.ok(partial.next[0].commands.some(c => c.includes('learning schedule install') && c.includes('--root')));
   assert.equal(Object.values((await readState(g.directory)).projects)[0].learning.enabled, true, '学习已启用，只缺计划任务');
   assert.ok((await getContext(g.directory, g.project, 'lead')).instruction.includes('计划任务未登记'));
+});
+
+test('已启用学习的项目重复接入且预检失败时保留登记并据实报告', async () => {
+  const f = await environment();
+  const first = await onboardProject(f.directory, f.project, { execute: fakeExecute() });
+  await setLearningEnabled(f.directory, f.project, true);
+  await mutate(f.directory, async state => { state.projects[first.projectId].learning.schedule = { taskName: 'workflow-learning-existing' }; });
+  const failing = async (file, args) => args[0] === '--version' ? { code: 1, stdout: '', stderr: 'not found' } : fakeExecute()(file, args);
+  // 显式请求：核心接入完成，学习登记按实际报告，不写成未启用；本次预检失败用 partial 标记。
+  const explicit = await onboardProject(f.directory, f.project, { enableLearning: true, execute: failing });
+  assert.equal(explicit.status, 'partial', JSON.stringify(explicit));
+  assert.equal(explicit.learning.requested, true);
+  assert.equal(explicit.learning.failure, 'preflight');
+  assert.equal(explicit.learning.enabled, true);
+  assert.equal(explicit.learning.schedule, 'workflow-learning-existing');
+  const step = explicit.next.find(item => item.step.includes('预检未通过'));
+  assert.ok(step && !step.step.includes('后台复盘未启用'), JSON.stringify(explicit.next));
+  assert.ok(step.step.includes('未改动现有后台复盘登记') && step.step.includes('workflow-learning-existing'));
+  let project = (await readState(f.directory)).projects[first.projectId];
+  assert.equal(project.learning.enabled, true);
+  assert.equal(project.learning.schedule.taskName, 'workflow-learning-existing');
+  // 未请求启用：顶层仍是 onboarded，且不再提示“后台复盘未启用”或重复启用。
+  const quiet = await onboardProject(f.directory, f.project, { execute: failing });
+  assert.equal(quiet.status, 'onboarded', JSON.stringify(quiet));
+  assert.equal(quiet.learning.enabled, true);
+  assert.equal(quiet.learning.schedule, 'workflow-learning-existing');
+  assert.ok(!quiet.next.some(item => item.step.includes('后台复盘未启用')));
+  assert.ok(!quiet.next.some(item => item.commands?.some(c => c.includes('--enable-learning'))));
+  project = (await readState(f.directory)).projects[first.projectId];
+  assert.equal(project.learning.enabled, true);
+  assert.equal(project.learning.schedule.taskName, 'workflow-learning-existing');
+});
+
+test('CLI 退出码：显式 --enable-learning 预检失败为 1，未请求学习为 0', async () => {
+  const f = await environment();
+  // 指向确定不存在的执行器：预检失败，且不会触碰真实宿主执行器。
+  await writeFile(path.join(f.directory, 'config.json'), JSON.stringify({ executor: 'codex', executorPath: path.join(f.area, 'missing-codex') }));
+  const explicit = cli(['project', 'onboard', '--root', f.project, '--enable-learning', '--state-dir', f.directory]);
+  const parsed = JSON.parse(explicit.stdout);
+  assert.equal(parsed.status, 'partial', explicit.stdout);
+  assert.equal(parsed.written, true);
+  assert.equal(parsed.learning.failure, 'preflight');
+  assert.equal(parsed.learning.requested, true);
+  assert.equal(explicit.status, 1);
+
+  const g = await environment();
+  await writeFile(path.join(g.directory, 'config.json'), JSON.stringify({ executor: 'codex', executorPath: path.join(g.area, 'missing-codex') }));
+  const optional = cli(['project', 'onboard', '--root', g.project, '--state-dir', g.directory]);
+  const quieter = JSON.parse(optional.stdout);
+  assert.equal(quieter.status, 'onboarded', optional.stdout);
+  assert.equal(quieter.learning.enabled, false);
+  assert.equal(optional.status, 0);
 });
 
 test('learning doctor 缺专用配置时警告并给出完整命令；--global 无需绑定', async () => {

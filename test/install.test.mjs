@@ -219,6 +219,93 @@ test('V14 Claude 安装写入 settings.json 的 hooks 段，保留其他插件�
   assert.deepEqual(restored.env, existing.env);
 });
 
+test('V14 current 断链/错链只做最小修复，完好重复安装不改配置', async () => {
+  const area = await temporary('install-repair-');
+  const directory = path.join(area, 'state');
+  const userDir = path.join(area, '.codex');
+  const configFile = path.join(userDir, 'hooks.json');
+  const first = await install(directory, { userDir });
+  const once = await readFile(configFile, 'utf8');
+  const mtime = (await fs.stat(configFile)).mtimeMs;
+  const link = path.join(directory, 'current');
+  const linkType = process.platform === 'win32' ? 'junction' : 'dir';
+  // 完好重复安装：幂等，配置内容和 mtime 都不变。
+  assert.equal((await install(directory, { userDir })).status, 'already-installed');
+  assert.equal(await readFile(configFile, 'utf8'), once);
+  assert.equal((await fs.stat(configFile)).mtimeMs, mtime);
+  // 自有入口被删除：最小修复重建 current，不重写配置。
+  await fs.unlink(link);
+  const recreated = await install(directory, { userDir });
+  assert.equal(recreated.status, 'repaired');
+  assert.equal(await fs.realpath(link), await fs.realpath(first.releaseRoot));
+  assert.equal(await readFile(configFile, 'utf8'), once);
+  assert.equal((await fs.stat(configFile)).mtimeMs, mtime);
+  assert.equal((await doctor(directory)).integrity, 'verified');
+  // 自有断链：目标在 releases/ 下但已不存在，仍按自有入口修复。
+  const gone = path.join(directory, 'releases', 'gone-snapshot');
+  await fs.mkdir(gone, { recursive: true });
+  await fs.unlink(link);
+  await fs.symlink(gone, link, linkType);
+  await fs.rm(gone, { recursive: true, force: true });
+  const dangling = await install(directory, { userDir });
+  assert.equal(dangling.status, 'repaired');
+  assert.equal(await fs.realpath(link), await fs.realpath(first.releaseRoot));
+  assert.equal(await readFile(configFile, 'utf8'), once);
+  // 自有错链：指向 releases/ 下另一个目录，按登记发布根改回。
+  const other = path.join(directory, 'releases', 'other-snapshot');
+  await fs.mkdir(other, { recursive: true });
+  await fs.unlink(link);
+  await fs.symlink(other, link, linkType);
+  const wrong = await install(directory, { userDir });
+  assert.equal(wrong.status, 'repaired');
+  assert.equal(await fs.realpath(link), await fs.realpath(first.releaseRoot));
+  assert.equal(await readFile(configFile, 'utf8'), once);
+  assert.equal((await fs.stat(configFile)).mtimeMs, mtime);
+});
+
+test('V14 用户替换的 current 目录或外部链接保留并报告冲突', async () => {
+  const area = await temporary('install-unknown-');
+  const directory = path.join(area, 'state');
+  const userDir = path.join(area, '.codex');
+  const configFile = path.join(userDir, 'hooks.json');
+  await install(directory, { userDir });
+  const once = await readFile(configFile, 'utf8');
+  const mtime = (await fs.stat(configFile)).mtimeMs;
+  const link = path.join(directory, 'current');
+  // 用户自己的普通目录：不接管，保留内容和文件。
+  await fs.unlink(link);
+  await fs.mkdir(link);
+  await writeFile(path.join(link, 'user-note.txt'), '用户资料');
+  const directoryConflict = await install(directory, { userDir });
+  assert.equal(directoryConflict.status, 'conflict');
+  assert.equal(directoryConflict.path, link);
+  assert.equal(directoryConflict.kind, 'directory');
+  assert.ok(directoryConflict.conflict);
+  assert.equal(await readFile(path.join(link, 'user-note.txt'), 'utf8'), '用户资料');
+  assert.equal(await readFile(configFile, 'utf8'), once);
+  assert.equal((await fs.stat(configFile)).mtimeMs, mtime);
+  // 指向安装目录外部的链接：不自动改指或删除。
+  await fs.rm(link, { recursive: true, force: true });
+  const external = path.join(area, 'user-target');
+  await fs.mkdir(external);
+  await fs.symlink(external, link, process.platform === 'win32' ? 'junction' : 'dir');
+  const linkConflict = await install(directory, { userDir });
+  assert.equal(linkConflict.status, 'conflict');
+  assert.equal(linkConflict.path, link);
+  assert.equal(linkConflict.kind, 'link');
+  assert.equal(await fs.realpath(link), await fs.realpath(external));
+  assert.equal(await readFile(configFile, 'utf8'), once);
+  // 首次安装遇到用户已有的 current：同样保留并报冲突，不写宿主配置。
+  const fresh = path.join(area, 'fresh-state');
+  await fs.mkdir(path.join(fresh, 'current'), { recursive: true });
+  await writeFile(path.join(fresh, 'current', 'user-note.txt'), '用户目录');
+  const freshUserDir = path.join(area, '.codex-fresh');
+  const freshConflict = await install(fresh, { userDir: freshUserDir });
+  assert.equal(freshConflict.status, 'conflict');
+  assert.equal(await readFile(path.join(fresh, 'current', 'user-note.txt'), 'utf8'), '用户目录');
+  await assert.rejects(readFile(path.join(freshUserDir, 'hooks.json')), { code: 'ENOENT' });
+});
+
 test('V14 Codex 与 Claude 安装记录互不覆盖，可分别撤销', async () => {
   const area = await temporary('install-both-');
   const directory = path.join(area, 'state');
@@ -235,4 +322,40 @@ test('V14 Codex 与 Claude 安装记录互不覆盖，可分别撤销', async ()
   assert.equal((await doctor(directory, undefined, { agent: 'claude' })).registration, 'not-installed');
   assert.equal((await uninstall(directory)).status, 'uninstalled');
   assert.equal((await readState(directory)).installs.claude.status, 'uninstalled');
+});
+
+test('V14 双宿主跨版本重复安装不改指另一个宿主的有效入口', async () => {
+  const area = await temporary('install-cross-host-');
+  const directory = path.join(area, 'state');
+  const codexDir = path.join(area, '.codex');
+  const claudeDir = path.join(area, '.claude');
+  const sourceA = path.join(area, 'source-a');
+  const sourceB = path.join(area, 'source-b');
+  const copy = target => fs.cp(root, target, { recursive: true, filter: item => !item.includes('.git') && !item.includes('node_modules') });
+  await copy(sourceA);
+  await copy(sourceB);
+  await fs.appendFile(path.join(sourceB, 'README.md'), '\n新版本标记\n');
+  const codexOld = await install(directory, { userDir: codexDir, sourceRoot: sourceA });
+  const claudeOld = await install(directory, { userDir: claudeDir, agent: 'claude', sourceRoot: sourceA });
+  assert.equal(codexOld.releaseRoot, claudeOld.releaseRoot);
+  // Codex 升级到新快照，共用入口 current 改指新版本；Claude 仍登记旧版本。
+  const codexNew = await install(directory, { userDir: codexDir, sourceRoot: sourceB });
+  assert.equal(codexNew.status, 'installed');
+  const link = path.join(directory, 'current');
+  assert.equal(await fs.realpath(link), await fs.realpath(codexNew.releaseRoot));
+  const claudeConfig = path.join(claudeDir, 'settings.json');
+  const once = await readFile(claudeConfig, 'utf8');
+  const mtime = (await fs.stat(claudeConfig)).mtimeMs;
+  // 用旧版本源码重复安装 Claude：入口属于另一个已安装宿主的有效快照，不自动改指。
+  const claudeAgain = await install(directory, { userDir: claudeDir, agent: 'claude', sourceRoot: sourceA });
+  assert.equal(claudeAgain.status, 'conflict', JSON.stringify(claudeAgain));
+  assert.equal(claudeAgain.path, link);
+  assert.equal(claudeAgain.registeredBy.agent, 'codex');
+  assert.equal(claudeAgain.registeredBy.version, codexNew.version);
+  assert.ok(claudeAgain.conflict.includes('统一升级'), claudeAgain.conflict);
+  assert.equal(await fs.realpath(link), await fs.realpath(codexNew.releaseRoot));
+  assert.equal((await doctor(directory)).integrity, 'verified');
+  assert.equal(await readFile(claudeConfig, 'utf8'), once);
+  assert.equal((await fs.stat(claudeConfig)).mtimeMs, mtime);
+  assert.equal((await readState(directory)).installs.claude.status, 'installed');
 });

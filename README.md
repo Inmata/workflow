@@ -47,7 +47,7 @@ node bin/workflow.mjs doctor --agent codex
 
 Claude Code 在 Codeg 中以 auto 模式担任 Lead 时，分类器可能拦截委派。请在权限设置中放行 `mcp__codeg-mcp__delegate_to_agent`、`mcp__codeg-mcp__get_delegation_status`、`mcp__codeg-mcp__cancel_delegation` 和 `mcp__codeg-mcp__check_user_feedback`，或改用逐次确认的权限模式（见 [Codeg 接续](docs/adapters/codeg.md#接续)）。
 
-`install` 会做四件事：把当前源码复制成一份带摘要的发布副本（`releases/<version>-<digest>`）、把固定入口 `current` 指向它、在宿主配置里注册本插件的事件（Codex 写 `hooks.json`，Claude 写 `settings.json`）、记录安装事务。hook 命令只包含 `current` 路径，所以升级后路径不变，宿主信任只需做一次；旧副本保留作回滚。它**不会**写宿主信任、不会改项目、不会提交 Git。
+`install` 会做四件事：把当前源码复制成一份带摘要的发布副本（`releases/<version>-<digest>`）、把固定入口 `current` 指向它、在宿主配置里注册本插件的事件（Codex 写 `hooks.json`，Claude 写 `settings.json`）、记录安装事务。hook 命令只包含 `current` 路径，所以升级后路径不变，宿主信任只需做一次；旧副本保留作回滚。重复执行会核对 `current` 的实际目标：自有入口被删除、断链或错链时只重建或改指链接，不重写配置、不新建副本；`current` 被替换成用户自己的目录或指向安装目录外的链接时保留现场并报告 `conflict` 与路径。两个宿主共用一个 `current`，重复安装只修自己的入口：如果 `current` 已指向另一个已安装宿主登记且完整的发布快照，不会改指，而是返回 `conflict` 并提示先统一升级两个宿主。它**不会**写宿主信任、不会改项目、不会提交 Git。
 
 `doctor` 看的是四项不同的事，不要混为一谈：
 
@@ -66,7 +66,7 @@ Claude Code 在 Codeg 中以 auto 模式担任 Lead 时，分类器可能拦截�
 node bin/workflow.mjs project onboard --root "D:/你的项目"
 ```
 
-`onboard` 先把所有检查做完再写入：宿主是否已安装且版本一致、目录和 Git 身份、`AGENTS.md` 里有没有复制来的或残留的管理区、后台复盘执行器能否启动（只核对能力，不调用模型）。任何一项不过都不写入，并一次列出所有问题和可直接复制的修复命令；执行器缺专用配置时给出警告和登记命令。想同时启用后台复盘就加 `--enable-learning`（在你自己的终端执行；代理执行会被宿主自动审批拦截），不打算启用时加 `--skip-learning`。
+`onboard` 分开核对核心接入与可选后台复盘：宿主是否已安装且版本一致、目录和 Git 身份、`AGENTS.md` 里有没有复制来的或残留的管理区，这些核心检查全部通过才写入；任何一项不过都不写入，并一次列出所有问题和可直接复制的修复命令。后台复盘执行器只核对能力、不调用模型，预检问题单独报告，没加 `--enable-learning` 时不阻断核心接入；执行器缺专用配置时给出警告和登记命令。想同时启用后台复盘就加 `--enable-learning`（会按配置真实调用模型并消耗额度，需用户同意；当前会话权限允许时可由代理直接执行，否则在你自己的终端执行），不打算启用时加 `--skip-learning`。显式启用时分别报告接入与学习结果，学习失败不会写成全部成功：核心接入完成但学习未完整生效时返回 `status: partial`，CLI 退出码为 1；未加 `--enable-learning` 时预检问题只提示，退出码仍为 0。已启用后台复盘的项目重复接入时，现有开关与计划任务保持不变，预检失败只报告本次核对结果。
 
 检查通过后，它在项目根目录插入一段很短的 `AGENTS.md` 管理区，建立本机绑定并完成首次对齐扫描，没加 `--enable-learning` 时，最后列出启用后台复盘的完整命令。它保留你原有的 AGENTS 正文，不要求你补 README、spec 或计划，也不会创建空 LESSONS。
 
@@ -90,7 +90,7 @@ node bin/workflow.mjs project align status --root "D:/你的项目"
 | 看状态、推送指定提交、快进拉取 | Lead 直接做，零 Worker / 零 Reviewer，声明 operation-only |
 | 单点文本、低风险小改 | Lead 可直接做 |
 | 真实代码修复、关键行为 | 派 Worker 实施，再派独立 Reviewer 审查 |
-| 需要等你拍板 | 先标 waiting-user，不会猜着往下做 |
+| 需要等你拍板 | 结构化提问自动记 waiting-user（文本提问先声明），不会猜着往下做 |
 | 你中断了 | 只保存状态，不会在你下次进来时偷偷接着干 |
 
 一切写操作只在你明确要求时才发生。插件不会自动 add / commit / push / 发布，也不会替你改版本号。
@@ -232,7 +232,7 @@ node bin/workflow.mjs project onboard --root "D:/你的项目"
 
 还是两步：写计划，你核对后说“执行”，开始实施。spec 不单独核对，并进计划里一起看。
 
-1. 写计划：给出建议分流（`lead-direct` 还是 `delegated`）；需要分工或独立审查时，列出分几个工作包、每包的范围与依赖，并询问你指定哪个智能体担任 Worker 和 Reviewer。计划末尾有一节“spec 影响”，列出要新建、修改、删除哪些 spec 条目以及改后的验收句子；不涉及 spec 时写“无”。
+1. 写计划：给出建议分流（`lead-direct` 还是 `delegated`）；需要分工或独立审查时，一次列出分几个工作包、每包的范围、依赖和所用通道。已有明确安排直接沿用，无 Worker 的任务不问 Worker，只有真实新增角色或通道时才问你指定。计划末尾有一节“spec 影响”，列出要新建、修改、删除哪些 spec 条目以及改后的验收句子；不涉及 spec 时写“无”。
 2. 你核对计划时把分包、角色指定和“spec 影响”一起确认。说“执行”，这些安排就一起批准。
 3. 实施：Lead 按这一节改 spec，作为验收交给 Worker，Reviewer 逐条核对。只有计划没写到的 spec 改动、或要改已批准的验收时，才会再问你。
 4. 收尾：spec 和代码在同一任务里提交；漏改 spec 时 task-end 被门禁挡住。Lead 同时在原计划里回写本任务完成了什么、偏离了什么、还剩什么；task-start 声明了 `plans` 而计划没动时，插件会提醒，但不挡结束。
@@ -263,7 +263,8 @@ npm run demo
 
 - 规则与入口减负：`docs/roles/lead.md` 收敛为要点加场景导航表，协作、spec 与计划、UI 设计拆到 `docs/references/` 按需读取（简单任务首读减少 43%）；同一会话普通后续回合改为短入口，`SessionStart`（含压缩恢复）、角色变更与版本升级恢复完整入口。
 - 一次调用信号：新增 `signal <action> --session --turn --id [字段]` 子命令，CLI 只读补齐票据与 `expectedRevision`，`lead-direct` 任务只需 `task-start` 与 `task-end` 两条命令，不必先写身份临时文件；`packages` 等结构化字段通过 `--input` 附业务 JSON，旧完整 payload 保持兼容。
-- 计划交付分包与选人：Lead 交付计划时列出工作包划分（几包、每包范围与依赖，或说明免拆包理由），并按提问路径请你指定 Worker 与 Reviewer 通道；处于计划阶段但未提问就收尾时，Stop 挡一次提醒补齐。
+- 高频载荷一次调用：`signal packages` 可用 `--package`、`--status`、`--role`、`--channel`、`--handle`、`--ref`、`--depends-on`、`--supersedes`、`--verdict`、`--reviews` 等便捷参数记录单个工作包的派发、消费与审查结论；`task-end` 用 `--validation-ref` 和可重复的 `--evidence` 提交验证，`knowledge capture` 也可用少量字段保存短材料。同批多个包、`change`、`waivers` 等继续用 `--input` 附业务 JSON，旧 `--input`/`--base64`、同请求重放与 revision 冲突语义不变。单 Worker + 单 Reviewer 无返修流程的载荷文件从 4 次降到 1 次，总工具调用从 9 次降到 6 次（同批多包仍用一次 `--input`）。
+- 计划交付分包与选人：Lead 交付计划时一次列明工作包划分（几包、每包范围与依赖，或说明免拆包理由）和各包所用通道；任务已声明的通道或用户已指定的安排直接沿用，Lead 直接执行的任务不问 Worker，只有真实新增的角色或通道才请你确认。仅本回合显式进入计划交付阶段才核对，普通讨论不因计划模式单独阻挡；进入计划交付但未提问就收尾时，Stop 挡一次提醒补齐。
 - 分支本地 commit 与阻塞等待：非默认分支上按 `allowedPaths` 创建本地交付/检查点 commit 默认允许，直接用 Git commit OID 对齐版本（向默认分支直提、`git push`、改版本、打 tag 与发 Release 仍须显式授权）；Codeg 委派改为 `wait_ms: 0` 批量阻塞等待，不再按 60s 轮询涨上下文。
 - hook 与 CLI 降耗：消除锁内外重复 `git rev-parse`、Stop 重复落盘与低频模块静态加载，实测子进程入口与 Stop 中位数耗时降低约 62%。
 
@@ -272,7 +273,7 @@ npm run demo
 0.6.2 的变化：
 
 - 派工通道：你指定了各角色用哪个智能体时，Lead 在 task-start 用 `channels` 记下，每个工作包填实际 `channel`。中途改用宿主内置子代理，或分工任务的 worker 包改由 Lead 自己实施，必须先告诉你并在账本附 `change`，否则信号被拒；不再能静默换路。
-- 返修换新包号时用 `supersedes` 接上旧包：轮次照样累计（两轮上限数得到），旧包自动收尾，审查只看链上最新的包。
+- 返修换新包号时用 `supersedes` 接上旧包：已交付或被审查要求修订的轮次照样累计（两轮上限数得到），从未产出的启动失败重派不再虚增返修；旧包自动收尾，审查只看链上最新的包。
 - 已经有审查结论的 worker 包（包括它用 supersedes 接替过的旧包），审查对不上最终版本时不能再用豁免或改标 waived 通过，只能重新送审最终版本。从没审过的小包仍可豁免。
 - 在途包全由宿主内置子代理执行时，Stop 不再要求 Codeg 式等待，只要求说明在等什么；内置子代理误发 signal 时会收到“没有 workflow 身份、不记录”的说明。
 
@@ -298,7 +299,7 @@ npm run demo
 
 0.5.1 的变化：只改规则文档，代码行为不变。计划末尾加“spec 影响”一节，你说“执行”即同时批准其中的 spec 改动，流程仍是“计划 → 执行”两步（见[计划和 spec 怎么配合](#计划和-spec-怎么配合)）。升级后重装宿主即可，不需要重新接入。
 
-0.5.0 的变化：重要功能可以在 `.spec/<id>/spec.md` 写长期说明并用 `code:` 列出管辖文件；`task-end` 时插件从 git 历史检查“管辖文件改了、spec 没跟着更新”，未处理不能结束（更新 spec，或做 `Spec-OK` 空提交放行，见[使用说明](docs/usage.md#spec-检查)），`spec check` 的 git 失败附带原因。Lead 没发 `task-end` 就结束回合时，Stop 会挡一次并列出缺项。Worker 交付多一行“文档影响”，Reviewer 对照 spec 核对。说“重新对齐”即触发完整对齐，含补 spec 清单，跑完 scan 不算完成。README 写明 `disable`/`remove`/`uninstall` 删什么、留什么。项目没有 `.spec` 时行为与 0.4.2 相同，只多了 Stop 的提醒；AGENTS 管理区未变，不需要重新接入。
+0.5.0 的变化：重要功能可以在 `.spec/<id>/spec.md` 写长期说明并用 `code:` 列出管辖文件；`task-end` 时插件从 git 历史检查“管辖文件改了、spec 没跟着更新”，未处理不能结束（更新 spec，或在内容提交上附 `Spec-OK`；需要追认既有历史时才用空提交，见[使用说明](docs/usage.md#spec-检查)），`spec check` 的 git 失败附带原因。Lead 没发 `task-end` 就结束回合时，Stop 会挡一次并列出缺项。Worker 交付多一行“文档影响”，Reviewer 对照 spec 核对。说“重新对齐”即触发完整对齐，含补 spec 清单，跑完 scan 不算完成。README 写明 `disable`/`remove`/`uninstall` 删什么、留什么。项目没有 `.spec` 时行为与 0.4.2 相同，只多了 Stop 的提醒；AGENTS 管理区未变，不需要重新接入。
 
 宿主是否实际执行 hook、压缩后的上下文行为以及外部编码代理的具体接续能力，会随 Codex / Codeg / Claude Code 版本变化。`doctor --agent <宿主>` 能核对对应注册与副本完整性；以 `/hooks` 和真实会话回调确认宿主侧状态。
 

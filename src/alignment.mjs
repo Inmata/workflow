@@ -62,6 +62,8 @@ async function walk(root, relative, depth, output) {
       continue;
     }
     if (!entry.isFile() || !candidate(entry.name)) continue;
+    // 发现未收录资料时，已收录文件不占名额，避免排序靠前的已确认来源掩盖后面的未确认资料。
+    if (output.ignore?.has(item)) continue;
     if (output.files.length >= output.limit) { output.truncated = true; continue; }
     const info = await lstat(path.join(root, item));
     if (info.isSymbolicLink()) { output.skipped.push({ path: item, reason: 'symlink' }); continue; }
@@ -75,11 +77,16 @@ function documentName(project) {
 }
 
 // 首次写入前补一次只读扫描；否则索引为空，之后的变更检测永远返回 stale:false。
+// 已扫描过的空索引不重扫：否则删光来源后新增的资料会被自动并进基线，绕过显式确认。
 async function ensureIndexed(directory, target) {
   const state = await readState(directory);
   const project = projectIn(state, target);
   if (!project) fail('PROJECT', '项目未启用；先执行 project enable');
-  if (!project.alignment?.files?.length) await scanAlignment(directory, target);
+  const alignment = project.alignment;
+  if (alignment?.files?.length) return;
+  // generatedAt 只由 scanAlignment 写入；旧索引缺该字段时沿用原有行为（空索引补扫）。
+  if (alignment?.generatedAt !== undefined) return;
+  await scanAlignment(directory, target);
 }
 
 async function resolveDocument(project, requested) {
@@ -164,9 +171,11 @@ async function addedEntries(root, item, known, docPath) {
     const child = relative ? `${relative}/${entry.name}` : entry.name;
     if (entry.isFile() && candidate(entry.name) && child !== docPath && !known.files.has(child)) return true;
     if (entry.isDirectory() && !SKIP_DIRS.has(entry.name) && depth < MAX_DEPTH && !known.directories.has(child)) {
-      const output = { files: [], directories: [], skipped: [], limit: 2, truncated: false };
+      const ignore = new Set(known.files);
+      if (docPath) ignore.add(docPath);
+      const output = { files: [], directories: [], skipped: [], limit: 2, truncated: false, ignore };
       await walk(root, child, depth + 1, output).catch(() => {});
-      if (output.files.some(file => file.path !== docPath)) return true;
+      if (output.files.length > 0) return true;
     }
   }
   return false;
@@ -186,9 +195,9 @@ async function inspect(project, options = {}) {
     checked++;
     const info = await lstat(path.join(project.root, file.path)).catch(() => null);
     if (!info) { missing.push({ path: file.path, reason: 'deleted' }); continue; }
-    if (info.isSymbolicLink()) changed.push({ path: file.path, reason: 'link' });
-    else if (info.size !== file.size) changed.push({ path: file.path, reason: 'size' });
-    else if (Math.abs(info.mtimeMs - file.mtimeMs) > 1) changed.push({ path: file.path, reason: 'mtime' });
+    if (info.isSymbolicLink()) changed.push({ path: file.path, reason: 'link', size: info.size, mtimeMs: info.mtimeMs });
+    else if (info.size !== file.size) changed.push({ path: file.path, reason: 'size', size: info.size, mtimeMs: info.mtimeMs });
+    else if (Math.abs(info.mtimeMs - file.mtimeMs) > 1) changed.push({ path: file.path, reason: 'mtime', size: info.size, mtimeMs: info.mtimeMs });
   }
   const known = { files: new Set((alignment.files || []).map(file => file.path)), directories: new Set((alignment.directories || []).map(item => item.path)) };
   for (const item of alignment.directories || []) {
@@ -261,14 +270,102 @@ function replaceSection(text, heading, line) {
   return text.slice(0, bodyStart) + body.join('\n') + text.slice(end);
 }
 
-// 写入对齐文档会改变其父目录的 mtime；刷新记录，避免下次检查把自己判成过期。
-async function refreshDirectory(alignment, target, relative) {
-  const parent = path.posix.dirname(relative.replaceAll('\\', '/'));
+// 写入对齐文档会改变其父目录的 mtime；目录里仍有未收录资料时不能刷新，否则会掩盖新增来源。
+// 返回该目录是否已可安全登记：false 表示其中（含未登记子目录）仍有未收录资料。
+async function refreshDirectoryAt(alignment, target, parent) {
   const info = await lstat(path.join(target, parent)).catch(() => null);
-  if (!info) return;
+  if (!info || !info.isDirectory()) return false;
+  const known = {
+    files: new Set((alignment.files || []).map(file => file.path)),
+    directories: new Set((alignment.directories || []).map(item => item.path)),
+  };
+  if (await addedEntries(target, { path: parent }, known, alignment.docPath)) return false;
   const entry = (alignment.directories || []).find(item => item.path === parent);
   if (entry) entry.mtimeMs = info.mtimeMs;
   else alignment.directories = [...(alignment.directories || []), { path: parent, mtimeMs: info.mtimeMs }];
+  return true;
+}
+// 新目录和它的祖先都只在没有未收录资料时登记；遇到未收录资料立即停止，
+// 让上级目录 mtime 保持陈旧，下次检查仍能通过父目录搜索发现它。
+async function refreshDirectoryChain(alignment, target, directory) {
+  let current = directory;
+  for (;;) {
+    if (!await refreshDirectoryAt(alignment, target, current)) return;
+    if (current === '.') return;
+    current = path.posix.dirname(current);
+  }
+}
+async function refreshDirectory(alignment, target, relative) {
+  await refreshDirectoryAt(alignment, target, path.posix.dirname(relative.replaceAll('\\', '/')));
+}
+
+// 来源确认只接受项目内、scan 会收录的普通资料；路径本身不能逃出项目。
+function sourceInputs(input) {
+  if (!Object.hasOwn(input, 'sources')) return null;
+  if (!Array.isArray(input.sources)) fail('INPUT', 'sources 需要数组');
+  const seen = new Set();
+  return input.sources.map(item => {
+    const raw = typeof item === 'string' ? { path: item } : item;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) fail('INPUT', 'sources 的每项需要路径或对象');
+    const relative = raw.path;
+    if (typeof relative !== 'string' || !relative || path.isAbsolute(relative) || relative.includes('\\') || relative.includes(':')) fail('PATH', '来源需要项目内规范相对路径');
+    const parts = relative.split('/');
+    if (parts.some(part => !part || part === '.' || part === '..')) fail('PATH', '来源需要项目内规范相对路径');
+    if (parts.slice(0, -1).some(part => SKIP_DIRS.has(part))) fail('PATH', '来源目录不在对齐扫描范围');
+    if (!candidate(parts[parts.length - 1])) fail('INPUT', '来源不是对齐扫描收录的资料类型');
+    if (seen.has(relative)) fail('INPUT', `来源重复：${relative}`);
+    seen.add(relative);
+    const hasSize = raw.size !== undefined, hasMtime = raw.mtimeMs !== undefined;
+    if (hasSize !== hasMtime) fail('INPUT', '来源快照需要同时提供 size 与 mtimeMs');
+    if (hasSize && (!Number.isSafeInteger(raw.size) || raw.size < 0)) fail('INPUT', '来源 size 不是有效整数');
+    if (hasMtime && (typeof raw.mtimeMs !== 'number' || !Number.isFinite(raw.mtimeMs) || raw.mtimeMs < 0)) fail('INPUT', '来源 mtimeMs 不是有效数值');
+    if (raw.deleted !== undefined && typeof raw.deleted !== 'boolean') fail('INPUT', 'deleted 需要布尔值');
+    if (raw.deleted && hasSize) fail('INPUT', '删除来源不能同时提供快照');
+    return { path: relative, ...(hasSize ? { size: raw.size, mtimeMs: raw.mtimeMs } : {}), ...(raw.deleted ? { deleted: true } : {}) };
+  });
+}
+
+// 带快照时在提交前复核：读取后又被改动、消失或变成链接的来源保留原基线。
+async function confirmSource(target, source) {
+  const info = await lstat(path.join(target, source.path)).catch(() => null);
+  if (source.deleted) return info ? { reason: 'exists' } : { deleted: true };
+  if (!info) return { reason: 'deleted' };
+  if (info.isSymbolicLink()) return { reason: 'link' };
+  if (!info.isFile()) return { reason: 'not-file' };
+  if (info.nlink > 1) return { reason: 'hardlink' };
+  if (source.size !== undefined) {
+    if (info.size !== source.size) return { reason: 'size' };
+    if (Math.abs(info.mtimeMs - source.mtimeMs) > 1) return { reason: 'mtime' };
+  }
+  return { size: info.size, mtimeMs: info.mtimeMs };
+}
+
+// 只刷新本次实际确认的来源；新增和删除都要求显式列出，未列出的变化保持 stale。
+async function confirmSources(alignment, target, sources) {
+  const files = new Map((alignment.files || []).map(file => [file.path, file]));
+  const confirmed = [], unconfirmed = [], affected = new Set();
+  for (const source of sources) {
+    const result = await confirmSource(target, source);
+    if (result.reason) { unconfirmed.push({ path: source.path, reason: result.reason }); continue; }
+    // inspect 每次最多检查 CHECK_MAX_FILES 项；新增来源越过上限会让索引永远 incomplete，
+    // 且越界项不再被检查，因此不登记，交由全量 scan 或缩小来源范围处理。
+    if (!result.deleted && !files.has(source.path) && files.size >= CHECK_MAX_FILES) {
+      unconfirmed.push({ path: source.path, reason: 'limit' });
+      continue;
+    }
+    if (result.deleted) files.delete(source.path);
+    else {
+      const previous = files.get(source.path);
+      files.set(source.path, { path: source.path, size: result.size, mtimeMs: result.mtimeMs, kind: previous?.kind || classify(source.path) });
+    }
+    confirmed.push(source.path);
+    affected.add(path.posix.dirname(source.path));
+  }
+  alignment.files = [...files.values()];
+  // 新目录和祖先只在其中所有候选资料都已收录时才登记当前 mtime；
+  // 否则不登记，父目录的搜索下次仍能发现未确认来源。
+  for (const directory of affected) await refreshDirectoryChain(alignment, target, directory);
+  return { confirmed, unconfirmed };
 }
 
 
@@ -303,6 +400,7 @@ function unregisteredRows(output, alignment, inputDecisions) {
 }
 async function updateAlignment(directory, root, input, action) {
   const target = await canonical(root);
+  const sources = sourceInputs(input);
   // 权限在索引和正文写入之前核对。
   const initial = await readState(directory);
   const auth = authorizeWrite(initial, input);
@@ -312,6 +410,7 @@ async function updateAlignment(directory, root, input, action) {
     const { project, session, task } = authorizeWrite(state, input);
     const relative = await resolveDocument(project, input.docPath);
     if (!task.permissions.allowedPaths.includes(relative)) fail('PERMISSION', '对齐文件不在任务范围');
+    if (sources?.some(source => source.path === relative)) fail('INPUT', '对齐文档自身不进入来源索引');
     const original = await document(await safeDocument(target, relative));
     if (!Object.hasOwn(input, 'baseline') || input.baseline !== original.fingerprint) fail('CONFLICT', '需要最新对齐文档指纹');
     let output = original.content;
@@ -360,9 +459,10 @@ async function updateAlignment(directory, root, input, action) {
     for (const id of added.findings) fm.set(id, { id, status: 'pending' });
     for (const i of decisions) if (fm.has(i.id)) fm.set(i.id, { id: i.id, status: i.status });
     alignment.findings = [...fm.values()];
+    const confirmed = sources ? await confirmSources(alignment, target, sources) : null;
     await refreshDirectory(alignment, target, relative);
     const registered = [...added.decisions, ...added.findings];
-    return { status: action === 'apply' ? 'applied' : 'recorded', transactionId: tx.transactionId, docPath: relative, revision: session.revision, ...(registered.length ? { registered } : {}) };
+    return { status: action === 'apply' ? 'applied' : 'recorded', transactionId: tx.transactionId, docPath: relative, revision: session.revision, ...(registered.length ? { registered } : {}), ...(confirmed || {}) };
   });
 }
 export const applyAlignment = (directory, root, input = {}) => updateAlignment(directory, root, input, 'apply');

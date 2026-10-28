@@ -1,7 +1,7 @@
 import path from 'node:path';
 import os from 'node:os';
-import { copyFile, lstat, mkdir, readdir, readFile, realpath, rename, rm, symlink, unlink } from 'node:fs/promises';
-import { atomicWrite, digest, fail, hostObservations, id, mutate, readState, readText, samePath, writeJSON } from './store.mjs';
+import { copyFile, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, symlink, unlink } from 'node:fs/promises';
+import { atomicWrite, digest, fail, hostObservations, id, mutate, readState, readText, samePath, within, writeJSON } from './store.mjs';
 import { PRODUCT_ROOT } from './context.mjs';
 import { CLAUDE_EVENTS, EVENTS, HOSTS as HOST_NAMES } from './hooks.mjs';
 
@@ -68,6 +68,23 @@ async function pointCurrent(directory, releaseRoot) {
 async function currentTarget(directory) {
   try { return await realpath(currentRoot(directory)); } catch { return null; }
 }
+// 重复安装不能只看登记：current 可能已被删除、断链或指到别处。只有目标位于本状态根的 releases/
+// 下才视为自有入口；用户替换的普通目录或指向外部的链接保留原样并报告冲突。
+async function inspectCurrent(directory, record) {
+  const link = currentRoot(directory);
+  const info = await lstat(link).catch(() => null);
+  if (!info) return { state: 'missing', link };
+  if (!info.isSymbolicLink()) return { state: 'conflict', link, kind: info.isDirectory() ? 'directory' : 'file', conflict: 'current 已被替换为普通文件或目录，保留现场' };
+  const raw = await readlink(link).catch(() => null);
+  const resolved = await realpath(link).catch(() => null) || (raw ? path.resolve(path.dirname(link), raw) : null);
+  if (resolved && record?.releaseRoot && samePath(resolved, record.releaseRoot)) return { state: 'verified', link, target: resolved };
+  // junction/symlink 类型由点链接时的既有实现决定，这里只按目标归属判断，不新增平台分支。
+  if (resolved && within(path.join(directory, 'releases'), resolved)) return { state: 'own-other', link, target: resolved };
+  return { state: 'conflict', link, kind: 'link', target: resolved || raw, conflict: 'current 指向安装目录之外的目标（可能是用户自己的链接），不自动接管' };
+}
+function currentConflict(entry) {
+  return { status: 'conflict', conflict: entry.conflict, path: entry.link, kind: entry.kind, target: entry.target ?? null, reason: 'current 入口不是本插件登记的自有链接；保留现场待核对' };
+}
 // 快照内容与 fixed 入口指向必须同时正确，才算完整。
 export async function releaseIntegrity(directory, record) {
   if (!await verifyRelease(record)) return 'unavailable';
@@ -103,6 +120,17 @@ export const HOSTS = {
   },
 };
 export const AGENTS = HOST_NAMES;
+// 两个宿主共用同一个 current。重复安装只允许修复自己的入口：若 current 指向另一个已安装宿主
+// 登记且完整的发布快照，改指会让那个宿主的完整性检查失败，必须由用户先统一升级。
+async function otherHostSnapshot(directory, state, agent, target) {
+  for (const name of AGENTS) {
+    if (name === agent) continue;
+    const record = installRecord(state, name);
+    if (record?.status !== 'installed' || !record.releaseRoot || !samePath(record.releaseRoot, target)) continue;
+    if (await releaseIntegrity(directory, record) === 'verified') return { agent: name, version: record.version, releaseRoot: record.releaseRoot };
+  }
+  return null;
+}
 const hostFor = agent => {
   const host = HOSTS[agent];
   if (!host) fail('AGENT', `未知宿主 ${agent}；支持 ${AGENTS.join('/')}`);
@@ -170,7 +198,24 @@ export async function install(directory, { userDir, sourceRoot = PRODUCT_ROOT, a
     if (active && active.configFile !== configFile) fail('CONFIG', '已有另一用户目录安装，先明确撤销旧注册');
     const stripped = removeOwned(current.config, active);
     if (stripped.conflicts.length) fail('CONFLICT', `自有 hook 被手改/移除，保留配置：${stripped.conflicts.join(',')}`);
-    if (active?.releaseHash === releaseHash && active?.currentRoot && samePath(active.currentRoot, currentRoot(directory))) return { status: 'already-installed', agent, version: active.version, releaseRoot: active.releaseRoot, currentRoot: active.currentRoot, requiresTrust: 'unknown' };
+    // 提前返回前核对 current 的实际目标：登记快照完好但入口被删除、断链或错链时只做最小修复，不重写配置。
+    const sameSnapshot = Boolean(active?.releaseHash === releaseHash && active?.currentRoot && samePath(active.currentRoot, currentRoot(directory)));
+    const entry = await inspectCurrent(directory, active);
+    if (entry.state === 'conflict') return currentConflict(entry);
+    if (sameSnapshot) {
+      if (entry.state === 'verified') return { status: 'already-installed', agent, version: active.version, releaseRoot: active.releaseRoot, currentRoot: active.currentRoot, requiresTrust: 'unknown' };
+      if (entry.state === 'own-other') {
+        // 入口仍属于本状态根，但指向另一个宿主登记的有效快照：不改指，避免破坏对方已通过校验的安装。
+        const owner = await otherHostSnapshot(directory, state, agent, entry.target);
+        if (owner) return {
+          status: 'conflict', agent, version: active.version, path: entry.link, kind: 'link', target: entry.target, registeredBy: owner,
+          conflict: `current 已指向 ${owner.agent} 登记的 ${owner.version} 发布快照；两个宿主共用入口，本次 ${active.version} 安装不改指。先统一升级两个宿主后再重试`,
+          reason: '另一个已安装宿主正在使用 current；保留现场待统一升级',
+        };
+      }
+      await pointCurrent(directory, active.releaseRoot);
+      return { status: 'repaired', agent, version: active.version, releaseRoot: active.releaseRoot, currentRoot: currentRoot(directory), configFile, previousTarget: entry.target ?? null, requiresTrust: 'unknown' };
+    }
     const activeTasks = Object.values(state.tasks).filter(task => task.lifecycle === 'active').map(task => task.taskId);
     const activeTransactions = Object.values(state.transactions).filter(tx => tx.status === 'prepared').map(tx => tx.transactionId);
     if (activeTasks.length || activeTransactions.length) return { status: 'deferred', reason: '仍有活动任务或未辨认的事务；保留当前发布副本和配置', activeTasks, activeTransactions };

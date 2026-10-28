@@ -110,8 +110,11 @@ node bin/workflow.mjs learning config set --global --input learning-config.json
 ```powershell
 node "<hook 给出的入口>" knowledge select --root "D:/项目" --query "修复登录请求超时" --path "src/login.mjs"
 node "<hook 给出的入口>" knowledge explain --root "D:/项目" --query "修复登录请求超时" --path "src/login.mjs"
+node "<hook 给出的入口>" knowledge capture --session <sessionId> --turn <turnId> --id obs-1 --incident <事件ID> --kind failure --summary "一句话材料" --conditions "适用条件" --evidence "test:可定位证据"
 node "<hook 给出的入口>" knowledge capture --input observation.json
 ```
+
+短材料可用便捷字段（身份由本机状态补齐，`--evidence` 可重复）；`id`、`incidentId`（`--incident`）、`kind`、`summary`、`conditions`、`evidence` 必填。同一事件跨会话/任务要复用同一个 `--incident` 值，成熟度按独立事件计数，不能拿 taskId 代替；多字段或复杂材料仍用完整 JSON 文件。
 
 采集输入示例，身份取本次 `context.identity`，不得猜测或复制历史票据：
 
@@ -134,7 +137,7 @@ node "<hook 给出的入口>" knowledge capture --input observation.json
 
 `id` 使用字母或数字开头、字母数字下划线连字符组成的稳定标识，最多 128 字符，不用 Windows 设备名。`kind` 可为 `correction/failure/success/method/preference`；`legacy` 供旧候选导入。`verified` 只有实际证据支持时才设为 true，`explicit` 只用于用户明确表达。纠正或已验证失败应引用被反驳的 `knowledgeId`，这样旧经验立即停止默认召回，无需等待批量复盘。未能定位旧条目时先检索，不能声称已停用特定知识。任务设置 `permissions.learning=false` 禁止采集。
 
-检索先筛状态、适用路径与版本，再按内容相关度、重要性、成熟度排序。限定版本的知识需传 `--version` 才匹配。`select` 与 `explain` 都返回选中项、排除原因和重要条目因预算遗漏的列表；这是本地词项匹配，语义召回效果需要试点验证。hook 仅在活动任务上下文变化时重复注入摘要。
+检索先筛状态、适用路径与版本，再按内容相关度、重要性、成熟度排序。限定版本的知识需传 `--version` 才匹配。检索逐条解析：损坏（含元数据字段类型非法）、权限或路径/链接检查失败的条目跳过并保留诊断，其余有效条目照常召回；写路径仍按严格校验，跳过不构成可写授权。`select` 与 `explain` 是显式查询，返回选中项、全部排除原因和跳过诊断；hook 自动入口只附命中、重要遗漏摘要与总数，排除清单受条数与字符预算，截断时保留总数。知识目录缺失与读取故障给不同降级提示，修复文件后下一次检索会重新解析，不永久缓存失败。这是本地词项匹配，语义召回效果需要试点验证。hook 仅在活动任务上下文变化时重复注入摘要。
 
 `knowledge feedback --input feedback.json` 的公共字段为当前身份、`knowledgeId`、`outcome`。`shown/adopted` 另给事件 `id`，仅记展示或采纳；`success/failure/correction` 另给上述 `observation`，必须有具体证据，不因“用了”就晋升。
 
@@ -165,7 +168,7 @@ node bin/workflow.mjs knowledge revise --root "D:/项目" --input revision.json
 
 ## 启用与运行
 
-首次试点按照[另一台电脑验收清单](acceptance.md)进行。安装和项目接入不会自动授权后台维护。显式启用后才授予 `.workflow/knowledge/` 写入权限。项目接入后 Lead 会在会话入口收到提示，经用户同意后请用户在终端执行 `project onboard --root <项目> --enable-learning`，一次完成启用与注册（代理执行会被宿主的自动审批拦截）。也可以用下面的分步命令；用户不需要时执行 `learning disable` 记下决定，提示不再出现：
+首次试点按照[另一台电脑验收清单](acceptance.md)进行。安装和项目接入不会自动授权后台维护。显式启用后才授予 `.workflow/knowledge/` 写入权限。项目接入后 Lead 会在会话入口收到提示，经用户同意后执行 `project onboard --root <项目> --enable-learning`，一次完成启用与注册；当前会话权限允许时可由代理直接执行，否则请用户在自己的终端执行。也可以用下面的分步命令；用户不需要时执行 `learning disable` 记下决定，提示不再出现：
 
 ```powershell
 node bin/workflow.mjs learning doctor --root "D:/项目"
@@ -175,7 +178,7 @@ node bin/workflow.mjs learning schedule preview --root "D:/项目"
 node bin/workflow.mjs learning schedule install --root "D:/项目"
 ```
 
-Windows 计划任务只在当前用户登录时运行，无常驻插件服务。定时检查本身不调用模型；达到条件、没有活动业务任务或只读/计划会话、没有未恢复作业且额度足够才启动。所有项目共用一个复盘锁，单项目每日限额分别计算。
+Windows 计划任务只在当前用户登录时运行，无常驻插件服务。定时检查本身不调用模型；达到条件、没有活动业务任务或只读/计划会话、没有未恢复作业且额度足够才启动。已有提案的中断运行在条件允许时先补提交，不再次调用模型。所有项目共用一个复盘锁，单项目每日限额分别计算。
 
 任务经 `conhost.exe --headless` 直接启动 Node（需 Windows 10 1809+），运行时不弹终端窗口、不抢焦点，也不受 PowerShell 执行策略限制。登录触发器限定为当前用户；不限定时 Windows 视为“任意用户登录”，普通权限注册会报拒绝访问。0.3.0 及更早版本登记的任务经 PowerShell 脚本启动，在执行策略为 `Restricted` 的电脑上根本不会运行；0.3.0 的登录触发器也未限定用户，注册会失败。升级后请重新执行一次 `learning schedule install`。旧任务若能正常运行，也会在下一次定时检查时自动按新定义重新注册。
 
@@ -186,10 +189,13 @@ Windows 计划任务只在当前用户登录时运行，无常驻插件服务。
 node bin/workflow.mjs learning review --root "D:/项目" --now
 # 崩溃后恢复已保存提案，不再次调用模型
 node bin/workflow.mjs learning recover --root "D:/项目" --run "<运行ID>"
+# 内容冲突时保留旧提案，或在本运行的知识文件均未偏离写入前快照时作废并重新排队材料
+node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --keep
+node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --discard
 # 查看通知历史，按需确认
 node bin/workflow.mjs learning acknowledge --root "D:/项目"
 ```
 
-超时、模型失败、结果不完整不消费原始材料。写后崩溃以指纹恢复，未完成批次的知识暂不召回。与用户新编辑冲突时保留原文和提案，不自动覆盖；先人工核对冲突再恢复。等待更多证据的材料标为 `waiting`，相同知识 ID 或适用条件出现新材料后重新进入队列，避免每天重读同一材料。
+超时、模型失败、结果不完整不消费原始材料。写后崩溃以指纹恢复，未完成批次的知识暂不召回。与用户新编辑冲突时保留原文和提案，不自动覆盖，也不再反复自动提交：用 `learning resolve --run <运行ID> --keep` 保留提案供人工核对后 `learning recover`；只有本运行的知识文件均未偏离写入前快照时才可用 `--discard`，作废会撤销本批隔离并把本运行已标记的材料恢复为待处理，不丢人工编辑，下一次新模型调用仍按正常额度计算。若任一知识文件已偏离写入前快照（例如替代提案只写入了新知识、写入后又被人工编辑，或原有文件被删除），作废会留下新旧知识并存，命令会被拒绝；先 `--keep` 再人工核对后用 `learning recover` 完成，或按事务快照还原后再作废。等待更多证据的材料标为 `waiting`，相同知识 ID 或适用条件出现新材料后重新进入队列，避免每天重读同一材料。
 
 停用或撤销：先 `learning disable` 停止维护，再 `learning schedule remove` 移除自有计划任务，最后按需撤销宿主安装。本机材料、正式知识、旧副本和迁移备份均保留。回退旧代码前恢复匹配的 v1 状态备份，不能让旧程序直接写 v2 状态。

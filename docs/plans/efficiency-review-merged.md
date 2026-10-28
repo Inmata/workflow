@@ -307,11 +307,11 @@ Reviewer 包交付 PASS/FIX/BLOCKED、具体位置、可复现场景与最小建
 
 | 冲突 | 当前代码事实 | 对应处理 |
 | --- | --- | --- |
-| 对齐提示说增量核对变化文件即可，apply 后却继续提示同一来源变化 | 只更新对齐输出/决定和目录信息，没有更新已确认来源的文件基线 | P04 补来源确认与复核，更新 alignment/context 提示 |
-| 协议及注释说交付/消费后的重派计返修 | upsertPackages 对所有非 dispatched→dispatched 累加，含未产出的 failed/canceled | P08 按交付事实修正，不只改注释掩盖行为 |
-| spec-plan 和错误提示强调 Spec-OK 空提交 | 内容提交已有 Spec-OK 支持；空提交另有覆盖祖先的语义 | P05 修说明并保留两种语义测试 |
-| 历史 ref 说明表示检查指定版本 | collectSpecs 读取当前磁盘，后续 Git 查询读取目标 ref | P05 使定义与内容都来自同一固定提交 |
-| 接入/上下文固定说代理执行会被审批拦截 | 没有统一禁止，是否拦截取决于实际宿主权限与本次操作 | P06 按真实结果提示 |
+| 对齐提示说增量核对变化文件即可，apply 后却继续提示同一来源变化 | 只更新对齐输出/决定和目录信息，没有更新已确认来源的文件基线 | P04 补来源确认与复核，更新 alignment/context 提示（已于 `3323d75` 处理） |
+| 协议及注释说交付/消费后的重派计返修 | upsertPackages 对所有非 dispatched→dispatched 累加，含未产出的 failed/canceled | P08 按交付事实修正，不只改注释掩盖行为（已于 `5421e06` 按交付轮次处理） |
+| spec-plan 和错误提示强调 Spec-OK 空提交 | 内容提交已有 Spec-OK 支持；空提交另有覆盖祖先的语义 | P05 修说明并保留两种语义测试（已于 `b407e1b` 处理；`docs/acceptance.md` 中旧错误文本属历史验收记录，保留） |
+| 历史 ref 说明表示检查指定版本 | collectSpecs 读取当前磁盘，后续 Git 查询读取目标 ref | P05 使定义与内容都来自同一固定提交（已于 `ec5d9e9` 处理；`--ref HEAD` 例外沿用 worktree 语义，文档已注明） |
+| 接入/上下文固定说代理执行会被审批拦截 | 没有统一禁止，是否拦截取决于实际宿主权限与本次操作 | P06 按真实结果提示（已于 `47376e4` 处理） |
 | 旧 efficiency-first 及 0.6.2 后续链接称尚未实施/下次从第一批开始 | 0.6.3 已完成三批，第二批经用户裁决取消快照方案 | 本次只修计划状态和承接链接，保留历史方案及完成记录 |
 
 本计划整理已纠正最后一项历史状态；前五项列为待实施，未将计划行为写成现状。第一轮其余误读见第 3 节，不能当作新的文档/代码冲突重复计数。
@@ -321,10 +321,23 @@ Reviewer 包交付 PASS/FIX/BLOCKED、具体位置、可复现场景与最小建
 - [x] 合并两轮结论，恢复第一轮 13 项原文并逐项校正。
 - [x] 区分已复现缺陷、能力缺口、流程偏好和待测机会。
 - [x] 给出分阶段范围、执行通道、依赖、验收与停止条件。
-- [ ] 用户授权实施后完成阶段 A。
-- [ ] 完成阶段 B。
-- [ ] 按实际需要完成阶段 C。
-- [ ] 按实际收益完成或明确延期阶段 D。
+- [x] 用户授权实施后完成阶段 A（分支 `efficiency-review`，集成验证 `npm test` 193/193、`npm run check` 0 错误）。
+  - P01 完成于 `7341a2c`（`34dd9c3`→`815dbf8`→`2602add`→`7341a2c`）。偏离：恢复锁未采用第 4 节的 guard `targetPid`/`targetToken` 复核，改为每个持有者唯一票据文件 `locks/<prefix>.lock.<pid>.<token>.wait|hold` 两阶段扫描，死票据按唯一名归档到 `retired-locks/`；以代码为准。r3 后剩余审查意见经用户裁定为已知理论边界、不再返修：同 turnId 票据轮换后迟到的结束回调按入口时票据读取；事件落盘失败兜底路径锁前不比对票据；无 hostEventId 时 `lifecycleScope` 不含票据；旧 `event:` 回执兼容只按 ID 保守跳过；死 PID 且正文损坏的 `.hold` 按文件名 PID 归档（`src/store.mjs`），与 `docs/design/protocol.md` “保留 LOCKED”措辞略有出入；首次 deferred 原因文件写失败时提示指向状态而非内联正文；新旧版本混跑过渡窗口与 PID 复用时保守等待。
+  - P02 完成于 `1b11760`（`d292d33`→`1b11760`）。入口先存核心身份/回合，再在锁外读可选上下文并回锁复核；召回逐条解析（含字段类型校验），维护写路径仍严格；excluded 10 条/1200 字符预算带总数，完整诊断走 `knowledge select|explain`；单文件读取故障不写索引缓存（schemaVersion 3）。偏离：同一未修复故障每回合仍给一句短降级提示，未加失败消息去重状态。已知边界：已建立的索引按 `(name,size,mtimeMs)` 命中，事后仅撤销读权限时可能继续命中旧缓存；入口多一次状态锁获取。
+  - P03 完成于 `0448113`（`e9fd576`→`399e7d1`→`0448113`）。新增 deferred/conflict/kept 运行状态，有提案的延期/恢复只重试提交不再调用模型；新增 `learning resolve --run <ID> --keep|--discard`，作废仅在知识文件均未偏离写入前快照时允许，并只重排本运行消费的材料、关闭本运行知识待办；锁争用/BUSY 不推进 `lastCheckedAt`，`nextCheckAt` 有界退避。偏离/已知边界：计划任务仍按 `checkIntervalMinutes` 触发，不注册一次性重试，短延期在下一次触发接续（Lead 裁定，不额外等一个周期即满足验收）；正常周期已到期时连续 tick 不受 `nextCheckAt` 约束；`conflict` 阻止新模型调用直至显式 resolve；人工编辑造成的偏离也会拒绝作废，需 `--keep` 后 `recover`。未做真实宿主计划任务与真实模型验证。
+- [x] 完成阶段 B（集成验证 `npm test` 209/209、`npm run check` 0 错误）。
+  - [x] P04 完成于 `3323d75`（`6ee2369`→`6929391`→`3323d75`，提交 `fix(alignment): P04 增量对齐来源基线收尾`）。r2：小 `--max-files` 扫描得到的空索引以 `generatedAt` 作为已扫描标记、不每回合重扫；确认来源在索引达 300 条时拒绝新增（`reason:'limit'`）。Lead 裁定的追加已知边界：恰好 300 条时先列新路径的重命名会被 `limit` 拒绝、重新提交即可；中间目录为符号链接时不拒绝；旧索引超过 300 条不收缩。`apply`/`decide`/`suggest` 支持 `sources` 显式确认本次重读来源，按 `size`/`mtimeMs` 快照提交前复核，只刷新确认来源的基线并处理新增/删除相关目录；未传 `sources` 保持旧保守行为，`changed` 附当前快照供确认。r1 修订（提交 `fix(alignment): P04-r1 新目录未确认来源不被掩盖`）：确认新目录时只有目录及其祖先内所有候选资料都已收录才登记当前 mtime，未收录搜索不再让已收录文件占用名额，避免部分确认后漏报后续来源。已知边界：只传路径字符串时按提交时状态确认，无法检测读取后到提交前的改动；快照复核与状态落盘之间仍有极小竞争窗口；目录基线按有界搜索判断（深度 4、未收录候选最多 2 个），超出该范围的来源需要全量 scan 才能发现。
+  - [x] P05 完成于 `ec5d9e9`（`b407e1b`→`979add8`→`ec5d9e9`）。显式非 HEAD ref 先 `rev-parse` 为 OID，spec 列表、正文与代码都从该提交树读取，目标提交无 `.spec` 返回 `skipped:'no-spec'`、读取失败/非 Git/无效 ref 返回 `error:'git'`；`--ref HEAD`（或默认）沿用当前 worktree 文件与 dirty 检查语义。门禁、`task show`、Stop、计划未改核对改用 hook 解析出的 worktree 根；CLI `spec check` 从子目录运行时回到可信 worktree/Git 顶层。r2：任务门禁（`specMissing`）对“非 Git 且无 `.spec`”的接入项目保持跳过，避免带 `finalRef` 收尾新增 `spec-check:git` 阻断；CLI 显式 ref 仍严格。Lead 裁定的已知边界：Git 仓库子目录被绑定为项目根时以绑定目录为检查根（与 hook 一致），仓库顶层 `.spec` 不纳入；Git 身份解析失败时 CLI 退回当前目录；浅克隆仍先报 `shallow`。
+- [x] 完成阶段 C（集成验证 `npm test` 249/249、`npm run check` 0 错误）。
+  - [x] P06 完成于 `c3045d9`（`47376e4`→`c3045d9`）。install 在 already-installed 前核对 current 实际目标：自有入口（目标在 `<state-dir>/releases/` 下）断链/错链/缺失时只重建 current，返回 `repaired`，不重写宿主配置；用户目录、外部链接、另一宿主登记的有效快照一律保留并返回 `conflict`。onboard 核心接入与学习预检分离：未请求学习时学习问题只提示；显式 `--enable-learning` 失败返回 `status:'partial'`、CLI 退出码 1，核心字段照常保留；已启用项目重复接入按接入前/后实际登记报告。审批文案改为按本次权限给下一步。已知边界：归属仅凭链接目标位于 `releases/` 下判断；安装 `conflict` 经 CLI 退出码仍为 0；学习先 `disable` 再显式启用且预检失败时 `schedule` 字段可能报 `not-registered`（顶层已为 `partial`，Lead 裁定为报告字段瑕疵）；共享 current 分步升级期间另一宿主 doctor 暂时不通过（既有行为）。
+  - [x] P07 完成于 `a0a021e`（`929e7e3`→`bff4d8b`→`a0a021e`）。新增独立信号 `task-update`：仅绑定该任务且 active 的 Lead 可改 goal 与 `permissions.mode/allowedPaths`（`allowedPathsMode: replace|append`），宿主 plan/read-only 下拒绝扩大、允许缩小；route/channels/packages 等返回 `UNSUPPORTED`；变更追加到 `task.updates`，回执含有效权限与变更摘要；task-start 接续回执新增 `kept`。CLI 与 `--input` 的 permissions 按子字段合并、冲突报 `INPUT`；task-update 对实际传入的任何非白名单参数报 `UNSUPPORTED`。已知边界：多 Lead 会话按过期视图 replace 为 last-writer-wins；挂起任务需先 task-start 恢复；公共选项清单硬编码，新增公共选项需同步。
+  - [x] P08 完成于 `5421e06`（`c36ed55`→`3d82550`→`e242362`→`5421e06`，共 4 轮）。返修计数改为“一轮返修 = 一个交付轮次”：进入 delivered、出现新 deliveredRef 或无交付时的 reviewer FIX 开启轮次；`delivered→consumed` 与无 ref 的失败 consumed 不开轮；迟到 ref/FIX 归入同轮；重派仅在 `deliverySeq > countedRound` 时 +1，supersedes 继承；批内 reviewer 按整批最终状态计算；旧账本仅缺 `deliverySeq` 时回填，历史 attempts 不重算。已知边界：第二轮未改代码以相同 ref 直接记 consumed 会少计；首次建包直接记无 ref consumed 后重派计 1；未发布的 r1/r2 中间格式迁移不作兼容承诺；`deliveryRefs` 保留最近 50 条。
+- [x] 按实际收益完成阶段 D（集成验证 `npm test` 263/263、`npm run check` 0 错误）。
+  - [x] P09 完成于 `f53325b`（`6a4b26c`→`f7d8822`→`3f70e7d`→`f53325b`）。已识别的结构化提问工具（宿主原生与 Codeg MCP）在 PostToolUse 自动记 waiting-user，同回合重复或已声明时不重复改 revision，未知工具与文本提问仍显式声明。plan 模式 Stop 只认本回合显式阶段（`session.phase` 不跨回合继承，历史 `task.plans` 不再推断交付）；plan 模式普通讨论不落通用“门禁缺项/仍为 active”阻挡，但在途包阻挡保留；计划交付核对与在途包同时成立时合并为一次阻挡、在途优先。交付提示一次列明分包与已有通道（`task.channels` 与包 `channel` 直接沿用），lead-direct 不问 Worker，只对真实新增角色/通道提问。规则、角色、参考页、适配、usage、protocol、README 与 context 按第 7 节表同步；Worker 指引区分已指定细节的局部 UI 小改与需选方向的 UI 包（r3 由 Lead 直接改文档）。偏离：P09 计划交付核对由 hooks/protocol 实现，规则文字改动未加自动化测试（按计划只测等待与 Stop）。已知边界（Lead 裁定）：plan 模式下本回合发 task-start/phase（executing）也视为进入计划交付，会挡一次并提示“只是讨论直接回复”；“无 Worker”仅以 `route=lead-direct` 判定；用户口头指定但未写入 channels 的安排无法机械识别；plan 模式无显式阶段的回合不发结束任务提醒；计划交付核对不读计划正文。
+  - [x] P10 完成于 `b2ef01c`（`1ce2849`→`9668ada`→`b2ef01c`）。`signal packages` 新增单包便捷参数（`--package/--role/--status/--channel/--handle/--ref/--depends-on/--supersedes/--verdict/--reviews/--base-ref/--note/--worktree`，`--ref` 按角色映射 deliveredRef/reviewedRef）；`signal task-end` 新增 `--validation-ref` 与可重复 `--evidence`（缺省 ref 取 `--final-ref`）；`knowledge capture` 新增身份补齐与短材料参数（`--incident` 必填，不以 taskId 冒充事件 ID）。单包字段缺 `--package`、其他动作误带包字段、便捷与 `--input` 同字段冲突、嵌套 observation 带身份字段均报 `INPUT`，不静默丢弃。所有新参数仍经不安全字符检查；测试走“真实命令文本 + 真实输出”经 PostToolUse 验证落账，伪造输出/组合命令/跨会话仍拒绝，旧 `--input`/`--base64`/重放/revision 冲突语义不变。实测（`node scripts/bench/p10-input.mjs`，单 Worker+Reviewer 无返修）：写 JSON 文件 4→1、发送命令 5→5、总工具调用 9→6（−33%）；同批“消费+派下一包”仍用一次 `--input`。未做：第 4 条引号内 `->`、`&` 等放宽（未证明两宿主分词边界，保留 shellTokens 与元字符防护）；同批多包、change、waivers、disposition 与复杂 validation 仍走 JSON 文件。
+  - [x] P11 完成于 `1dc15e4`（`ed13011`→`345331b`→`1dc15e4`）。实施两项有可复现收益的优化：hook 入口先解析项目，未接入目录不再读取/哈希发布副本（入口 14.98→0.62 ms，readFile 51→1、hash 50→0），已接入项目仍做完整指纹校验；可选上下文复用入口已解析项目记录，知识召回目录链校验由每文件改为每目录一次（文件仍逐条 lstat 拒绝链接）——已接入入口 143.8→85.6 ms（仅限 300 条知识 + 活动任务的合成条件，不泛化为所有已接入入口）、无变化回合 300 条 439→105 ms、变化回合 300 条 848→188 ms（9 次中位数，合成样本，`node scripts/bench/p11-overhead.mjs --runs 9`；该脚本“变化回合”直接在知识文件末尾追加正文，正文与元数据不一致，实测的是坏条目路径，合法条目变更的数据以 [efficiency-review-benchmark.md](efficiency-review-benchmark.md) 为准）。测量后放弃：no-op mutate 跳写（`observeHost` 每次更新观察时间，不存在真正无变化状态）、retired-locks 归档调整（0 与 2000 个历史锁差异在噪声内）、preflight 缓存（耗时由子进程启动主导、频率低）、对齐逐项检查（300 项约 12 ms）、跨进程知识签名缓存（剩余约 14 ms，失效复杂度超过收益）。已知边界：目录链“校验后、读取前”被替换的竞态窗口略宽于原实现；知识索引仍以 `(name,size,mtimeMs)` 为签名；合成项目非真实 Git 仓库，绝对耗时仅供相对比较。
+  - 计划假设与代码现状差异（以代码为准）：第 6 节旧文档说结构化提问须先发 phase，代码已自动识别部分结构化工具；旧 `stop()` 计划核对先于 operation-only 放行；P11 候选“全量检索早于 unchanged”实际瓶颈为每文件重复校验目录链；“no-op mutate”实际不存在真正 no-op。
+- 实测对比（基线 `ea54419` / 当前 `2b1822c`）：[efficiency-review-benchmark.md](efficiency-review-benchmark.md)；原始数据见 [efficiency-review-benchmark.json](efficiency-review-benchmark.json)。
 
 ## 13. spec 影响
 

@@ -80,7 +80,7 @@ node bin/workflow.mjs learning disable --root $pilotRoot --state-dir $workflowSt
 node bin/workflow.mjs learning schedule remove --root $pilotRoot --state-dir $workflowState
 ```
 
-有完整提案的中断运行可用 `learning recover --run <ID>` 恢复，不再调用模型。外部编辑冲突需先核对文件与保存提案。不要删除 inbox、state 或快照来“修好”状态。
+有完整提案的中断运行可用 `learning recover --run <ID>` 恢复，不再调用模型。外部编辑冲突需先核对文件与保存提案，再用 `learning resolve --run <ID> --keep|--discard` 决定保留还是作废；只有本运行的知识文件均未偏离写入前快照时才能作废。不要对同一冲突反复执行 `recover`。不要删除 inbox、state 或快照来“修好”状态。
 
 验收后再决定是否扩大项目范围、调整默认参数或发布新版本。当前本机材料不自动跨电脑同步，换电脑仍需各自建立绑定；Git 只携带项目配置与正式知识。
 

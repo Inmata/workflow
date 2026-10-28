@@ -1,0 +1,1436 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-10-28T14:23:43.591Z",
+  "machine": {
+    "cpu": "13th Gen Intel(R) Core(TM) i5-13400F",
+    "os": "Windows_NT 10.0.26200",
+    "node": "v24.21.0",
+    "platform": "win32 x64"
+  },
+  "runs": 9,
+  "rounds": 5,
+  "versions": {
+    "baseline": {
+      "ref": "ea54419",
+      "entry": "<baseline>/bin/workflow.mjs"
+    },
+    "current": {
+      "ref": "2b1822c",
+      "entry": "<current>/bin/workflow.mjs"
+    }
+  },
+  "timing": [
+    {
+      "key": "session-start-registered",
+      "label": "session-start-registered",
+      "note": null,
+      "baseline": {
+        "median": 79.59129999999982,
+        "min": 74.2183,
+        "max": 117.47709999999984,
+        "runs": 9,
+        "ioCalls": 193,
+        "readBytes": 671854,
+        "chars": 3999,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 52,
+          "lstat": 69,
+          "readdir": 9,
+          "createHash": 54,
+          "realpath": 1,
+          "stat": 1,
+          "mkdir": 3,
+          "open": 2,
+          "rename": 2
+        },
+        "extra": null
+      },
+      "current": {
+        "median": 81.59519999999998,
+        "min": 78.05159999999978,
+        "max": 118.49970000000008,
+        "runs": 9,
+        "ioCalls": 220,
+        "readBytes": 681483,
+        "chars": 5084,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 53,
+          "realpath": 1,
+          "lstat": 69,
+          "stat": 1,
+          "readdir": 15,
+          "createHash": 57,
+          "mkdir": 12,
+          "open": 4,
+          "rename": 8
+        },
+        "extra": null
+      },
+      "delta": {
+        "medianPercent": 2.5,
+        "ioCalls": 27,
+        "ioPercent": 14,
+        "readBytes": 9629
+      }
+    },
+    {
+      "key": "session-start-unregistered",
+      "label": "session-start-unregistered",
+      "note": null,
+      "baseline": {
+        "median": 14.906600000000253,
+        "min": 12.981400000000122,
+        "max": 28.62980000000016,
+        "runs": 9,
+        "ioCalls": 170,
+        "readBytes": 662452,
+        "chars": 2,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 51,
+          "lstat": 59,
+          "readdir": 9,
+          "createHash": 50,
+          "realpath": 1
+        },
+        "extra": null
+      },
+      "current": {
+        "median": 0.6231999999999971,
+        "min": 0.5341000000003078,
+        "max": 0.7635000000000218,
+        "runs": 9,
+        "ioCalls": 2,
+        "readBytes": 9429,
+        "chars": 2,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 1,
+          "realpath": 1
+        },
+        "extra": null
+      },
+      "delta": {
+        "medianPercent": -95.8,
+        "ioCalls": -168,
+        "ioPercent": -98.8,
+        "readBytes": -653023
+      }
+    },
+    {
+      "key": "user-prompt-registered",
+      "label": "user-prompt-registered",
+      "note": null,
+      "baseline": {
+        "median": 105.77410000000009,
+        "min": 74.28500000000031,
+        "max": 127.14969999999994,
+        "runs": 9,
+        "ioCalls": 193,
+        "readBytes": 671854,
+        "chars": 2286,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 52,
+          "lstat": 69,
+          "readdir": 9,
+          "createHash": 54,
+          "realpath": 1,
+          "stat": 1,
+          "mkdir": 3,
+          "open": 2,
+          "rename": 2
+        },
+        "extra": null
+      },
+      "current": {
+        "median": 88.76960000000008,
+        "min": 80.21199999999999,
+        "max": 103.76830000000018,
+        "runs": 9,
+        "ioCalls": 220,
+        "readBytes": 681337,
+        "chars": 2281,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 53,
+          "realpath": 1,
+          "lstat": 69,
+          "stat": 1,
+          "readdir": 15,
+          "createHash": 57,
+          "mkdir": 12,
+          "open": 4,
+          "rename": 8
+        },
+        "extra": null
+      },
+      "delta": {
+        "medianPercent": -16.1,
+        "ioCalls": 27,
+        "ioPercent": 14,
+        "readBytes": 9483
+      }
+    },
+    {
+      "key": "user-prompt-unregistered",
+      "label": "user-prompt-unregistered",
+      "note": null,
+      "baseline": {
+        "median": 22.971300000000156,
+        "min": 20.758899999999812,
+        "max": 24.582900000000336,
+        "runs": 9,
+        "ioCalls": 170,
+        "readBytes": 662452,
+        "chars": 2,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 51,
+          "lstat": 59,
+          "readdir": 9,
+          "createHash": 50,
+          "realpath": 1
+        },
+        "extra": null
+      },
+      "current": {
+        "median": 0.6613999999999578,
+        "min": 0.5695999999998094,
+        "max": 1.2306000000003223,
+        "runs": 9,
+        "ioCalls": 2,
+        "readBytes": 9429,
+        "chars": 2,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 1,
+          "realpath": 1
+        },
+        "extra": null
+      },
+      "delta": {
+        "medianPercent": -97.1,
+        "ioCalls": -168,
+        "ioPercent": -98.8,
+        "readBytes": -653023
+      }
+    },
+    {
+      "key": "posttool-normal",
+      "label": "posttool-normal",
+      "note": null,
+      "baseline": {
+        "median": 0.16530000000057044,
+        "min": 0.11459999999988213,
+        "max": 0.21630000000004657,
+        "runs": 9,
+        "ioCalls": 0,
+        "readBytes": 0,
+        "chars": 2,
+        "failures": 0,
+        "error": null,
+        "calls": {},
+        "extra": null
+      },
+      "current": {
+        "median": 0.12049999999999272,
+        "min": 0.10179999999991196,
+        "max": 0.22439999999960492,
+        "runs": 9,
+        "ioCalls": 0,
+        "readBytes": 0,
+        "chars": 2,
+        "failures": 0,
+        "error": null,
+        "calls": {},
+        "extra": null
+      },
+      "delta": {
+        "medianPercent": -27.1,
+        "ioCalls": 0,
+        "ioPercent": null,
+        "readBytes": 0
+      }
+    },
+    {
+      "key": "stop-registered",
+      "label": "stop-registered",
+      "note": null,
+      "baseline": {
+        "median": 97.47219999999925,
+        "min": 85.65020000000004,
+        "max": 128.96039999999994,
+        "runs": 9,
+        "ioCalls": 191,
+        "readBytes": 671854,
+        "chars": 2,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 52,
+          "lstat": 69,
+          "readdir": 9,
+          "createHash": 52,
+          "realpath": 1,
+          "stat": 1,
+          "mkdir": 3,
+          "open": 2,
+          "rename": 2
+        },
+        "extra": null
+      },
+      "current": {
+        "median": 77.58010000000013,
+        "min": 73.35370000000057,
+        "max": 126.86070000000018,
+        "runs": 9,
+        "ioCalls": 200,
+        "readBytes": 671908,
+        "chars": 2,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 52,
+          "realpath": 1,
+          "lstat": 69,
+          "stat": 1,
+          "readdir": 13,
+          "createHash": 52,
+          "mkdir": 6,
+          "open": 2,
+          "rename": 4
+        },
+        "extra": null
+      },
+      "delta": {
+        "medianPercent": -20.4,
+        "ioCalls": 9,
+        "ioPercent": 4.7,
+        "readBytes": 54
+      }
+    },
+    {
+      "key": "stop-unregistered",
+      "label": "stop-unregistered",
+      "note": null,
+      "baseline": {
+        "median": 23.367200000000594,
+        "min": 22.111400000000685,
+        "max": 24.97020000000066,
+        "runs": 9,
+        "ioCalls": 170,
+        "readBytes": 662452,
+        "chars": 2,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 51,
+          "lstat": 59,
+          "readdir": 9,
+          "createHash": 50,
+          "realpath": 1
+        },
+        "extra": null
+      },
+      "current": {
+        "median": 0.7382999999999811,
+        "min": 0.5888000000004467,
+        "max": 1.0054000000000087,
+        "runs": 9,
+        "ioCalls": 2,
+        "readBytes": 9429,
+        "chars": 2,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 1,
+          "realpath": 1
+        },
+        "extra": null
+      },
+      "delta": {
+        "medianPercent": -96.8,
+        "ioCalls": -168,
+        "ioPercent": -98.8,
+        "readBytes": -653023
+      }
+    },
+    {
+      "key": "posttool-signal",
+      "label": "posttool-signal",
+      "note": null,
+      "baseline": {
+        "median": 109.07880000000023,
+        "min": 75.91930000000048,
+        "max": 114.0028000000002,
+        "runs": 9,
+        "ioCalls": 202,
+        "readBytes": 674566,
+        "chars": 174,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "realpath": 3,
+          "readFile": 52,
+          "lstat": 69,
+          "readdir": 9,
+          "createHash": 61,
+          "stat": 1,
+          "mkdir": 3,
+          "open": 2,
+          "rename": 2
+        },
+        "extra": null
+      },
+      "current": {
+        "median": 73.86880000000019,
+        "min": 72.41719999999987,
+        "max": 87.05259999999998,
+        "runs": 9,
+        "ioCalls": 211,
+        "readBytes": 674620,
+        "chars": 174,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "realpath": 3,
+          "readFile": 52,
+          "lstat": 69,
+          "stat": 1,
+          "readdir": 13,
+          "createHash": 61,
+          "mkdir": 6,
+          "open": 2,
+          "rename": 4
+        },
+        "extra": null
+      },
+      "delta": {
+        "medianPercent": -32.3,
+        "ioCalls": 9,
+        "ioPercent": 4.5,
+        "readBytes": 54
+      }
+    },
+    {
+      "key": "hook-entry-nochange-300",
+      "label": "hook-entry-nochange-300",
+      "note": null,
+      "baseline": {
+        "median": 572.7415999999994,
+        "min": 452.3240999999998,
+        "max": 740.2137000000002,
+        "runs": 9,
+        "ioCalls": 2617,
+        "readBytes": 935646,
+        "chars": 2542,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 56,
+          "lstat": 1281,
+          "readdir": 10,
+          "createHash": 57,
+          "realpath": 1204,
+          "stat": 2,
+          "mkdir": 3,
+          "open": 2,
+          "rename": 2
+        },
+        "extra": {
+          "entry": true,
+          "chars": 2164,
+          "knowledgeSelected": null,
+          "knowledgeSkipped": null,
+          "knowledgeCode": null
+        }
+      },
+      "current": {
+        "median": 103.50849999999991,
+        "min": 97.36350000000039,
+        "max": 134.1770000000006,
+        "runs": 9,
+        "ioCalls": 537,
+        "readBytes": 935744,
+        "chars": 2537,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 56,
+          "realpath": 6,
+          "lstat": 373,
+          "stat": 1,
+          "readdir": 16,
+          "createHash": 61,
+          "mkdir": 12,
+          "open": 4,
+          "rename": 8
+        },
+        "extra": {
+          "entry": true,
+          "chars": 2159,
+          "knowledgeSelected": null,
+          "knowledgeSkipped": null,
+          "knowledgeCode": null
+        }
+      },
+      "delta": {
+        "medianPercent": -81.9,
+        "ioCalls": -2080,
+        "ioPercent": -79.5,
+        "readBytes": 98
+      }
+    },
+    {
+      "key": "knowledge-select-unchanged-300",
+      "label": "knowledge-select-unchanged-300",
+      "note": null,
+      "baseline": {
+        "median": 518.9434000000001,
+        "min": 380.33250000000044,
+        "max": 696.862799999999,
+        "runs": 9,
+        "ioCalls": 2423,
+        "readBytes": 261026,
+        "chars": 18489,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 4,
+          "realpath": 1203,
+          "lstat": 1212,
+          "stat": 1,
+          "readdir": 1,
+          "createHash": 2
+        },
+        "extra": {
+          "selected": 5,
+          "skipped": null,
+          "total": null,
+          "chars": 942,
+          "excluded": 295
+        }
+      },
+      "current": {
+        "median": 72.32419999999911,
+        "min": 67.09899999999834,
+        "max": 105.67029999999977,
+        "runs": 9,
+        "ioCalls": 328,
+        "readBytes": 261070,
+        "chars": 1818,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 4,
+          "realpath": 6,
+          "lstat": 314,
+          "stat": 1,
+          "readdir": 1,
+          "createHash": 2
+        },
+        "extra": {
+          "selected": 5,
+          "skipped": 0,
+          "total": 300,
+          "chars": 942,
+          "excluded": 10
+        }
+      },
+      "delta": {
+        "medianPercent": -86.1,
+        "ioCalls": -2095,
+        "ioPercent": -86.5,
+        "readBytes": 44
+      }
+    },
+    {
+      "key": "hook-entry-changed-300",
+      "label": "hook-entry-changed-300",
+      "note": null,
+      "baseline": {
+        "median": 899.5943999999981,
+        "min": 833.468499999999,
+        "max": 1541.8895999999986,
+        "runs": 9,
+        "ioCalls": 5321,
+        "readBytes": 1146282,
+        "chars": 24054,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 356,
+          "lstat": 2181,
+          "readdir": 11,
+          "createHash": 357,
+          "realpath": 2404,
+          "stat": 2,
+          "mkdir": 4,
+          "open": 3,
+          "rename": 3
+        },
+        "extra": {
+          "entry": true,
+          "chars": 20580,
+          "knowledgeSelected": 5,
+          "knowledgeSkipped": null,
+          "knowledgeCode": null
+        }
+      },
+      "current": {
+        "median": 226.2543999999998,
+        "min": 206.77469999999994,
+        "max": 258.5527000000002,
+        "runs": 9,
+        "ioCalls": 1140,
+        "readBytes": 1146380,
+        "chars": 3813,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 356,
+          "realpath": 6,
+          "lstat": 373,
+          "stat": 1,
+          "readdir": 16,
+          "createHash": 361,
+          "mkdir": 13,
+          "open": 5,
+          "rename": 9
+        },
+        "extra": {
+          "entry": true,
+          "chars": 3283,
+          "knowledgeSelected": 5,
+          "knowledgeSkipped": 0,
+          "knowledgeCode": null
+        }
+      },
+      "delta": {
+        "medianPercent": -74.8,
+        "ioCalls": -4181,
+        "ioPercent": -78.6,
+        "readBytes": 98
+      }
+    },
+    {
+      "key": "knowledge-select-changed-300",
+      "label": "knowledge-select-changed-300",
+      "note": null,
+      "baseline": {
+        "median": 796.9050000000061,
+        "min": 707.7069000000047,
+        "max": 1144.6494999999995,
+        "runs": 9,
+        "ioCalls": 5127,
+        "readBytes": 471662,
+        "chars": 18492,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 304,
+          "realpath": 2403,
+          "lstat": 2112,
+          "stat": 1,
+          "readdir": 2,
+          "createHash": 302,
+          "mkdir": 1,
+          "open": 1,
+          "rename": 1
+        },
+        "extra": {
+          "selected": 5,
+          "skipped": null,
+          "total": null,
+          "chars": 945,
+          "excluded": 295
+        }
+      },
+      "current": {
+        "median": 153.76569999999992,
+        "min": 126.04709999999977,
+        "max": 183.71409999999923,
+        "runs": 9,
+        "ioCalls": 931,
+        "readBytes": 471706,
+        "chars": 1821,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 304,
+          "realpath": 6,
+          "lstat": 314,
+          "stat": 1,
+          "readdir": 1,
+          "createHash": 302,
+          "mkdir": 1,
+          "open": 1,
+          "rename": 1
+        },
+        "extra": {
+          "selected": 5,
+          "skipped": 0,
+          "total": 300,
+          "chars": 945,
+          "excluded": 10
+        }
+      },
+      "delta": {
+        "medianPercent": -80.7,
+        "ioCalls": -4196,
+        "ioPercent": -81.8,
+        "readBytes": 44
+      }
+    },
+    {
+      "key": "knowledge-select-badparse-300",
+      "label": "knowledge-select-badparse-300",
+      "note": null,
+      "baseline": {
+        "median": 375.9161000000022,
+        "min": 346.19520000000193,
+        "max": 624.8947999999946,
+        "runs": 9,
+        "ioCalls": 2440,
+        "readBytes": 261070,
+        "chars": 0,
+        "failures": 9,
+        "error": {
+          "code": "KNOWLEDGE",
+          "message": "知识文件缺少元数据；保留文件待核对"
+        },
+        "calls": {
+          "readFile": 5,
+          "realpath": 1211,
+          "lstat": 1219,
+          "stat": 1,
+          "readdir": 2,
+          "createHash": 2
+        },
+        "extra": null
+      },
+      "current": {
+        "median": 71.3768,
+        "min": 66.86709999999948,
+        "max": 76.88500000000022,
+        "runs": 9,
+        "ioCalls": 329,
+        "readBytes": 261245,
+        "chars": 1907,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 4,
+          "realpath": 6,
+          "lstat": 315,
+          "stat": 1,
+          "readdir": 1,
+          "createHash": 2
+        },
+        "extra": {
+          "selected": 5,
+          "skipped": 1,
+          "total": 300,
+          "chars": 942,
+          "excluded": 10
+        }
+      },
+      "delta": {
+        "medianPercent": -81,
+        "ioCalls": -2111,
+        "ioPercent": -86.5,
+        "readBytes": 175
+      }
+    },
+    {
+      "key": "hook-entry-badparse-300",
+      "label": "hook-entry-badparse-300",
+      "note": "直接召回与入口都不应因坏条目阻断；基线在解析失败时整体抛错。",
+      "baseline": {
+        "median": 588.4816999999966,
+        "min": 415.7936999999947,
+        "max": 652.9143999999942,
+        "runs": 9,
+        "ioCalls": 2631,
+        "readBytes": 935720,
+        "chars": 60,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 57,
+          "lstat": 1288,
+          "readdir": 11,
+          "createHash": 57,
+          "realpath": 1212,
+          "stat": 2,
+          "mkdir": 2,
+          "open": 1,
+          "rename": 1
+        },
+        "extra": {
+          "entry": false,
+          "chars": 0
+        }
+      },
+      "current": {
+        "median": 110.17230000000018,
+        "min": 101.39830000000075,
+        "max": 137.91300000000047,
+        "runs": 9,
+        "ioCalls": 538,
+        "readBytes": 935949,
+        "chars": 3846,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 56,
+          "realpath": 6,
+          "lstat": 374,
+          "stat": 1,
+          "readdir": 16,
+          "createHash": 61,
+          "mkdir": 12,
+          "open": 4,
+          "rename": 8
+        },
+        "extra": {
+          "entry": true,
+          "chars": 3316,
+          "knowledgeSelected": 5,
+          "knowledgeSkipped": 1,
+          "knowledgeCode": null
+        }
+      },
+      "delta": {
+        "medianPercent": -81.3,
+        "ioCalls": -2093,
+        "ioPercent": -79.6,
+        "readBytes": 229
+      }
+    },
+    {
+      "key": "knowledge-select-badtype-300",
+      "label": "knowledge-select-badtype-300",
+      "note": null,
+      "baseline": {
+        "median": 512.6206999999995,
+        "min": 347.58030000000144,
+        "max": 589.0691999999981,
+        "runs": 9,
+        "ioCalls": 2431,
+        "readBytes": 261810,
+        "chars": 18309,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 4,
+          "realpath": 1207,
+          "lstat": 1216,
+          "stat": 1,
+          "readdir": 1,
+          "createHash": 2
+        },
+        "extra": {
+          "selected": 1,
+          "skipped": null,
+          "total": null,
+          "chars": 171,
+          "excluded": 300
+        }
+      },
+      "current": {
+        "median": 72.44650000000183,
+        "min": 69.58880000000136,
+        "max": 108.16149999999834,
+        "runs": 9,
+        "ioCalls": 329,
+        "readBytes": 261229,
+        "chars": 974,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 4,
+          "realpath": 6,
+          "lstat": 315,
+          "stat": 1,
+          "readdir": 1,
+          "createHash": 2
+        },
+        "extra": {
+          "selected": 0,
+          "skipped": 1,
+          "total": 300,
+          "chars": 0,
+          "excluded": 10
+        }
+      },
+      "delta": {
+        "medianPercent": -85.9,
+        "ioCalls": -2102,
+        "ioPercent": -86.5,
+        "readBytes": -581
+      }
+    },
+    {
+      "key": "hook-entry-badtype-300",
+      "label": "hook-entry-badtype-300",
+      "note": "直接召回与入口都不应因坏条目阻断；基线在解析失败时整体抛错。",
+      "baseline": {
+        "median": 421.21779999999853,
+        "min": 383.48889999999665,
+        "max": 515.4527000000016,
+        "runs": 9,
+        "ioCalls": 2625,
+        "readBytes": 936454,
+        "chars": 24105,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 56,
+          "lstat": 1285,
+          "readdir": 10,
+          "createHash": 57,
+          "realpath": 1208,
+          "stat": 2,
+          "mkdir": 3,
+          "open": 2,
+          "rename": 2
+        },
+        "extra": {
+          "entry": true,
+          "chars": 20621,
+          "knowledgeSelected": 5,
+          "knowledgeSkipped": null,
+          "knowledgeCode": null
+        }
+      },
+      "current": {
+        "median": 104.95959999999832,
+        "min": 102.66909999999916,
+        "max": 140.95000000000073,
+        "runs": 9,
+        "ioCalls": 538,
+        "readBytes": 935927,
+        "chars": 3844,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "readFile": 56,
+          "realpath": 6,
+          "lstat": 374,
+          "stat": 1,
+          "readdir": 16,
+          "createHash": 61,
+          "mkdir": 12,
+          "open": 4,
+          "rename": 8
+        },
+        "extra": {
+          "entry": true,
+          "chars": 3314,
+          "knowledgeSelected": 5,
+          "knowledgeSkipped": 1,
+          "knowledgeCode": null
+        }
+      },
+      "delta": {
+        "medianPercent": -75.1,
+        "ioCalls": -2087,
+        "ioPercent": -79.5,
+        "readBytes": -527
+      }
+    },
+    {
+      "key": "alignment-inspect-300",
+      "label": "alignment-inspect-300",
+      "note": null,
+      "baseline": {
+        "median": 12.38799999999901,
+        "min": 10.785799999997835,
+        "max": 14.330800000003364,
+        "runs": 9,
+        "ioCalls": 303,
+        "readBytes": 0,
+        "chars": 200,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "lstat": 302,
+          "readFile": 1
+        },
+        "extra": null
+      },
+      "current": {
+        "median": 19.11569999999847,
+        "min": 14.748300000002928,
+        "max": 19.67150000000038,
+        "runs": 9,
+        "ioCalls": 303,
+        "readBytes": 0,
+        "chars": 200,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "lstat": 302,
+          "readFile": 1
+        },
+        "extra": null
+      },
+      "delta": {
+        "medianPercent": 54.3,
+        "ioCalls": 0,
+        "ioPercent": 0,
+        "readBytes": 0
+      }
+    },
+    {
+      "key": "alignment-incremental",
+      "label": "alignment-incremental",
+      "note": "每轮命令数 基线 2 / 当前 1（apply + 全量 scan vs 仅 apply sources）；重复提示 9/9",
+      "baseline": {
+        "median": 60.8293999999878,
+        "min": 44.656699999999546,
+        "max": 66.93760000000475,
+        "runs": 9,
+        "ioCalls": 109,
+        "readBytes": 41768,
+        "chars": 59,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "writeFile": 1,
+          "readFile": 14,
+          "lstat": 35,
+          "realpath": 10,
+          "createHash": 10,
+          "mkdir": 15,
+          "open": 11,
+          "rename": 11,
+          "readdir": 2
+        },
+        "extra": {
+          "staleAfterApply": 1,
+          "repeatPrompts": 1,
+          "commands": 2,
+          "scanned": 1,
+          "confirmed": 0
+        }
+      },
+      "current": {
+        "median": 58.293799999999464,
+        "min": 38.376000000000204,
+        "max": 84.32679999999891,
+        "runs": 9,
+        "ioCalls": 99,
+        "readBytes": 24196,
+        "chars": 61,
+        "failures": 0,
+        "error": null,
+        "calls": {
+          "writeFile": 1,
+          "readFile": 10,
+          "lstat": 23,
+          "stat": 1,
+          "realpath": 9,
+          "createHash": 9,
+          "mkdir": 18,
+          "open": 9,
+          "readdir": 6,
+          "rename": 13
+        },
+        "extra": {
+          "staleAfterApply": 0,
+          "repeatPrompts": 0,
+          "commands": 1,
+          "scanned": 0,
+          "confirmed": 1
+        }
+      },
+      "delta": {
+        "medianPercent": -4.2,
+        "ioCalls": -10,
+        "ioPercent": -9.2,
+        "readBytes": -17572
+      }
+    },
+    {
+      "key": "lock-hold400-signal",
+      "label": "lock-hold400-signal",
+      "note": "每次持锁 400ms；1 个 signal hook；降级 5/5，回执成功 0/5",
+      "baseline": {
+        "median": 210.38409999999567,
+        "min": 203.81649999998626,
+        "max": 245.5862000000052,
+        "runs": 5,
+        "ioCalls": null,
+        "readBytes": null,
+        "chars": 0,
+        "failures": 5,
+        "error": null,
+        "extra": {
+          "degraded": 5,
+          "total": 5,
+          "applied": 0,
+          "manualRetries": 5,
+          "degradedPerRound": 1,
+          "appliedPerRound": 0,
+          "manualRetriesPerRound": 1
+        }
+      },
+      "current": {
+        "median": 457.4546999999984,
+        "min": 424.4386000000013,
+        "max": 471.8765000000021,
+        "runs": 5,
+        "ioCalls": null,
+        "readBytes": null,
+        "chars": 0,
+        "failures": 0,
+        "error": null,
+        "extra": {
+          "degraded": 0,
+          "total": 5,
+          "applied": 5,
+          "manualRetries": 0,
+          "degradedPerRound": 0,
+          "appliedPerRound": 1,
+          "manualRetriesPerRound": 0
+        }
+      },
+      "delta": {
+        "medianPercent": 117.4
+      }
+    },
+    {
+      "key": "lock-hold400-entry3",
+      "label": "lock-hold400-entry3",
+      "note": "每次持锁 400ms；3 个入口 hook/轮；降级 15/15，成功 0/15",
+      "baseline": {
+        "median": 254.93799999999464,
+        "min": 238.06020000000717,
+        "max": 323.0201000000088,
+        "runs": 15,
+        "ioCalls": null,
+        "readBytes": null,
+        "chars": 0,
+        "failures": 15,
+        "error": null,
+        "extra": {
+          "degraded": 15,
+          "total": 15,
+          "applied": 0,
+          "manualRetries": 15,
+          "degradedPerRound": 3,
+          "appliedPerRound": 0,
+          "manualRetriesPerRound": 3
+        }
+      },
+      "current": {
+        "median": 489.66939999999886,
+        "min": 408.9200000000019,
+        "max": 825.7405999999974,
+        "runs": 15,
+        "ioCalls": null,
+        "readBytes": null,
+        "chars": 0,
+        "failures": 0,
+        "error": null,
+        "extra": {
+          "degraded": 0,
+          "total": 15,
+          "applied": 15,
+          "manualRetries": 0,
+          "degradedPerRound": 0,
+          "appliedPerRound": 3,
+          "manualRetriesPerRound": 0
+        }
+      },
+      "delta": {
+        "medianPercent": 92.1
+      }
+    },
+    {
+      "key": "lock-hold2600-signal",
+      "label": "lock-hold2600-signal",
+      "note": "每次持锁 2600ms；1 个 signal hook；降级 5/5，回执成功 0/5",
+      "baseline": {
+        "median": 225.7332000000024,
+        "min": 219.16590000000724,
+        "max": 229.45560000000114,
+        "runs": 5,
+        "ioCalls": null,
+        "readBytes": null,
+        "chars": 0,
+        "failures": 5,
+        "error": null,
+        "extra": {
+          "degraded": 5,
+          "total": 5,
+          "applied": 0,
+          "manualRetries": 5,
+          "degradedPerRound": 1,
+          "appliedPerRound": 0,
+          "manualRetriesPerRound": 1
+        }
+      },
+      "current": {
+        "median": 1744.7638000000006,
+        "min": 1721.275099999999,
+        "max": 1772.2699999999968,
+        "runs": 5,
+        "ioCalls": null,
+        "readBytes": null,
+        "chars": 0,
+        "failures": 5,
+        "error": null,
+        "extra": {
+          "degraded": 5,
+          "total": 5,
+          "applied": 0,
+          "manualRetries": 5,
+          "degradedPerRound": 1,
+          "appliedPerRound": 0,
+          "manualRetriesPerRound": 1
+        }
+      },
+      "delta": {
+        "medianPercent": 672.9
+      }
+    }
+  ],
+  "workflows": [
+    {
+      "key": "flow-lead-direct-minimal",
+      "label": "简单改动（lead-direct，最小 task-end）",
+      "note": null,
+      "baseline": {
+        "values": {
+          "writes": 0,
+          "commands": 2,
+          "toolCalls": 2,
+          "verified": true
+        }
+      },
+      "current": {
+        "values": {
+          "writes": 0,
+          "commands": 2,
+          "toolCalls": 2,
+          "verified": true
+        }
+      },
+      "delta": {
+        "writes": 0,
+        "commands": 0,
+        "toolCalls": 0
+      }
+    },
+    {
+      "key": "flow-lead-direct-validation",
+      "label": "简单改动（lead-direct，带验证证据）",
+      "note": null,
+      "baseline": {
+        "values": {
+          "writes": 1,
+          "commands": 2,
+          "toolCalls": 3,
+          "verified": true,
+          "validation": 2
+        }
+      },
+      "current": {
+        "values": {
+          "writes": 0,
+          "commands": 2,
+          "toolCalls": 2,
+          "verified": true,
+          "validation": 2
+        }
+      },
+      "delta": {
+        "writes": -1,
+        "commands": 0,
+        "toolCalls": -1,
+        "validation": 0
+      }
+    },
+    {
+      "key": "flow-worker-reviewer",
+      "label": "单 Worker + 单 Reviewer（无返修）",
+      "note": null,
+      "baseline": {
+        "values": {
+          "writes": 4,
+          "commands": 5,
+          "toolCalls": 9,
+          "verified": true,
+          "validation": 2
+        }
+      },
+      "current": {
+        "values": {
+          "writes": 1,
+          "commands": 5,
+          "toolCalls": 6,
+          "verified": true,
+          "validation": 2
+        }
+      },
+      "delta": {
+        "writes": -3,
+        "commands": 0,
+        "toolCalls": -3,
+        "validation": 0
+      }
+    },
+    {
+      "key": "flow-background-busy",
+      "label": "后台复盘 BUSY 延期后的自动恢复",
+      "note": "假执行器计入模型调用；基线第二次 tick 因已推进 lastCheckedAt 返回 interval，需人工 learning recover；当前版本在下一次 30 秒延期机会只重试提交。",
+      "baseline": {
+        "values": {
+          "firstStatus": "recovery",
+          "firstReason": "BUSY",
+          "secondStatus": "interval",
+          "secondResumed": false,
+          "modelCalls": 1,
+          "ticks": 2,
+          "manualCommands": 1,
+          "manualStatus": "completed",
+          "pendingAfterFirst": 1,
+          "pendingAfterSecond": 1,
+          "finalPending": 0,
+          "entries": 1,
+          "lastCheckedAtAfterFirst": "2026-10-28T10:00:00.000Z",
+          "nextCheckAtAfterFirst": null
+        }
+      },
+      "current": {
+        "values": {
+          "firstStatus": "deferred",
+          "firstReason": "BUSY",
+          "secondStatus": "completed",
+          "secondResumed": true,
+          "modelCalls": 1,
+          "ticks": 2,
+          "manualCommands": 0,
+          "manualStatus": null,
+          "pendingAfterFirst": 1,
+          "pendingAfterSecond": 0,
+          "finalPending": 0,
+          "entries": 1,
+          "lastCheckedAtAfterFirst": null,
+          "nextCheckAtAfterFirst": "2026-10-28T10:00:30.000Z"
+        }
+      },
+      "delta": {
+        "modelCalls": 0,
+        "ticks": 0,
+        "manualCommands": -1,
+        "pendingAfterFirst": 0,
+        "pendingAfterSecond": -1,
+        "finalPending": 0,
+        "entries": 0
+      }
+    }
+  ],
+  "notes": [
+    "基线：锁争用为真实 CLI hook 子进程；持锁进程使用各版本自己的 store.withLock 持有 state 锁。计时含 Node 启动。",
+    "基线：I/O 计数只覆盖进程内调用；真实 CLI 子进程按命令/工具调用计数。",
+    "当前：锁争用为真实 CLI hook 子进程；持锁进程使用各版本自己的 store.withLock 持有 state 锁。计时含 Node 启动。",
+    "当前：I/O 计数只覆盖进程内调用；真实 CLI 子进程按命令/工具调用计数。"
+  ],
+  "repeatability": {
+    "note": "同一套场景按 baseline→current 与 current→baseline 两种子进程顺序各测 9 次；表中为中位数（ms）。",
+    "rows": [
+      {
+        "key": "session-start-registered",
+        "normalOrder": {
+          "baseline": 79.59129999999982,
+          "current": 81.59519999999998
+        },
+        "swappedOrder": {
+          "baseline": 74.2322999999999,
+          "current": 87.08589999999981
+        }
+      },
+      {
+        "key": "session-start-unregistered",
+        "normalOrder": {
+          "baseline": 14.906600000000253,
+          "current": 0.6231999999999971
+        },
+        "swappedOrder": {
+          "baseline": 13.476100000000315,
+          "current": 0.6477999999997337
+        }
+      },
+      {
+        "key": "user-prompt-registered",
+        "normalOrder": {
+          "baseline": 105.77410000000009,
+          "current": 88.76960000000008
+        },
+        "swappedOrder": {
+          "baseline": 69.97509999999966,
+          "current": 86.86139999999978
+        }
+      },
+      {
+        "key": "user-prompt-unregistered",
+        "normalOrder": {
+          "baseline": 22.971300000000156,
+          "current": 0.6613999999999578
+        },
+        "swappedOrder": {
+          "baseline": 14.16439999999966,
+          "current": 0.6759000000001834
+        }
+      },
+      {
+        "key": "posttool-normal",
+        "normalOrder": {
+          "baseline": 0.16530000000057044,
+          "current": 0.12049999999999272
+        },
+        "swappedOrder": {
+          "baseline": 0.10529999999971551,
+          "current": 0.11530000000038854
+        }
+      },
+      {
+        "key": "stop-registered",
+        "normalOrder": {
+          "baseline": 97.47219999999925,
+          "current": 77.58010000000013
+        },
+        "swappedOrder": {
+          "baseline": 74.53580000000056,
+          "current": 84.22300000000041
+        }
+      },
+      {
+        "key": "posttool-signal",
+        "normalOrder": {
+          "baseline": 109.07880000000023,
+          "current": 73.86880000000019
+        },
+        "swappedOrder": {
+          "baseline": 74.22270000000026,
+          "current": 81.48409999999967
+        }
+      }
+    ]
+  }
+}

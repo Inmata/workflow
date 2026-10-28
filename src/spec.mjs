@@ -69,19 +69,56 @@ export function collectSpecs(root) {
   walk(base, '.spec', 0);
   return specs;
 }
-// 检查版本缺省为 HEAD；只有检查 HEAD 时才看工作区未提交改动。
-export function checkSpecs(root, { ref } = {}) {
+// 历史版本没有 `.spec` 时返回 null（按该提交判无 spec，不混入当前磁盘定义）；
+// 列出或读取失败直接抛 CheckError，不静默回退到工作区。
+function commitSpecs(root, commit) {
+  if (git(root, ['cat-file', '-t', `${commit}:./.spec`], { allowFail: true }) !== 'tree') return null;
+  const specs = [];
+  for (const record of git(root, ['ls-tree', '-r', '-z', commit, '--', '.spec']).split('\0')) {
+    const tab = record.indexOf('\t');
+    if (tab < 0) continue;
+    const [mode, type] = record.slice(0, tab).split(' ');
+    const file = record.slice(tab + 1);
+    // 与磁盘收集一致：只看普通 spec.md，不跟随链接，嵌套深度上限相同。
+    if (type !== 'blob' || mode === '120000' || !/^\.spec\/.+\/spec\.md$/.test(file)) continue;
+    const parts = file.split('/');
+    if (parts.length - 3 > MAX_DEPTH) continue;
+    specs.push({ id: parts[parts.length - 2], spec: file, code: codeList(git(root, ['show', `${commit}:./${file}`])) });
+  }
+  return specs.sort((a, b) => a.spec.localeCompare(b.spec));
+}
+// 没有 Git 边界的目录没有可读历史；工作树的 .git 可以是目录或文件。
+function insideGitWorkTree(root) {
+  for (let cursor = root; ; cursor = path.dirname(cursor)) {
+    try { lstatSync(path.join(cursor, '.git')); return true; } catch { /* 继续向上找仓库边界 */ }
+    if (path.dirname(cursor) === cursor) return false;
+  }
+}
+// 检查版本缺省为 HEAD；只有检查 HEAD 时才看当前 worktree 的文件与未提交改动。
+// 显式 ref 先固定成提交 OID，spec 清单、正文、code 路径和存在性都取自该提交。
+// 显式 ref 默认没有可跳过的“无 spec”分支：先解析 ref，非 Git 目录或 ref 无效一律按读取失败报错。
+// skipNonGitNoSpec 供任务门禁使用：检查根不在 Git 工作树内且本地没有 .spec 时没有版本可查，
+// 按无 spec 跳过；Git 内的无效 ref、或非 Git 但存在 .spec 仍按读取失败报错。CLI 不开启。
+export function checkSpecs(root, { ref, skipNonGitNoSpec = false } = {}) {
   const label = ref || 'HEAD';
   const head = label === 'HEAD';
-  const specs = collectSpecs(root);
-  if (!specs) return { ok: true, ref: label, skipped: 'no-spec', findings: [] };
+  // HEAD 且工作区没有 .spec 时不必拉起 git，保持原有快速跳过。
+  let specs = head ? collectSpecs(root) : null;
+  if (head && !specs) return { ok: true, ref: label, skipped: 'no-spec', findings: [] };
+  if (!head && skipNonGitNoSpec && !insideGitWorkTree(root) && !collectSpecs(root)) return { ok: true, ref: label, skipped: 'no-spec', findings: [] };
   const findings = [];
-  const byId = new Map();
-  for (const spec of specs) byId.set(spec.id, [...(byId.get(spec.id) || []), spec]);
-  for (const [specId, group] of byId) if (group.length > 1) findings.push({ id: specId, spec: group.map(s => s.spec), code: null, kind: 'duplicate-id', commits: [] });
+  let displayRef = label;
   try {
     if (git(root, ['rev-parse', '--is-shallow-repository']) === 'true') throw new CheckError('shallow');
     const commit = git(root, ['rev-parse', '--verify', '--quiet', `${label}^{commit}`]);
+    if (!head) {
+      displayRef = commit;
+      specs = commitSpecs(root, commit);
+      if (!specs) return { ok: true, ref: displayRef, skipped: 'no-spec', findings: [] };
+    }
+    const byId = new Map();
+    for (const spec of specs) byId.set(spec.id, [...(byId.get(spec.id) || []), spec]);
+    for (const [specId, group] of byId) if (group.length > 1) findings.push({ id: specId, spec: group.map(s => s.spec), code: null, kind: 'duplicate-id', commits: [] });
     const commits = new Map();
     const log = git(root, ['log', '--format=%H%x1f%P%x1f%T%x1f%(trailers:key=Spec-OK,valueonly,separator=%x2C)%x1e', commit]);
     for (const record of log.split('\x1e')) {
@@ -115,10 +152,10 @@ export function checkSpecs(root, { ref } = {}) {
       }
     }
   } catch (error) {
-    if (error instanceof CheckError) return { ok: false, ref: label, error: error.reason, ...(error.detail ? { detail: error.detail } : {}), findings };
+    if (error instanceof CheckError) return { ok: false, ref: displayRef, error: error.reason, ...(error.detail ? { detail: error.detail } : {}), findings };
     throw error;
   }
-  return { ok: findings.length === 0, ref: label, findings };
+  return { ok: findings.length === 0, ref: displayRef, findings };
 }
 // 给门禁和 Stop 用的一行摘要。
 export function describeFindings(findings) {

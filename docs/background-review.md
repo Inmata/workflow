@@ -146,6 +146,9 @@ node bin/workflow.mjs learning status --root "D:/项目"
 node bin/workflow.mjs learning review --root "D:/项目" --now
 # 有完整提案的中断运行，按保存的提案恢复，不再调用模型
 node bin/workflow.mjs learning recover --root "D:/项目" --run "<运行ID>"
+# 内容冲突时选择保留提案（核对后仍可手动 recover）或作废并重新排队材料（仅限本运行尚未写入知识）
+node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --keep
+node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --discard
 ```
 
 `review` 可能返回的状态：
@@ -158,9 +161,15 @@ node bin/workflow.mjs learning recover --root "D:/项目" --run "<运行ID>"
 | `no-fit` | 没有材料，或单份材料超出 `maxInputChars` |
 | `timeout` | 超过 `maxRunMinutes` 被终止；材料保留，占用当日额度 |
 | `failed` | 模型失败、结果无效或隔离未生效，`reason` 说明原因；材料保留 |
-| `recovery` / `recovery-required` | 有未完成的运行，先用 `learning recover` 处理 |
+| `deferred` | 业务任务、只读会话或复盘锁竞争导致暂缓；提案已保存，条件允许后由下次检查先重试提交，不再调用模型 |
+| `conflict` | 提案与人工编辑冲突，未覆盖任何文件；用 `learning resolve --keep` 保留，或在本运行的知识文件均未偏离写入前快照时用 `--discard` 作废 |
+| `kept` | 已选择保留冲突提案；核对后用 `learning recover` 手动应用，处理前不自动重试 |
+| `recovery` | 写入事务未完整结束；提案保留，按既有事务恢复语义处理，不会把未完成事务当成 pending |
+| `recovery-required` | 有未完成的运行需要辨认；有提案的会在条件允许时自动接续，其余用 `learning recover` 处理 |
 
-错误码 `BUSY` 表示项目还有活动的业务任务，等业务结束后再跑。`LOCKED` 表示另一个复盘正在运行，所有项目共用一个复盘锁。
+错误码 `BUSY` 表示项目还有活动的业务任务，等业务结束后再跑。`LOCKED` 表示另一个复盘正在运行，所有项目共用一个复盘锁。这两类短延期不推进正常检查周期，也不会再次调用模型：计划任务仍按 `checkIntervalMinutes` 触发，下一次触发（或手动/其他 tick）一定会先补提交已保存的提案；`nextCheckAt` 只是给 tick 判断用的有界退避，不会自行在 30 秒后重试。
+
+内容冲突不会反复按旧 baseline 自动提交。`--keep` 保留提案和待写隔离，人工核对冲突后可再执行 `learning recover`。`--discard` 仅在本运行的知识文件均未偏离写入前快照时可用：作废旧提案、撤销本批隔离，并把本运行已标记的材料恢复为待处理，人工编辑不被覆盖，下一次新模型调用仍按正常额度计算。若任一知识文件已偏离写入前快照（例如替代提案只写入了新知识、写入后又被人工编辑，或原有文件被删除），作废会留下新旧知识并存且材料仍待处理，因此会被拒绝；此时先 `--keep` 保留提案，人工核对后用 `learning recover` 完成，或按事务快照还原后再作废。
 
 ## 5. 计划任务管理
 
@@ -172,6 +181,7 @@ node bin/workflow.mjs learning schedule remove --root "D:/项目"    # 只删除
 
 - 任务只在当前用户登录时运行，经 `conhost.exe --headless` 启动 Node，不弹窗口。电脑关机或未登录时不运行，恢复后再检查。
 - 定时检查本身不调用模型，只有达到条件、没有活动业务任务、额度足够时才启动复盘。
+- 锁竞争、业务任务或只读会话造成的延期不推进正常检查周期：计划任务仍按 `checkIntervalMinutes` 触发，下一次触发（或手动/其他 tick）会先补提交已保存的提案，不重新调用模型。`nextCheckAt` 只是有界退避，供 tick 判断，不是自动定时重试。
 - 用 `learning config set` 修改 `checkIntervalMinutes` 等配置时，会同步更新已注册的任务。直接手改 JSON 的，要等下一次检查才同步，或手动再执行一次 `install`。
 - 升级插件后，旧定义的任务会在下一次检查时自动按新定义重新注册。0.3.0 及更早版本注册的任务可能根本不会运行，升级后请手动执行一次 `install`。
 

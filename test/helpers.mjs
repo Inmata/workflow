@@ -11,6 +11,10 @@ import { handleHook } from '../src/hooks.mjs';
 
 export const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 export const entry = path.join(root, 'bin', 'workflow.mjs');
+// store 的锁交错钩子只挂在全局符号上，不作为生产模块的导出句柄；测试通过这个键设置/清理。
+export const LOCK_TEST_HOOKS = Symbol.for('workflow.lock-test-hooks');
+// 知识检索的单文件读取故障注入点；用于稳定复现"读取失败但 size/mtimeMs 不变"的恢复场景。
+export const KNOWLEDGE_TEST_HOOKS = Symbol.for('workflow.knowledge-test-hooks');
 const temporaryAreas = new Set();
 export async function temporary(prefix = 'case-') {
   const parent = path.join(tmpdir(), 'workflow-tests');
@@ -40,6 +44,14 @@ export async function fixture(options = {}) {
   const f = { area, project, directory, projectId: binding.projectId, sessionId: 'session-1', turnId: 'turn-1', promptId: 'prompt-1', taskId: 'task-1' };
   if (options.claude) await claudeEvent(f, 'UserPromptSubmit');
   else await event(f, 'UserPromptSubmit');
+  return f;
+}
+// 需要具体 ref 的用例用真实 Git 仓库：finalRef 等标签必须能解析成提交，显式 ref 才不按读取失败处理。
+export async function gitFixture(tags = []) {
+  const f = await fixture({ git: true });
+  git(f.project, ['add', '-A']);
+  git(f.project, ['commit', '-q', '-m', 'init']);
+  for (const tag of tags) git(f.project, ['tag', tag]);
   return f;
 }
 export async function event(f, name, extra = {}) {
@@ -89,4 +101,11 @@ export function assertRoundCheck(output) {
 }
 export function cli(args, options = {}) {
   return spawnSync(process.execPath, [entry, ...args], { encoding: 'utf8', windowsHide: true, timeout: 30000, cwd: root, ...options });
+}
+// 已退出子进程的 pid：用来模拟崩溃进程遗留的锁，不依赖当前进程存活判断。
+export function deadPid() {
+  const child = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8', windowsHide: true });
+  const pid = Number(String(child.stdout || '').replace(/\u001b\[\d+m/g, '').trim());
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, `无法取得子进程 pid：${child.stdout}`);
+  return pid;
 }

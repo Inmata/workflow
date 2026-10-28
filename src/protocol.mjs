@@ -1,15 +1,21 @@
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
-import { digest, fail, id, SCHEMA_VERSION, WorkflowError } from './store.mjs';
+import { deferredLifecycleEvents, digest, fail, id, lifecycleEvents, lifecycleScope, readDeferredLifecycleNote, SCHEMA_VERSION, WorkflowError } from './store.mjs';
 import { checkSpecs, describeFindings } from './spec.mjs';
 
 export const PHASES = ['unknown', 'operation-only', 'executing', 'waiting-user', 'delivering'];
 export const ROUTES = ['operation-only', 'lead-direct', 'delegated'];
+export const PERMISSION_MODES = ['write', 'read-only', 'plan'];
+// 宿主自己报告的只读/计划模式优先于任务声明；task-update 不能借信号绕过它。
+const HOST_BLOCKED_MODES = ['plan', 'read-only'];
+// task-update 只接受身份字段与 goal/permissions/allowedPathsMode；其余顶层字段明确拒绝，避免夹带 route/channels/账本。
+const TASK_UPDATE_FIELDS = new Set(['schemaVersion', 'projectId', 'sessionId', 'turnId', 'taskId', 'ticket', 'interruptEpoch', 'expectedRevision', 'signalId', 'action', 'goal', 'permissions', 'allowedPathsMode']);
 export const PACKAGE_STATUSES = ['dispatched', 'delivered', 'consumed', 'canceled', 'failed', 'waived'];
 export const TERMINAL_PACKAGE = ['consumed', 'canceled', 'failed', 'waived'];
 export const VERDICTS = ['PASS', 'FIX', 'BLOCKED'];
 const REPAIR_LIMIT = 2;
 const MAX_PACKAGES = 200;
+const MAX_DELIVERY_REFS = 50;
 export const sessionKey = (projectId, sessionId) => digest(`${projectId}\0${sessionId}`);
 export const taskKey = (projectId, taskId) => digest(`${projectId}\0${taskId}`);
 export function textField(value, label) {
@@ -34,6 +40,8 @@ export function openTurn(state, project, sessionId, turnId, { compact = false, e
     revision: (session?.revision || 0) + 1, phase: 'unknown', interrupted: false,
     permissionMode: mode || 'unknown', eventId: eventId || null, lastSeenAt: new Date().toISOString(),
     receipts: session?.receipts || {}, observed: session?.observed || {}, contextKey: session?.contextKey, briefed: session?.briefed,
+    // 结束事件回执跨回合保留：新回合开启后旧事件重放仍然只生效一次。
+    ...(session?.lifecycleReceipts ? { lifecycleReceipts: session.lifecycleReceipts } : {}),
     // role-claim 声明的子角色跨回合保留；未声明的会话按 Lead 处理。
     ...(session?.role ? { role: session.role, packageId: session.packageId || null } : {}),
   };
@@ -115,7 +123,7 @@ function waiverInput(value) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) fail('WAIVER', '豁免需为 {step, reason}');
     const step = textField(item.step, 'waiver.step');
     // spec 漂移只能更新 spec 或做 Spec-OK 空提交消除，让“不用改 spec”的判断留在 git 历史里；spec-check（没法检查）可豁免。
-    if (step === 'spec' || step.startsWith('spec:')) fail('WAIVER', 'spec 漂移不能豁免：更新 spec，或用 Spec-OK 空提交写明理由');
+    if (step === 'spec' || step.startsWith('spec:')) fail('WAIVER', 'spec 漂移不能豁免：更新 spec，或在内容提交附 Spec-OK 写明理由；需要追认既有历史时才用空提交');
     return { step, reason: textField(item.reason, 'waiver.reason') };
   });
 }
@@ -125,6 +133,101 @@ function changeInput(value) {
   if (!Array.isArray(packages) || packages.length > 50) fail('CHANGE', 'change.packages 需为数组');
   packages.forEach(item => identifier(item, 'change.packages'));
   return { summary: textField(value.summary, 'change.summary'), reason: textField(value.reason, 'change.reason'), packages, at: new Date().toISOString() };
+}
+// 旧账本可能只有 status=delivered/consumed 或 deliveredRef，没有 P08 新增的轮次字段。
+// 在状态被改写前补记交付事实；r1 的 countedRepair 令牌迁移为 countedRound；历史 attempts 保持原值。
+// 只有缺少 deliverySeq 字段的旧记录才按状态推断：新账本明确记 0 轮（启动失败或没有引用的 consumed）不得补成第 1 轮。
+function backfillDelivery(item) {
+  if (!item) return item;
+  const legacy = item.deliverySeq === undefined;
+  if (item.countedRound === undefined && Array.isArray(item.countedRepair)) {
+    const counted = item.countedRepair
+      .map(token => /:delivery:(\d+)$/.exec(token))
+      .filter(Boolean)
+      .map(match => Number(match[1]));
+    // 只有 ref/FIX 令牌说明 r1 计过一轮（FIX 作为隐含交付），按已计入一轮处理。
+    item.countedRound = counted.length ? Math.max(...counted) : item.countedRepair.length ? Math.max(item.deliverySeq || 0, 1) : 0;
+    item.deliverySeq = Math.max(item.deliverySeq || 0, item.countedRound);
+    delete item.countedRepair;
+  }
+  if (!legacy) {
+    if (item.countedRound === undefined) item.countedRound = 0;
+    return item;
+  }
+  if (!['delivered', 'consumed'].includes(item.status) && !item.deliveredRef && !item.deliveredAt && !item.countedRound) return item;
+  if (!item.deliveredAt) item.deliveredAt = new Date().toISOString();
+  item.deliverySeq = Math.max(item.deliverySeq || 0, 1);
+  if (item.countedRound === undefined) item.countedRound = 0;
+  // 旧记录已有的引用就是推断出的这一轮的引用，避免后续把同一引用当成迟到补记再开一轮。
+  if (item.roundRef === undefined && item.deliveredRef) item.roundRef = item.deliveredRef;
+  return item;
+}
+// 返修计数的单位是“交付轮次”，不是交付/引用/FIX 各自独立的令牌。
+// 开启新一轮：进入 delivered；最近一轮还没有引用时，新出现的 deliveredRef 归入该轮（无论是否已计入）；
+// 最近一轮已有别的引用或此前从未开启轮次时，新引用开启新的一轮；已见过的引用不再开启。
+// roundRef 记录最近一轮的交付引用，null 表示该轮尚未登记引用；已计入的轮次记在 countedRound。
+// 从非 delivered 状态直接进入 consumed 且没有新引用是消费失败或终态结果，不开启新轮次。
+// 只有审查 FIX、此前没有任何交付轮次时，才由隐含交付开启第 1 轮。
+function deliveryRound(previous, item, { ref = null, fixRequested = false } = {}) {
+  let seq = previous?.deliverySeq || 0;
+  const seen = new Set(previous?.deliveryRefs || []);
+  if (previous?.deliveredRef) seen.add(previous.deliveredRef);
+  let roundRef = previous?.roundRef ?? null;
+  if (!previous) {
+    // 新包直接以交付状态或交付引用建账，本身就是一轮。
+    if (['delivered', 'consumed'].includes(item.status) || ref) { seq = 1; roundRef = ref; }
+  } else if (item.status === 'delivered' && previous.status !== 'delivered') {
+    // 进入 delivered 一定开新轮；本轮是否带引用都不继承上一轮的 roundRef。
+    seq += 1;
+    roundRef = ref;
+  } else if (ref && !seen.has(ref)) {
+    // 最近一轮已开启且还没有引用：迟到补记归入该轮；已有引用或从未开启轮次才开新轮。
+    if (seq === 0 || roundRef) seq += 1;
+    roundRef = ref;
+  }
+  if (fixRequested && seq === 0) { seq = 1; roundRef = null; }
+  return { seq, roundRef };
+}
+// 记录见过的交付引用，供“此前未见过的 deliveredRef”判断；有界保留，避免状态无界增长。
+function rememberDeliveryRefs(previous, next) {
+  const refs = new Set(previous?.deliveryRefs || []);
+  if (previous?.deliveredRef) refs.add(previous.deliveredRef);
+  if (next.deliveredRef) refs.add(next.deliveredRef);
+  if (refs.size) next.deliveryRefs = [...refs].slice(-MAX_DELIVERY_REFS);
+}
+// 本批 reviewer 事实按整批合并后的最终状态预扫 FIX 目标，保证计数与数组顺序无关。
+// 先把旧账本中的 FIX 放进结果，再用本批 reviewer 项覆盖：改成 PASS/BLOCKED 或换审查对象会移除旧目标。
+function batchReviewerFixes(items, task) {
+  const final = new Map();
+  const add = (target, reviewerId) => {
+    if (!final.has(target)) final.set(target, new Set());
+    final.get(target).add(reviewerId);
+  };
+  const remove = (target, reviewerId) => {
+    const set = final.get(target);
+    if (!set) return;
+    set.delete(reviewerId);
+    if (!set.size) final.delete(target);
+  };
+  for (const reviewer of Object.values(task.packages || {})) {
+    if (reviewer.role === 'reviewer' && reviewer.reviews && reviewer.verdict === 'FIX') add(reviewer.reviews, reviewer.packageId);
+  }
+  // 同一批里同一 reviewer 重复出现时，后项覆盖前项，只按最终状态计入。
+  const merged = new Map();
+  for (const item of items) {
+    const previous = merged.get(item.packageId) || task.packages[item.packageId];
+    merged.set(item.packageId, {
+      role: item.role ?? previous?.role,
+      reviews: item.reviews !== undefined ? item.reviews : previous?.reviews,
+      verdict: item.verdict !== undefined ? item.verdict : previous?.verdict,
+    });
+  }
+  for (const [reviewerId, state] of merged) {
+    const before = task.packages[reviewerId];
+    if (before?.role === 'reviewer' && before.reviews && before.verdict === 'FIX') remove(before.reviews, reviewerId);
+    if (state.role === 'reviewer' && state.reviews && state.verdict === 'FIX') add(state.reviews, reviewerId);
+  }
+  return final;
 }
 // 包本身或它沿 supersedes 接替过的旧包有过审查结论（verdict），即算已审；取消、失败而没给结论的审查包不算。
 function wasReviewed(task, item) {
@@ -139,8 +242,13 @@ export function upsertPackages(task, items, change = null) {
   if (!Array.isArray(items) || !items.length || items.length > 50) fail('PACKAGE', 'packages 需为 1-50 项数组');
   task.packages ||= {};
   const repairLimit = [];
-  for (const item of items.map(packageInput)) {
+  const parsed = items.map(packageInput);
+  const reviewerFixes = batchReviewerFixes(parsed, task);
+  const fixRequested = packageId => (reviewerFixes.get(packageId)?.size || 0) > 0;
+  for (const item of parsed) {
     const previous = task.packages[item.packageId];
+    // 先按旧状态补记交付事实，再做任何状态改写：旧账本的 delivered/consumed 不会因转 failed/canceled 丢失。
+    backfillDelivery(previous);
     if (!previous && (!item.role || !item.status)) fail('PACKAGE', '新工作包需给出 role 与 status');
     if (!previous && Object.keys(task.packages).length >= MAX_PACKAGES) fail('PACKAGE', '工作包数量超过上限');
     if (previous && item.supersedes !== undefined && item.supersedes !== previous.supersedes) fail('PACKAGE', 'supersedes 只能在新建工作包时声明');
@@ -152,17 +260,50 @@ export function upsertPackages(task, items, change = null) {
     if (next.role !== 'reviewer' && (next.verdict || next.reviews || next.reviewedRef)) fail('PACKAGE', '只有 reviewer 包可带 verdict/reviews/reviewedRef');
     // 审过的 worker 包不能改标 waived 绕过审查；放弃用 canceled，返修用 supersedes 或原包重新派发。
     if (next.role === 'worker' && next.status === 'waived' && previous?.status !== 'waived' && wasReviewed(task, next)) fail('PACKAGE', `工作包 ${next.packageId} 已有审查结论，不能标 waived：让审查对上最终交付版本，或用 supersedes 接替，或 canceled 放弃`);
-    // 已交付或已消费的包重新派发即一轮返修；attempts 由插件计数，不采信输入。
-    if (previous && previous.status !== 'dispatched' && next.status === 'dispatched') next.attempts = (previous.attempts || 0) + 1;
-    // 换新 packageId 返修时用 supersedes 接上旧包：继承轮次，旧包收尾，不再单独要求审查。
+    // 只有本次信号显式给出的 deliveredRef 才参与开轮；继承来的旧引用不能当成新交付。
+    const incomingRef = item.deliveredRef === undefined ? null : item.deliveredRef;
+    // 返修计数的单位是交付轮次：先推进轮次，再判断重派或接替时是否有尚未计入的一轮。
     if (!previous && next.supersedes) {
       const old = task.packages[next.supersedes];
       if (!old || old.role !== next.role) fail('PACKAGE', `supersedes 须指向同角色的已有工作包：${next.supersedes}`);
       if (old.supersededBy) fail('PACKAGE', `工作包 ${old.packageId} 已被 ${old.supersededBy} 接替`);
-      next.attempts = (old.attempts || 0) + 1;
+      backfillDelivery(old);
+      // 旧包确有尚未计入的交付轮次（或仅 FIX 的隐含交付）时，这次接替才是一轮返修；未产出的启动失败不增加。
+      const oldSeq = Math.max(old.deliverySeq || 0, fixRequested(old.packageId) ? 1 : 0);
+      const oldCounted = old.countedRound || 0;
+      next.attempts = (old.attempts || 0) + (oldSeq > oldCounted ? 1 : 0);
+      // 新包继承旧包的轮次编号、当前轮引用与已计入标记，再叠加自己的初始交付；同一条交付不会被重复计数。
+      const chain = { status: old.status, deliveredRef: old.deliveredRef, deliverySeq: oldSeq, roundRef: old.roundRef ?? null, deliveryRefs: old.deliveryRefs || [] };
+      next.countedRound = Math.max(oldCounted, oldSeq);
+      const planned = deliveryRound(chain, next, { ref: incomingRef, fixRequested: fixRequested(next.packageId) });
+      next.deliverySeq = planned.seq;
+      next.roundRef = planned.roundRef;
+      rememberDeliveryRefs(chain, next);
       old.supersededBy = next.packageId;
       if (!TERMINAL_PACKAGE.includes(old.status)) old.status = old.status === 'dispatched' ? 'canceled' : 'consumed';
+    } else if (previous) {
+      const planned = deliveryRound(previous, next, { ref: incomingRef, fixRequested: fixRequested(next.packageId) });
+      next.deliverySeq = planned.seq;
+      next.roundRef = planned.roundRef;
+      next.countedRound = previous.countedRound || 0;
+      rememberDeliveryRefs(previous, next);
+      // 同包重派：只有存在尚未计入的交付轮次才加一；已计入的轮次不会因启动失败重派再次生效。
+      // attempts 由插件计数，不采信输入。
+      if (previous.status !== 'dispatched' && next.status === 'dispatched') {
+        if (next.deliverySeq > next.countedRound) {
+          next.attempts = (previous.attempts || 0) + 1;
+          next.countedRound = next.deliverySeq;
+        } else next.attempts = previous.attempts || 0;
+      }
+    } else {
+      const planned = deliveryRound(null, next, { ref: incomingRef, fixRequested: fixRequested(next.packageId) });
+      next.deliverySeq = planned.seq;
+      next.roundRef = planned.roundRef;
+      next.countedRound = 0;
+      rememberDeliveryRefs(null, next);
     }
+    // 只有真正开启交付轮次时才记交付起点；启动失败或没有引用的 consumed 保持 0 轮，避免下次被旧账本回填成第 1 轮。
+    if (!next.deliveredAt && next.deliverySeq > 0 && (incomingRef || next.status === 'delivered' || next.status === 'consumed')) next.deliveredAt = new Date().toISOString();
     // 只在通道变化或新建时核对；同一偏离已记过 change 的包，后续重新派发不再要求。
     const deviation = channelDeviation(task, next);
     if (deviation && deviation !== (previous && channelDeviation(task, previous)) && !change?.packages.includes(next.packageId)) fail('CHANNEL', `工作包 ${next.packageId}：${deviation}。先向用户说明，再在同一 packages 信号附 change:{summary, reason, packages:["${next.packageId}"]} 记录偏离`);
@@ -187,31 +328,35 @@ function planBaselines(root, plans) {
   return plans.map(relative => ({ path: relative, digest: root ? fileDigest(root, relative) : null }));
 }
 // 内容未变才算没回写；文件不见了按已归档或改名处理，读不到基线时不提醒。
-export function unchangedPlans(state, task) {
-  const root = state.projects[task.projectId]?.root;
+// root 为可信调用方给出的当前 worktree；缺省回落到项目主根。
+export function unchangedPlans(state, task, root) {
+  root ||= state.projects[task.projectId]?.root;
   if (!root || !task.plans?.length) return [];
   return task.plans.filter(plan => plan.digest && fileDigest(root, plan.path) === plan.digest).map(plan => plan.path);
 }
 const planReminder = paths => `关联计划 ${paths.join('、')} 自任务开始后没有改动：按 Lead 指引回写本任务完成的条目、偏离和剩余事项；确实不需要回写时在交付说明里写明理由。计划已全部完成时提议归档。`;
 // 门禁只核对 Lead 声明记录的一致性；插件看不到 Worker 真实产出，不证明审查或测试真实发生。
-export function gateMissing(state, task, finalRef) {
-  return gateReport(state, task, finalRef).missing;
+export function gateMissing(state, task, finalRef, root) {
+  return gateReport(state, task, finalRef, root).missing;
 }
 // spec 检查对 lead-direct、delegated 和未声明 route 的旧任务都生效；项目没有 .spec 时跳过。
-function specMissing(state, task, finalRef) {
-  const root = state.projects[task.projectId]?.root;
+// root 是 resolveProject 给出的当前 worktree，而不是 project.root，避免附加 worktree 的 drift 被主树漏掉。
+function specMissing(state, task, finalRef, root) {
+  root ||= state.projects[task.projectId]?.root;
   if (task.route === 'operation-only' || !root) return { missing: [], findings: [] };
-  const report = checkSpecs(root, { ref: finalRef || undefined });
+  // 门禁是日常收尾路径：非 Git 且没有 .spec 的接入项目没有版本可查，维持原有“无 spec”跳过；
+  // 显式 finalRef 在 Git 内无效、或非 Git 但存在 .spec 时仍报 spec-check:git。
+  const report = checkSpecs(root, { ref: finalRef || undefined, skipNonGitNoSpec: true });
   const missing = [...new Set(report.findings.map(f => `spec:${f.id}`))];
   if (report.error) missing.push(`spec-check:${report.error}`);
   return { missing, findings: report.findings };
 }
-export function gateReport(state, task, finalRef) {
+export function gateReport(state, task, finalRef, root) {
   const missing = [];
   for (const child of Object.values(state.tasks)) {
     if (child.projectId === task.projectId && child.parentTaskId === task.taskId && child.lifecycle === 'active') missing.push(`child:${child.taskId}`);
   }
-  const spec = specMissing(state, task, finalRef);
+  const spec = specMissing(state, task, finalRef, root);
   if (task.route !== 'delegated') return { missing: [...missing, ...spec.missing], findings: spec.findings };
   const packages = Object.values(task.packages || {});
   for (const item of packages) if (!TERMINAL_PACKAGE.includes(item.status)) missing.push(`terminal:${item.packageId}`);
@@ -227,7 +372,81 @@ export function gateReport(state, task, finalRef) {
 // 审过的 worker 包，审查缺项（未 PASS 或审的不是最终交付版本）也不抵扣：只能补审或用 supersedes 接替。
 const reviewed = (task, entry) => entry.startsWith('review:') && wasReviewed(task, task.packages?.[entry.slice('review:'.length)]);
 const waived = (task, entry, waivers) => !(entry === 'spec' || entry.startsWith('spec:')) && !reviewed(task, entry) && waivers.some(w => w.step === entry || w.step === entry.split(':')[0]);
-export function acceptSignal(state, payload) {
+// task-update：同任务显式改 goal 与 permissions。沿用同一身份/修订/回执与失败回滚；
+// 只改本机任务声明，不碰 route/channels/账本，也不改宿主全局配置。调用方须已有用户授权，插件只记录声明。
+function updateTask(payload, task, session) {
+  const misplaced = ['mode', 'allowedPaths'].filter(field => Object.hasOwn(payload, field));
+  if (misplaced.length) fail('PERMISSION', `${misplaced.join('、')} 应放进 permissions；task-update 格式为 {goal?, permissions:{mode?, allowedPaths?}, allowedPathsMode?}`);
+  const unsupported = Object.keys(payload).filter(field => !TASK_UPDATE_FIELDS.has(field));
+  if (unsupported.length) fail('UNSUPPORTED', `task-update 首版只改 goal 与 permissions；不支持 ${unsupported.join('、')}`);
+  const hasGoal = payload.goal !== undefined;
+  const hasPermissions = payload.permissions !== undefined;
+  if (!hasGoal && !hasPermissions) fail('INPUT', 'task-update 至少给出 goal 或 permissions');
+  if (!task.permissions || typeof task.permissions !== 'object' || !Array.isArray(task.permissions.allowedPaths)) fail('PERMISSION', '任务缺少可更新的权限声明');
+  const previous = { goal: task.goal, mode: task.permissions.mode, allowedPaths: [...task.permissions.allowedPaths] };
+  let goal;
+  if (hasGoal) { textField(payload.goal, 'goal'); goal = payload.goal; }
+  let mode, paths, pathsMode = 'replace';
+  if (hasPermissions) {
+    const input = payload.permissions;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) fail('PERMISSION', 'permissions 需为 {mode?, allowedPaths?}');
+    const unknown = Object.keys(input).filter(key => !['mode', 'allowedPaths'].includes(key));
+    if (unknown.length) fail('UNSUPPORTED', `permissions 只支持 mode 与 allowedPaths；不支持 ${unknown.join('、')}`);
+    if (input.mode === undefined && input.allowedPaths === undefined) fail('PERMISSION', 'permissions 至少给出 mode 或 allowedPaths');
+    if (input.mode !== undefined) {
+      if (!PERMISSION_MODES.includes(input.mode)) fail('PERMISSION', 'permissions.mode 须为 write、read-only 或 plan');
+      mode = input.mode;
+    }
+    if (input.allowedPaths !== undefined) {
+      if (!Array.isArray(input.allowedPaths) || input.allowedPaths.some(item => typeof item !== 'string' || !item.trim())) fail('PERMISSION', 'permissions.allowedPaths 须为非空字符串数组');
+      paths = input.allowedPaths;
+    }
+  }
+  if (payload.allowedPathsMode !== undefined) {
+    if (paths === undefined) fail('INPUT', 'allowedPathsMode 需与 permissions.allowedPaths 一起使用');
+    if (!['replace', 'append'].includes(payload.allowedPathsMode)) fail('INPUT', 'allowedPathsMode 只能是 replace 或 append');
+    pathsMode = payload.allowedPathsMode;
+  }
+  const nextMode = mode ?? previous.mode;
+  let nextPaths = previous.allowedPaths;
+  let added = [], removed = [];
+  if (paths !== undefined) {
+    const unique = [...new Set(paths)];
+    const existing = new Set(previous.allowedPaths);
+    added = unique.filter(item => !existing.has(item));
+    if (pathsMode === 'append') nextPaths = [...previous.allowedPaths, ...added];
+    else {
+      const keep = new Set(unique);
+      removed = previous.allowedPaths.filter(item => !keep.has(item));
+      nextPaths = unique;
+    }
+  }
+  // 宿主只读/计划模式优先：信号只能记录声明，不能把实际写入权限抬到宿主之上。
+  if (HOST_BLOCKED_MODES.includes(session.permissionMode) && ((nextMode === 'write' && previous.mode !== 'write') || added.length)) {
+    fail('PERMISSION', `宿主当前为 ${session.permissionMode} 模式：task-update 不能提升宿主权限；回到可写模式后再更新`);
+  }
+  if (goal !== undefined) task.goal = goal;
+  if (hasPermissions) task.permissions = { ...task.permissions, ...(mode !== undefined ? { mode } : {}), ...(paths !== undefined ? { allowedPaths: nextPaths } : {}) };
+  const change = {};
+  if (goal !== undefined) change.goal = { from: previous.goal, to: goal };
+  if (hasPermissions) {
+    const permissions = {};
+    if (mode !== undefined && mode !== previous.mode) permissions.mode = { from: previous.mode, to: mode };
+    if (paths !== undefined) permissions.allowedPaths = { mode: pathsMode, added, removed };
+    if (Object.keys(permissions).length) change.permissions = permissions;
+  }
+  // 追加审计记录，不修改既有会话回执；旧任务没有 updates 字段按空处理。
+  if (Object.keys(change).length) (task.updates ||= []).push({ at: new Date().toISOString(), change });
+  return {
+    goal: task.goal,
+    permissions: { ...task.permissions, allowedPaths: [...task.permissions.allowedPaths] },
+    change,
+    hostPermissionMode: session.permissionMode,
+    note: '已更新本机任务声明；实际写入仍受宿主当前只读/计划权限约束，插件只记录声明，不自动证明用户授权真实存在',
+  };
+}
+// options.root 只接受入口用 resolveProject 核对过的当前 worktree；payload 里的路径不参与检查根选择。
+export function acceptSignal(state, payload, { root } = {}) {
   identifier(payload?.signalId, 'signalId');
   const initial = currentIdentity(state, payload, { replay: true, requireTask: false });
   const receipt = initial.session.receipts[payload.signalId];
@@ -261,15 +480,15 @@ export function acceptSignal(state, payload) {
       if (typeof payload.goal !== 'string' || !payload.goal.trim()) fail('INPUT', '新任务缺少 goal（一句话目标，顶层字段）；完整格式：{action:"task-start", taskId, goal, route, permissions:{mode:"write|read-only|plan", allowedPaths:[...]}}');
       textField(payload.goal, 'goal');
       const permissions = payload.permissions;
-      if (!permissions || !['write', 'read-only', 'plan'].includes(permissions.mode) || !Array.isArray(permissions.allowedPaths) || permissions.allowedPaths.some(p => typeof p !== 'string')) {
+      if (!permissions || !PERMISSION_MODES.includes(permissions.mode) || !Array.isArray(permissions.allowedPaths) || permissions.allowedPaths.some(p => typeof p !== 'string')) {
         const misplaced = ['mode', 'allowedPaths'].filter(field => Object.hasOwn(payload, field));
-        const detail = !permissions ? '缺少 permissions 对象' : !['write', 'read-only', 'plan'].includes(permissions.mode) ? 'permissions.mode 须为 write、read-only 或 plan' : 'permissions.allowedPaths 须为字符串数组（可为空数组）';
+        const detail = !permissions ? '缺少 permissions 对象' : !PERMISSION_MODES.includes(permissions.mode) ? 'permissions.mode 须为 write、read-only 或 plan' : 'permissions.allowedPaths 须为字符串数组（可为空数组）';
         fail('PERMISSION', `任务需明确 mode 与 allowedPaths：${detail}${misplaced.length ? `；${misplaced.join('、')} 写在了顶层，应放进 permissions` : ''}`);
       }
       const plans = payload.plans === undefined ? null : planInput(payload.plans);
       const channels = payload.channels === undefined ? null : channelsInput(payload.channels);
       task = { projectId: project.projectId, taskId: payload.taskId, goal: payload.goal, parentTaskId: payload.parentTaskId || null, route: payload.route || null, lifecycle: 'active', repairIssued: false, deliveries: {}, candidates: {}, packages: {}, permissions, createdAt: new Date().toISOString() };
-      if (plans) task.plans = planBaselines(project.root, plans);
+      if (plans) task.plans = planBaselines(root || project.root, plans);
       if (channels) task.channels = channels;
       state.tasks[key] = task;
     } else {
@@ -281,7 +500,7 @@ export function acceptSignal(state, payload) {
       if (payload.plans !== undefined) {
         const plans = planInput(payload.plans);
         if (task.plans?.length && JSON.stringify(task.plans.map(p => p.path)) !== JSON.stringify(plans)) fail('PLAN', '任务已声明其他计划');
-        task.plans ||= planBaselines(project.root, plans);
+        task.plans ||= planBaselines(root || project.root, plans);
       }
       // 通道同样只能首次或补声明：改用其他通道走 packages 的 change 记录，不改声明。
       if (payload.channels !== undefined) {
@@ -290,6 +509,13 @@ export function acceptSignal(state, payload) {
         task.channels ||= channels;
       }
       task.lifecycle = 'active';
+      // 接续保留原目标与权限；回执明确说出保留项，避免 accepted 被误解为已更新。
+      // 本次附带 goal/permissions 时点名未生效，并指向 task-update。
+      const ignored = ['goal', 'permissions'].filter(field => payload[field] !== undefined);
+      extra = {
+        kept: { goal: task.goal, permissions: { ...task.permissions } },
+        note: `task-start 接续保留原 goal 与 permissions${ignored.length ? `；本次附带的 ${ignored.join('、')} 未生效` : ''}。要显式变更请用 task-update`,
+      };
     }
     session.taskId = payload.taskId;
     session.phase = 'executing';
@@ -310,14 +536,16 @@ export function acceptSignal(state, payload) {
       // 中途变更追加记录，不覆盖历史。
       if (change) (task.changes ||= []).push(change);
       if (repairLimit.length) extra = { repairLimit: true, repairLimitPackages: repairLimit };
+    } else if (payload.action === 'task-update') {
+      extra = updateTask(payload, task, session);
     } else if (payload.action === 'task-end') {
       if (payload.validation !== undefined) task.validation = validationInput(payload.validation);
       if (payload.finalRef !== undefined) identifier(payload.finalRef, 'finalRef');
       const waivers = [...(task.waivers || []), ...(payload.waivers === undefined ? [] : waiverInput(payload.waivers))];
-      const report = gateReport(state, task, payload.finalRef);
+      const report = gateReport(state, task, payload.finalRef, root);
       const missing = report.missing.filter(entry => !waived(task, entry, waivers));
       if (missing.length) {
-        const specText = report.findings.length ? `。spec 检查：${describeFindings(report.findings)}；更新 spec，或用 Spec-OK 空提交写明不需要更新的理由` : '';
+        const specText = report.findings.length ? `。spec 检查：${describeFindings(report.findings)}；更新 spec，或在内容提交附 Spec-OK 写明不需要更新的理由（需要追认既有历史时才用空提交）` : '';
         const reviewText = missing.some(entry => reviewed(task, entry)) ? '。已安排审查的包不能豁免审查缺项：让审查结论对上最终交付版本（reviewedRef=deliveredRef），或用 supersedes 接替' : '';
         const error = new WorkflowError('GATE', `完成门禁未满足：${missing.join(', ')}${specText}${reviewText}`);
         error.missing = missing;
@@ -330,7 +558,7 @@ export function acceptSignal(state, payload) {
       session.phase = 'unknown';
       if (!task.route) extra = { warning: 'route-missing' };
       else if (task.route === 'delegated') extra = { gate: 'declared-records-consistent' };
-      const stale = unchangedPlans(state, task);
+      const stale = unchangedPlans(state, task, root);
       if (stale.length) extra = { ...extra, planUnchanged: stale, reminder: planReminder(stale) };
     } else if (payload.action !== 'disposition') fail('ACTION', '未知信号动作');
     if (payload.action === 'disposition' || payload.disposition) {
@@ -350,39 +578,65 @@ export function acceptSignal(state, payload) {
   session.receipts[payload.signalId] = { hash: digest(JSON.stringify(payload)), result };
   return result;
 }
+// 计划交付提示：一次列明分包与所用通道；已有安排（任务声明的 channels 或包上填的 channel）
+// 直接沿用，Lead 直接执行的任务没有 Worker 就不问 Worker，只有真实新增的角色或通道才请用户确认。
+function planDeliveryReason(task) {
+  const labels = { worker: 'Worker', reviewer: 'Reviewer' };
+  const arranged = [];
+  for (const [role, channel] of Object.entries(task.channels || {})) arranged.push(`${labels[role] || role} 通道 ${channel}`);
+  const byChannel = new Map();
+  for (const item of Object.values(task.packages || {})) {
+    if (!item.channel) continue;
+    const ids = byChannel.get(item.channel) || [];
+    ids.push(item.packageId);
+    byChannel.set(item.channel, ids);
+  }
+  for (const [channel, ids] of byChannel) arranged.push(`包 ${ids.join('、')} 用 ${channel}`);
+  const existing = arranged.length
+    ? `已有明确安排直接沿用，不重复询问：${arranged.join('；')}。`
+    : '目前没有已声明的 Worker/Reviewer 通道。';
+  const ask = task.route === 'lead-direct'
+    ? '本任务由 Lead 直接执行，没有 Worker，不需要询问 Worker；只有计划里真实新增 Reviewer 或其他角色/通道且尚无明确安排时，才请用户确认。'
+    : '只有计划里真实新增的角色或通道且尚无明确安排时，才请用户确认；上面已有的安排不要重复询问。';
+  return `workflow 计划交付核对：本回合已进入计划交付但尚未向用户提问确认。若本回合在交付计划，请列出建议分流与工作包划分（分几个包、每包范围与依赖，或说明免拆包理由），一次列明各包所用通道。${existing}${ask}并在计划末尾写明 spec 影响（无影响写“无”）；结构化提问工具会自动记 waiting-user，文本提问先发 signal phase --phase waiting-user。若本回合只是回答讨论而非交付计划，直接回复即可（本回合不再重复阻挡）。`;
+}
 // 回合结束核对：Lead 没发 task-end 就收尾时，按门禁算一次缺项并挡下一轮。只读任务状态，只在 session 上记“本回合已挡”。
 // 经验采集独立于业务交付；Stop 从不启动复盘或要求补写经验。
-export function stop(state, project, session, event = {}) {
+export function stop(state, project, session, event = {}, { root } = {}) {
   if (!session || session.role || session.interrupted) return {};
   if (event.stop_hook_active === true || session.stopBlockedTurn === session.turnId) return {};
   // 提问等待用户、本回合声明为纯操作时不核对。
   if (['waiting-user', 'operation-only'].includes(session.phase)) return {};
   const task = session.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
-  // 计划阶段没向用户提问确认分包与 Worker/Reviewer 通道就收尾时，挡一次提醒补齐（已调提问工具或发 waiting-user 的已在上方放行）。
-  if (session.permissionMode === 'plan' || (task?.lifecycle === 'active' && task.permissions?.mode === 'plan')) {
-    session.stopBlockedTurn = session.turnId;
-    return {
-      decision: 'block',
-      reason: 'workflow 计划交付核对：当前处于计划阶段但尚未向用户提问确认。若本回合在交付计划，请列出建议分流与工作包划分（分几个包、每包范围与依赖，或说明免拆包理由），并按提问路径请用户指定 Worker 与 Reviewer 通道（提问工具会自动记 waiting-user，文本提问先发 signal phase --phase waiting-user）；若本回合只是回答讨论而非交付计划，直接回复即可（本回合不再重复阻挡）。',
-    };
-  }
   if (!task || task.lifecycle !== 'active' || task.route === 'operation-only') return {};
+  // 只认本回合显式进入任务阶段（task-start/phase；session.phase 不跨回合继承）。
+  // 历史 task.plans 不代表本回合在交付计划，普通解释不因 mode=plan 单独阻挡，也不扫描自然语言猜测意图。
+  const planDelivery = session.phase !== 'unknown';
+  const planning = session.permissionMode === 'plan' || task.permissions?.mode === 'plan';
   // 有包在途也挡一次：Codeg 等宿主不会在子任务结束时唤醒父会话，Lead 收尾就再也收不到结果。
   const inflight = Object.entries(task.packages || {}).filter(([, item]) => item.status === 'dispatched');
-  if (inflight.length) {
+  // 计划交付核对与在途包同时成立时仍只挡一次，reason 合并两者并在途优先，避免首次提示漏掉在途结果。
+  if ((planDelivery && planning) || inflight.length) {
     session.stopBlockedTurn = session.turnId;
-    const list = inflight.map(([id, item]) => item.handle ? `${id}(${item.handle})` : id).join('、');
-    // 宿主内置子代理结束时会通知父会话，只需说明在等什么；其余（Codeg 或未填通道）必须同回合阻塞等待。
-    const builtin = inflight.every(([, item]) => item.channel?.startsWith('builtin:'));
-    const how = builtin
-      ? '这些包由宿主内置子代理执行，结束时宿主会通知本会话：向用户说明在等哪些包、结果回来后做什么，再结束回合。'
-      : '宿主不会在子任务结束时唤醒本会话，结束回合就收不到结果。二选一：用阻塞等待（Codeg get_delegation_status 批量传入在途 task_id、wait_ms: 0；若 MCP 空闲超时断开而任务仍在运行则重调续等，等待期间不轮询、不跑无关命令）等到终态或 blocked_on 再收结果；或者向用户说明为什么暂停、何时由谁接续。';
-    return { decision: 'block', reason: `workflow 回合结束核对：任务 ${task.taskId} 仍有 ${inflight.length} 个工作包在途（${list}）。${how}` };
+    let reason = '';
+    if (inflight.length) {
+      const list = inflight.map(([id, item]) => item.handle ? `${id}(${item.handle})` : id).join('、');
+      // 宿主内置子代理结束时会通知父会话，只需说明在等什么；其余（Codeg 或未填通道）必须同回合阻塞等待。
+      const builtin = inflight.every(([, item]) => item.channel?.startsWith('builtin:'));
+      const how = builtin
+        ? '这些包由宿主内置子代理执行，结束时宿主会通知本会话：向用户说明在等哪些包、结果回来后做什么，再结束回合。'
+        : '宿主不会在子任务结束时唤醒本会话，结束回合就收不到结果。二选一：用阻塞等待（Codeg get_delegation_status 批量传入在途 task_id、wait_ms: 0；若 MCP 空闲超时断开而任务仍在运行则重调续等，等待期间不轮询、不跑无关命令）等到终态或 blocked_on 再收结果；或者向用户说明为什么暂停、何时由谁接续。';
+      reason = `workflow 回合结束核对：任务 ${task.taskId} 仍有 ${inflight.length} 个工作包在途（${list}）。${how}`;
+    }
+    if (planDelivery && planning) reason = reason ? `${reason} 另：${planDeliveryReason(task)}` : planDeliveryReason(task);
+    return { decision: 'block', reason };
   }
+  // 计划模式的普通讨论：计划阶段无法实施，不落到通用“门禁缺项/仍为 active”阻挡，以免打断讨论。
+  if (planning && !planDelivery) return {};
   let missing;
   try {
     // 没法检查（git 失败、浅克隆）不算缺项；其余照常核对。
-    missing = gateMissing(state, task).filter(entry => !entry.startsWith('spec-check:') && !waived(task, entry, task.waivers || []));
+    missing = gateMissing(state, task, undefined, root).filter(entry => !entry.startsWith('spec-check:') && !waived(task, entry, task.waivers || []));
   } catch { return {}; }
   session.stopBlockedTurn = session.turnId;
   const reason = missing.length
@@ -390,7 +644,7 @@ export function stop(state, project, session, event = {}) {
     : `workflow 回合结束核对：任务 ${task.taskId} 门禁已无缺项但仍为 active。工作已完成就发 task-end 结束任务；还没完成就向用户说明剩余事项。`;
   // 计划提醒附在已有的一次阻挡里，本身不新增阻挡。
   let stale = [];
-  try { stale = unchangedPlans(state, task); } catch {}
+  try { stale = unchangedPlans(state, task, root); } catch {}
   return { decision: 'block', reason: stale.length ? `${reason} 另：${planReminder(stale)}` : reason };
 }
 export function interrupt(state, project, session) {
@@ -401,9 +655,179 @@ export function interrupt(state, project, session) {
   session.ticket = null;
   session.interrupted = true;
   session.phase = 'unknown';
-  const task = state.tasks[taskKey(project.projectId, session.taskId)];
-  if (task?.lifecycle === 'active') {
+  const task = session.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
+  // 同一任务可能被多个 Lead 会话共用（跨会话接续）；只有没有其他仍绑定的有效 Lead 会话时才挂起。
+  if (task?.lifecycle === 'active' && !otherLeadSession(state, task, session)) {
     task.lifecycle = 'suspended';
     pendingFor(state, project.projectId, session.taskId, '业务被中断或会话结束；仅保存，不自动继续', 'business-incomplete');
   }
+}
+// 旧状态缺字段时保守兼容：没有 interrupted 视为未中断，完全没有 ticket 字段的旧会话不因此判为无效。
+function otherLeadSession(state, task, current) {
+  return Object.values(state.sessions).some(item => item !== current
+    && item.projectId === task.projectId && item.taskId === task.taskId
+    && !item.role && !item.interrupted
+    && (item.ticket !== null || !Object.hasOwn(item, 'ticket'))
+    && typeof item.turnId === 'string' && item.turnId);
+}
+// 生命周期结束事件先落本机待处理记录，拿到状态锁后幂等消费。只认已识别的三个结束事件，
+// 不把 signal 重放成新授权。事件按 project/session/可核验的宿主回合绑定：
+// - 当前回合的事件：执行中断保存；
+// - 旧回合的事件迟到：不打断新回合，也不丢——任务仍 active 时保留为待办，由用户显式接续；
+// - 会话/项目/回合无法核验：移入 deferred/ 并给原因，后续入口按有界重试重新关联，超限后留待办或诊断。
+// 消费只改内存状态；文件归档由调用方在 mutate 成功保存后执行（archiveLifecycleEvents），
+// 避免状态写入失败或保存后崩溃时事件已离开扫描范围。
+// 升级诊断先写进状态（note + notePending），原因文件在锁外可重试写入；写成功前提示直接带出诊断内容，
+// 不要求用户去读可能尚不存在的文件。
+export const LIFECYCLE_EVENTS = ['Interrupt', 'StopFailure', 'SessionEnd'];
+// deferred 记录按次数和时限有界重试：首次重入立即试一次，之后按间隔，超限后不再自动重试。
+const DEFER_RETRY_INTERVAL_MS = 30_000;
+const DEFER_MAX_ATTEMPTS = 5;
+const DEFER_MAX_AGE_MS = 10 * 60_000;
+export async function consumeLifecycleEvents(directory, state, options = {}) {
+  const applied = [], deferred = [], late = [], archive = [];
+  const retryIntervalMs = options.retryIntervalMs ?? DEFER_RETRY_INTERVAL_MS;
+  const maxAttempts = options.maxAttempts ?? DEFER_MAX_ATTEMPTS;
+  const maxAgeMs = options.maxAgeMs ?? DEFER_MAX_AGE_MS;
+  const now = Date.now();
+  let events;
+  try { events = await lifecycleEvents(directory); }
+  catch (error) {
+    // 待办目录本身不可读（如被同名文件占住）：保留状态维护，但如实说明待办无法消费。
+    return { applied, deferred: [{ reason: 'unreadable', message: error.message }], late, archive };
+  }
+  let deferredEvents;
+  let deferredReadable = true;
+  try { deferredEvents = await deferredLifecycleEvents(directory); }
+  catch (error) { deferredEvents = []; deferredReadable = false; deferred.push({ reason: 'unreadable-deferred', message: error.message }); }
+  state.lifecycleDeferred ||= {};
+  const entries = [
+    ...events.map(item => ({ ...item, from: 'queue' })),
+    ...deferredEvents.map(item => ({ ...item, from: 'deferred' })),
+  ];
+  // 元数据以仍存在的队列/deferred 文件为界：消费、去重归档或人工移走后不再残留，保持有界。
+  // deferred/ 本次不可读时不做剪枝：否则会把仍在重试的诊断元数据（含待写正文）误删。
+  if (deferredReadable) {
+    const present = new Set(entries.map(item => item.name));
+    for (const key of Object.keys(state.lifecycleDeferred)) if (!present.has(key)) delete state.lifecycleDeferred[key];
+  }
+  for (const { name, record, from } of entries) {
+    if (!record || typeof record !== 'object' || record.kind !== 'lifecycle' || !LIFECYCLE_EVENTS.includes(record.event)) {
+      // 无法辨认的记录保留现场，由 doctor/人工核对，不猜测删除。
+      deferred.push({ name, from, reason: 'unknown-event', escalated: Boolean(state.lifecycleDeferred[name]?.escalated) });
+      continue;
+    }
+    const meta = state.lifecycleDeferred[name];
+    if (from === 'deferred' && meta?.escalated) {
+      // 诊断内容以状态为准；原因文件只是可重建的副本。读不到或内容不符时重新排队写入，写成功前提示带出正文。
+      const note = typeof meta.note === 'string' && meta.note ? meta.note : escalationNote(meta.reason || '关联不足', meta.attempts || 1);
+      const notePending = await readDeferredLifecycleNote(directory, name) !== `${note}\n`;
+      if (notePending) archive.push({ name, from: 'deferred', to: 'deferred-note', reason: note });
+      if (meta.note !== note || meta.notePending !== notePending) state.lifecycleDeferred[name] = { ...meta, note, notePending };
+      deferred.push({ name, from, reason: meta.reason || 'escalated', attempts: meta.attempts, escalated: true, notePending, note });
+      continue;
+    }
+    const project = state.projects[record.projectId];
+    const session = state.sessions[sessionKey(record.projectId, record.sessionId)];
+    // 没有宿主可信回合标识时不用当前会话回合推断：旧事件会被误当成新回合事件执行中断。
+    const reason = !project?.enabled ? '项目未启用或已移除' : !session ? '会话未登记' : !record.turnId ? '事件缺少可信回合标识' : null;
+    if (reason) {
+      if (from === 'queue') {
+        archive.push({ name, from, to: 'deferred', reason });
+        // 初始原因也写进状态：原因文件写入失败时，下一次入口据此补写，不依赖已经丢失的返回值。
+        state.lifecycleDeferred[name] = { attempts: 1, firstSeenAt: new Date(now).toISOString(), lastAttemptAt: new Date(now).toISOString(), reason, note: reason, notePending: true };
+        // 缺回合标识的记录不会因会话登记而变可信；有仍 active 的任务时立即留可操作待办，不中断当前回合。
+        if (!record.turnId) lifecycleTaskPending(state, record, reason);
+        deferred.push({ name, from, reason, attempts: 1 });
+        continue;
+      }
+      const attempts = meta?.attempts || 1;
+      const firstSeen = Date.parse(meta?.firstSeenAt) || now;
+      const lastAttempt = Date.parse(meta?.lastAttemptAt) || 0;
+      // 首次重入立即重试（入口登记与结束事件交错）；之后按间隔，超过次数或时限后升级诊断。
+      const due = attempts < 2 || now - lastAttempt >= retryIntervalMs || now - firstSeen >= maxAgeMs;
+      if (!due) {
+        // 关联重试未到期，但原因文件只是可重建的副本：首次写入失败时在这里补写。
+        const note = typeof meta?.note === 'string' && meta.note ? meta.note : reason;
+        const notePending = await readDeferredLifecycleNote(directory, name) !== `${note}\n`;
+        if (notePending) archive.push({ name, from: 'deferred', to: 'deferred-note', reason: note });
+        if (meta && (meta.note !== note || meta.notePending !== notePending)) state.lifecycleDeferred[name] = { ...meta, note, notePending };
+        deferred.push({ name, from, reason, attempts, ...(notePending ? { notePending: true, note } : {}) });
+        continue;
+      }
+      const nextAttempts = attempts + 1;
+      const escalated = nextAttempts >= maxAttempts || now - firstSeen >= maxAgeMs;
+      if (escalated) {
+        const note = escalationNote(reason, nextAttempts);
+        state.lifecycleDeferred[name] = { ...meta, attempts: nextAttempts, lastAttemptAt: new Date(now).toISOString(), reason, escalated: true, escalatedAt: new Date(now).toISOString(), note, notePending: true };
+        lifecycleTaskPending(state, record, reason);
+        archive.push({ name, from: 'deferred', to: 'deferred-note', reason: note });
+        deferred.push({ name, from, reason, attempts: nextAttempts, escalated: true, notePending: true, note });
+        continue;
+      }
+      // 未升级：原因文本随关联状态更新；原因文件不一致或缺失时重试写入。
+      const notePending = await readDeferredLifecycleNote(directory, name) !== `${reason}\n`;
+      state.lifecycleDeferred[name] = { ...meta, attempts: nextAttempts, lastAttemptAt: new Date(now).toISOString(), reason, note: reason, notePending };
+      if (notePending) archive.push({ name, from: 'deferred', to: 'deferred-note', reason });
+      deferred.push({ name, from, reason, attempts: nextAttempts, ...(notePending ? { notePending: true, note: reason } : {}) });
+      continue;
+    }
+    // 重放只生效一次：归档去重与消费回执共用 event+project+session+turn+宿主事件 ID 的组合作用域；
+    // 旧版只按宿主事件 ID（或 event+turn）记的回执仍兼容读取，避免升级后重复生效。
+    const key = lifecycleReceiptKey(record);
+    if (lifecycleReceipt(session, record)) {
+      archive.push({ name, from, to: 'consumed', outcome: 'duplicate' });
+      delete state.lifecycleDeferred[name];
+      continue;
+    }
+    // 事件只对"同一回合且仍是记录时那张票据"生效：会话中断后入口可能用相同 turnId 重建新票据，
+    // 旧事件不能凭 turnId 撤销新票据；事件缺少票据记录时同样不推断归属。
+    const ticketMatches = typeof record.ticket === 'string' && record.ticket.length > 0 && record.ticket === session.ticket;
+    if (session.turnId !== record.turnId || !ticketMatches) {
+      // 旧回合或旧票据迟到：不撤销新回合票据；事件记录的 taskId 仍 active 时只保存待办，不自动继续。
+      session.lifecycleReceipts ||= {};
+      session.lifecycleReceipts[key] = { event: record.event, turnId: record.turnId, at: new Date().toISOString(), outcome: 'late' };
+      const task = record.taskId ? state.tasks[taskKey(record.projectId, record.taskId)] : null;
+      if (task?.lifecycle === 'active') pendingFor(state, record.projectId, task.taskId, lateLifecycleReason(record, session), 'business-incomplete', { turnId: record.turnId, event: record.event });
+      late.push({ event: record.event, turnId: record.turnId, currentTurnId: session.turnId, ticketMatched: ticketMatches });
+      archive.push({ name, from, to: 'consumed', outcome: 'late' });
+      delete state.lifecycleDeferred[name];
+      continue;
+    }
+    interrupt(state, project, session);
+    session.lifecycleReceipts ||= {};
+    session.lifecycleReceipts[key] = { event: record.event, turnId: record.turnId, at: new Date().toISOString(), outcome: 'applied' };
+    applied.push({ event: record.event, sessionId: record.sessionId, turnId: record.turnId });
+    archive.push({ name, from, to: 'consumed', outcome: 'applied' });
+    delete state.lifecycleDeferred[name];
+  }
+  return { applied, deferred, late, archive };
+}
+// 关联不足时给出可操作待办（仅任务仍 active），让人显式核对，而不是静默滞留或猜测中断。
+const escalationNote = (reason, attempts) => `${reason}；已重试 ${attempts} 次仍无法恢复关联，不再自动重试。核对 deferred/ 中的事件，必要时人工处理`;
+function lifecycleTaskPending(state, record, reason) {
+  const task = record.taskId ? state.tasks[taskKey(record.projectId, record.taskId)] : null;
+  if (task?.lifecycle !== 'active') return null;
+  return pendingFor(state, record.projectId, task.taskId,
+    `${record.event} 事件无法确认属于当前回合（${reason}）；未中断任何回合，任务 ${task.taskId} 仍为 active，请核对后显式收尾或接续`,
+    'business-incomplete', { event: record.event, turnId: record.turnId || null, source: 'lifecycle-deferred' });
+}
+// 迟到事件的原因要说明是回合不同、票据已更换，还是事件本身没记录票据；三者都不能推断中断。
+function lateLifecycleReason(record, session) {
+  if (session.turnId !== record.turnId) return `${record.event} 属于回合 ${record.turnId}，晚于新回合到达；已保存，不自动继续`;
+  return record.ticket
+    ? `${record.event} 记录的票据与当前回合不一致（回合 ${record.turnId}）：票据在会话重建后已更换；已保存，不撤销新票据，不自动继续`
+    : `${record.event} 未记录可信票据（回合 ${record.turnId}）：无法确认属于当前会话；已保存，不撤销新票据，不自动继续`;
+}
+// 归档去重与消费回执的同一组合作用域；旧版两种回执键只读兼容，新记录只写组合键。
+function lifecycleReceiptKey(record) {
+  return `scope:${lifecycleScope(record)}`;
+}
+function legacyLifecycleReceiptKey(record) {
+  return typeof record.hostEventId === 'string' && record.hostEventId ? `event:${record.hostEventId}` : `turn:${record.event}\0${record.turnId}`;
+}
+function lifecycleReceipt(session, record) {
+  const receipts = session.lifecycleReceipts;
+  if (!receipts) return null;
+  return receipts[lifecycleReceiptKey(record)] || receipts[legacyLifecycleReceiptKey(record)] || null;
 }
