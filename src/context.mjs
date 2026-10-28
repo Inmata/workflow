@@ -17,6 +17,7 @@ export function signalUsage(cli = cliPath()) {
     command: `${head} <action> ${who} [字段参数]`,
     examples: [
       `${head} task-start ${who} --task <taskId> --route lead-direct --goal "<一句话目标>" --mode write --paths <相对路径,逗号分隔>`,
+      `${head} task-update ${who} --task <taskId> [--goal "<新目标>"] [--mode write|read-only|plan] [--paths <相对路径,逗号分隔> --paths-mode replace|append]`,
       `${head} task-end ${who} [--final-ref <commit>] [--input <只含 validation/waivers 的 JSON 文件>]`,
       `${head} packages ${who} --input <只含 packages/change/validation 的 JSON 文件>`,
     ],
@@ -99,7 +100,7 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   const pending = Object.values(state.pending).filter(p => p.projectId === project.projectId && p.kind === 'knowledge-pending' && p.status === 'open').slice(0, 1);
   const identity = session && !session.interrupted ? { schemaVersion: 1, projectId: project.projectId, sessionId, taskId: session.taskId, turnId: session.turnId, ticket: session.ticket, interruptEpoch: session.interruptEpoch, expectedRevision: session.revision } : null;
   const instructions = {
-    lead: '首次或范围变化时读公共方法和 Lead 指引。交付计划时须给出建议分流与工作包划分（几包、每包范围与依赖），并按提问路径请用户指定或确认 Worker 与 Reviewer 通道。新业务用 signal task-start 声明 route（identity.taskId 为空时自拟 taskId，如 task-<简短英文>；续接沿用原 ID）；简单任务 lead-direct 只需 task-start 和 task-end 两条信号。提问前 phase waiting-user；派发/消费/审查结论用 packages 批量记录（handle 填委派 ID，channel 填实际通道；用户指定通道时 task-start 带 channels，换通道先告诉用户并附 change；换新 packageId 返修用 supersedes）。明确纠正、失败原因或已验证方法出现时按 learningGuide 用 knowledge capture 保存；任务开始或范围变化用 knowledge select 检索经验。当前用户要求优先于历史经验。受委派的工作包会话（给出 packageId 与 worker/reviewer 角色）不按 Lead 行事：先 signal role-claim --role <角色> --package <packageId>，再读对应角色指引。',
+    lead: '首次或范围变化时读公共方法和 Lead 指引。交付计划时须给出建议分流与工作包划分（几包、每包范围与依赖），并按提问路径请用户指定或确认 Worker 与 Reviewer 通道。新业务用 signal task-start 声明 route（identity.taskId 为空时自拟 taskId，如 task-<简短英文>；续接沿用原 ID）；同一任务改目标或增/减权限范围用 signal task-update（仅该任务有效 Lead；只记录本机声明，宿主只读/计划权限仍优先），不必结束重开；简单任务 lead-direct 只需 task-start 和 task-end 两条信号。提问前 phase waiting-user；派发/消费/审查结论用 packages 批量记录（handle 填委派 ID，channel 填实际通道；用户指定通道时 task-start 带 channels，换通道先告诉用户并附 change；换新 packageId 返修用 supersedes）。明确纠正、失败原因或已验证方法出现时按 learningGuide 用 knowledge capture 保存；任务开始或范围变化用 knowledge select 检索经验。当前用户要求优先于历史经验。受委派的工作包会话（给出 packageId 与 worker/reviewer 角色）不按 Lead 行事：先 signal role-claim --role <角色> --package <packageId>，再读对应角色指引。',
     worker: '先读公共方法和 Worker 指引。只读工作包直接资料，必要的直接依赖可读；按阶段或范围变化说明【目标】和最小读取范围。不加载 Lead 调度，不递归创建代理，不发 task-start/packages。协作需要 workflow 身份而当前没有时，停止寻找并报告 Lead。复用有效证据；包内已授权的补测直接做，范围外补测先说明缺口交 Lead。发现随正常交付回报。',
     reviewer: '先读公共方法、Reviewer 指引和工作包指定范围。只读审查，不改源码、测试或配置，不递归创建代理，不发 task-start/packages。没有 workflow 身份时，停止寻找并报告 Lead。复用与待审版本匹配的证据；包内已授权的定向检查直接做，范围外补测先说明缺口交 Lead。完成即交回。',
   };

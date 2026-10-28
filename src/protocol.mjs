@@ -5,6 +5,11 @@ import { checkSpecs, describeFindings } from './spec.mjs';
 
 export const PHASES = ['unknown', 'operation-only', 'executing', 'waiting-user', 'delivering'];
 export const ROUTES = ['operation-only', 'lead-direct', 'delegated'];
+export const PERMISSION_MODES = ['write', 'read-only', 'plan'];
+// 宿主自己报告的只读/计划模式优先于任务声明；task-update 不能借信号绕过它。
+const HOST_BLOCKED_MODES = ['plan', 'read-only'];
+// task-update 只接受身份字段与 goal/permissions/allowedPathsMode；其余顶层字段明确拒绝，避免夹带 route/channels/账本。
+const TASK_UPDATE_FIELDS = new Set(['schemaVersion', 'projectId', 'sessionId', 'turnId', 'taskId', 'ticket', 'interruptEpoch', 'expectedRevision', 'signalId', 'action', 'goal', 'permissions', 'allowedPathsMode']);
 export const PACKAGE_STATUSES = ['dispatched', 'delivered', 'consumed', 'canceled', 'failed', 'waived'];
 export const TERMINAL_PACKAGE = ['consumed', 'canceled', 'failed', 'waived'];
 export const VERDICTS = ['PASS', 'FIX', 'BLOCKED'];
@@ -233,6 +238,79 @@ export function gateReport(state, task, finalRef, root) {
 // 审过的 worker 包，审查缺项（未 PASS 或审的不是最终交付版本）也不抵扣：只能补审或用 supersedes 接替。
 const reviewed = (task, entry) => entry.startsWith('review:') && wasReviewed(task, task.packages?.[entry.slice('review:'.length)]);
 const waived = (task, entry, waivers) => !(entry === 'spec' || entry.startsWith('spec:')) && !reviewed(task, entry) && waivers.some(w => w.step === entry || w.step === entry.split(':')[0]);
+// task-update：同任务显式改 goal 与 permissions。沿用同一身份/修订/回执与失败回滚；
+// 只改本机任务声明，不碰 route/channels/账本，也不改宿主全局配置。调用方须已有用户授权，插件只记录声明。
+function updateTask(payload, task, session) {
+  const misplaced = ['mode', 'allowedPaths'].filter(field => Object.hasOwn(payload, field));
+  if (misplaced.length) fail('PERMISSION', `${misplaced.join('、')} 应放进 permissions；task-update 格式为 {goal?, permissions:{mode?, allowedPaths?}, allowedPathsMode?}`);
+  const unsupported = Object.keys(payload).filter(field => !TASK_UPDATE_FIELDS.has(field));
+  if (unsupported.length) fail('UNSUPPORTED', `task-update 首版只改 goal 与 permissions；不支持 ${unsupported.join('、')}`);
+  const hasGoal = payload.goal !== undefined;
+  const hasPermissions = payload.permissions !== undefined;
+  if (!hasGoal && !hasPermissions) fail('INPUT', 'task-update 至少给出 goal 或 permissions');
+  if (!task.permissions || typeof task.permissions !== 'object' || !Array.isArray(task.permissions.allowedPaths)) fail('PERMISSION', '任务缺少可更新的权限声明');
+  const previous = { goal: task.goal, mode: task.permissions.mode, allowedPaths: [...task.permissions.allowedPaths] };
+  let goal;
+  if (hasGoal) { textField(payload.goal, 'goal'); goal = payload.goal; }
+  let mode, paths, pathsMode = 'replace';
+  if (hasPermissions) {
+    const input = payload.permissions;
+    if (!input || typeof input !== 'object' || Array.isArray(input)) fail('PERMISSION', 'permissions 需为 {mode?, allowedPaths?}');
+    const unknown = Object.keys(input).filter(key => !['mode', 'allowedPaths'].includes(key));
+    if (unknown.length) fail('UNSUPPORTED', `permissions 只支持 mode 与 allowedPaths；不支持 ${unknown.join('、')}`);
+    if (input.mode === undefined && input.allowedPaths === undefined) fail('PERMISSION', 'permissions 至少给出 mode 或 allowedPaths');
+    if (input.mode !== undefined) {
+      if (!PERMISSION_MODES.includes(input.mode)) fail('PERMISSION', 'permissions.mode 须为 write、read-only 或 plan');
+      mode = input.mode;
+    }
+    if (input.allowedPaths !== undefined) {
+      if (!Array.isArray(input.allowedPaths) || input.allowedPaths.some(item => typeof item !== 'string' || !item.trim())) fail('PERMISSION', 'permissions.allowedPaths 须为非空字符串数组');
+      paths = input.allowedPaths;
+    }
+  }
+  if (payload.allowedPathsMode !== undefined) {
+    if (paths === undefined) fail('INPUT', 'allowedPathsMode 需与 permissions.allowedPaths 一起使用');
+    if (!['replace', 'append'].includes(payload.allowedPathsMode)) fail('INPUT', 'allowedPathsMode 只能是 replace 或 append');
+    pathsMode = payload.allowedPathsMode;
+  }
+  const nextMode = mode ?? previous.mode;
+  let nextPaths = previous.allowedPaths;
+  let added = [], removed = [];
+  if (paths !== undefined) {
+    const unique = [...new Set(paths)];
+    const existing = new Set(previous.allowedPaths);
+    added = unique.filter(item => !existing.has(item));
+    if (pathsMode === 'append') nextPaths = [...previous.allowedPaths, ...added];
+    else {
+      const keep = new Set(unique);
+      removed = previous.allowedPaths.filter(item => !keep.has(item));
+      nextPaths = unique;
+    }
+  }
+  // 宿主只读/计划模式优先：信号只能记录声明，不能把实际写入权限抬到宿主之上。
+  if (HOST_BLOCKED_MODES.includes(session.permissionMode) && ((nextMode === 'write' && previous.mode !== 'write') || added.length)) {
+    fail('PERMISSION', `宿主当前为 ${session.permissionMode} 模式：task-update 不能提升宿主权限；回到可写模式后再更新`);
+  }
+  if (goal !== undefined) task.goal = goal;
+  if (hasPermissions) task.permissions = { ...task.permissions, ...(mode !== undefined ? { mode } : {}), ...(paths !== undefined ? { allowedPaths: nextPaths } : {}) };
+  const change = {};
+  if (goal !== undefined) change.goal = { from: previous.goal, to: goal };
+  if (hasPermissions) {
+    const permissions = {};
+    if (mode !== undefined && mode !== previous.mode) permissions.mode = { from: previous.mode, to: mode };
+    if (paths !== undefined) permissions.allowedPaths = { mode: pathsMode, added, removed };
+    if (Object.keys(permissions).length) change.permissions = permissions;
+  }
+  // 追加审计记录，不修改既有会话回执；旧任务没有 updates 字段按空处理。
+  if (Object.keys(change).length) (task.updates ||= []).push({ at: new Date().toISOString(), change });
+  return {
+    goal: task.goal,
+    permissions: { ...task.permissions, allowedPaths: [...task.permissions.allowedPaths] },
+    change,
+    hostPermissionMode: session.permissionMode,
+    note: '已更新本机任务声明；实际写入仍受宿主当前只读/计划权限约束，插件只记录声明，不自动证明用户授权真实存在',
+  };
+}
 // options.root 只接受入口用 resolveProject 核对过的当前 worktree；payload 里的路径不参与检查根选择。
 export function acceptSignal(state, payload, { root } = {}) {
   identifier(payload?.signalId, 'signalId');
@@ -268,9 +346,9 @@ export function acceptSignal(state, payload, { root } = {}) {
       if (typeof payload.goal !== 'string' || !payload.goal.trim()) fail('INPUT', '新任务缺少 goal（一句话目标，顶层字段）；完整格式：{action:"task-start", taskId, goal, route, permissions:{mode:"write|read-only|plan", allowedPaths:[...]}}');
       textField(payload.goal, 'goal');
       const permissions = payload.permissions;
-      if (!permissions || !['write', 'read-only', 'plan'].includes(permissions.mode) || !Array.isArray(permissions.allowedPaths) || permissions.allowedPaths.some(p => typeof p !== 'string')) {
+      if (!permissions || !PERMISSION_MODES.includes(permissions.mode) || !Array.isArray(permissions.allowedPaths) || permissions.allowedPaths.some(p => typeof p !== 'string')) {
         const misplaced = ['mode', 'allowedPaths'].filter(field => Object.hasOwn(payload, field));
-        const detail = !permissions ? '缺少 permissions 对象' : !['write', 'read-only', 'plan'].includes(permissions.mode) ? 'permissions.mode 须为 write、read-only 或 plan' : 'permissions.allowedPaths 须为字符串数组（可为空数组）';
+        const detail = !permissions ? '缺少 permissions 对象' : !PERMISSION_MODES.includes(permissions.mode) ? 'permissions.mode 须为 write、read-only 或 plan' : 'permissions.allowedPaths 须为字符串数组（可为空数组）';
         fail('PERMISSION', `任务需明确 mode 与 allowedPaths：${detail}${misplaced.length ? `；${misplaced.join('、')} 写在了顶层，应放进 permissions` : ''}`);
       }
       const plans = payload.plans === undefined ? null : planInput(payload.plans);
@@ -297,6 +375,13 @@ export function acceptSignal(state, payload, { root } = {}) {
         task.channels ||= channels;
       }
       task.lifecycle = 'active';
+      // 接续保留原目标与权限；回执明确说出保留项，避免 accepted 被误解为已更新。
+      // 本次附带 goal/permissions 时点名未生效，并指向 task-update。
+      const ignored = ['goal', 'permissions'].filter(field => payload[field] !== undefined);
+      extra = {
+        kept: { goal: task.goal, permissions: { ...task.permissions } },
+        note: `task-start 接续保留原 goal 与 permissions${ignored.length ? `；本次附带的 ${ignored.join('、')} 未生效` : ''}。要显式变更请用 task-update`,
+      };
     }
     session.taskId = payload.taskId;
     session.phase = 'executing';
@@ -317,6 +402,8 @@ export function acceptSignal(state, payload, { root } = {}) {
       // 中途变更追加记录，不覆盖历史。
       if (change) (task.changes ||= []).push(change);
       if (repairLimit.length) extra = { repairLimit: true, repairLimitPackages: repairLimit };
+    } else if (payload.action === 'task-update') {
+      extra = updateTask(payload, task, session);
     } else if (payload.action === 'task-end') {
       if (payload.validation !== undefined) task.validation = validationInput(payload.validation);
       if (payload.finalRef !== undefined) identifier(payload.finalRef, 'finalRef');

@@ -116,7 +116,30 @@ node "<本次hook提供的bin/workflow.mjs>" signal --input "<任务JSON文件>"
 
 按计划实施的任务在 task-start 加 `"plans": ["docs/plans/xxx.md"]`（项目内相对路径，1-10 项），插件记下当时的内容摘要。这是软门禁：计划到收尾仍未改动时，Stop 的那一次阻挡附上回写提醒，task-end 照常接受，回执带 `planUnchanged` 和 `reminder`；不进缺项，也不需要豁免。计划改过或已移走（归档）时不提醒。`task show` 显示 `plans` 与 `planUnchanged`。
 
-中断或 SessionEnd 将未完任务标为 suspended 并撤销票据，保留业务未完成记录；显式 task-start 才恢复。挂起任务不再以 active 永久挡住升级，未辨认的写事务仍需恢复。
+中断或 SessionEnd 将未完任务标为 suspended 并撤销票据，保留业务未完成记录；显式 task-start 才恢复。重发 task-start 接续沿用原 goal 与 permissions，回执带 `kept:{goal,permissions}` 和提示；本次附带的 goal/permissions 不生效。挂起任务不再以 active 永久挡住升级，未辨认的写事务仍需恢复。
+
+### 同任务变更目标或权限（task-update）
+
+同一任务需要显式改 goal 或增/减 allowedPaths 时，用 `task-update`，不必结束重开。只有绑定该任务的有效 Lead 会话能改；已声明为 Worker/Reviewer 的会话返回 `ROLE`，状态不变。
+
+```powershell
+# 只改目标
+node "<入口>" signal task-update --session <sessionId> --turn <turnId> --id update-1 --task <taskId> --goal "新目标"
+# plan→write
+node "<入口>" signal task-update ... --id update-2 --mode write
+# 追加路径（去重）；省略 --paths-mode 时按 replace 整体替换
+node "<入口>" signal task-update ... --id update-3 --paths docs/new.md --paths-mode append
+```
+
+`permissions` 可只给 `mode` 或 `allowedPaths`；`allowedPathsMode=append` 追加去重，`replace`（缺省）用新集合替换。宿主当前为只读/计划模式时，把 mode 提到 write 或追加路径返回 `PERMISSION`（缩小范围和只改 goal 仍可记录）：插件只更新本机任务声明，不改宿主全局配置。首版不改 route/channels/计划/历史工作包，也不替代用户授权。
+
+回执返回有效权限和变更摘要，例如：
+
+```json
+{"accepted":true,"revision":8,"taskId":"task-1","goal":"新目标","permissions":{"mode":"write","allowedPaths":["README.md","docs/new.md"]},"change":{"permissions":{"mode":{"from":"plan","to":"write"},"allowedPaths":{"mode":"append","added":["docs/new.md"],"removed":[]}}},"hostPermissionMode":"default","note":"已更新本机任务声明；实际写入仍受宿主当前只读/计划权限约束，插件只记录声明，不自动证明用户授权真实存在"}
+```
+
+变更追加到任务的 `updates`（`task show` 显示条数）；历史回执不改写，旧任务兼容。权限收缩不追溯取消已完成的产物，后续知识/对齐写入按新范围检查；直接 Edit/Write 不受本插件拦截。
 
 Lead 的活动任务结束回合时，Stop 会挡一次（等待用户、本回合已挡过时不挡）：有在途工作包时要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明为什么暂停（在途包全是 `builtin:` 通道时，宿主会通知结果，只要求说明在等什么）；没有在途包而未发 task-end 时给出缺项，按提示补齐后发 task-end，或向用户说明还没完成的部分。
 

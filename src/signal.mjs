@@ -1,9 +1,9 @@
 import { fail, SCHEMA_VERSION } from './store.mjs';
 import { identifier, sessionKey } from './protocol.mjs';
 
-export const SIGNAL_ACTIONS = ['task-start', 'phase', 'packages', 'role-claim', 'task-end', 'disposition'];
+export const SIGNAL_ACTIONS = ['task-start', 'task-update', 'phase', 'packages', 'role-claim', 'task-end', 'disposition'];
 const IDENTITY_FIELDS = ['schemaVersion', 'projectId', 'sessionId', 'turnId', 'ticket', 'interruptEpoch', 'expectedRevision', 'signalId', 'action'];
-const FIELD_OPTIONS = ['task', 'goal', 'route', 'mode', 'paths', 'plans', 'channels', 'parent', 'phase', 'delivery', 'role', 'package', 'final-ref'];
+const FIELD_OPTIONS = ['task', 'goal', 'route', 'mode', 'paths', 'paths-mode', 'plans', 'channels', 'parent', 'phase', 'delivery', 'role', 'package', 'final-ref'];
 const list = value => value === undefined ? undefined : value.split(',').map(item => item.trim()).filter(Boolean);
 // worker=codeg:claude_code,reviewer=codeg:codex
 function channels(value) {
@@ -41,6 +41,16 @@ export function buildSignal(state, resolved, action, options, extra = {}) {
     Object.assign(fields, {
       goal: options.goal, route: options.route, parentTaskId: options.parent, plans: list(options.plans), channels: channels(options.channels),
       ...(options.mode !== undefined || options.paths !== undefined ? { permissions: { mode: options.mode, allowedPaths: list(options.paths) || [] } } : {}),
+    });
+  } else if (action === 'task-update') {
+    // 只带调用方明确给出的字段；省略的 mode/allowedPaths 保持原值。allowedPathsMode 缺省按 replace。
+    const permissions = {};
+    if (options.mode !== undefined) permissions.mode = options.mode;
+    if (options.paths !== undefined) permissions.allowedPaths = list(options.paths) || [];
+    Object.assign(fields, {
+      goal: options.goal,
+      ...(Object.keys(permissions).length ? { permissions } : {}),
+      ...(options['paths-mode'] !== undefined ? { allowedPathsMode: options['paths-mode'] } : {}),
     });
   } else if (action === 'phase') Object.assign(fields, { phase: options.phase, deliveryId: options.delivery });
   else if (action === 'role-claim') Object.assign(fields, { role: options.role, packageId: options.package });

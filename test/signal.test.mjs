@@ -90,6 +90,24 @@ test('packages 用 --input 只放结构化字段；带身份字段或缺 package
   // hook 拒收含 shell 元字符的命令，CLI 先报错而不是输出一条注定不被接受的信号。
   assert.equal(JSON.parse(build(f, 'phase', ['--id', 'p5', '--phase', 'a&b']).stdout).error, 'INPUT');
 });
+test('task-update 子命令只带显式字段，paths-mode 缺省 replace；接受后返回有效权限', async () => {
+  const f = await fixture();
+  await start(f);
+  const empty = build(f, 'task-update', ['--id', 'u0']);
+  const payload = JSON.parse(empty.stdout).workflow_signal;
+  assert.equal(payload.action, 'task-update');
+  assert.equal(payload.goal, undefined);
+  assert.equal(payload.permissions, undefined);
+  assert.equal(payload.allowedPathsMode, undefined);
+  const built = JSON.parse(build(f, 'task-update', ['--id', 'u1', '--paths', 'docs/a.md', '--paths-mode', 'append', '--mode', 'write']).stdout).workflow_signal;
+  assert.deepEqual(built.permissions, { mode: 'write', allowedPaths: ['docs/a.md'] });
+  assert.equal(built.allowedPathsMode, 'append');
+  const sent = await accept(f, 'task-update', ['--id', 'u2', '--goal', '新目标', '--paths', 'README.md']);
+  assert.equal(sent.receipt.accepted, true, JSON.stringify(sent));
+  assert.equal(sent.receipt.goal, '新目标');
+  assert.deepEqual(sent.receipt.permissions.allowedPaths, ['README.md']);
+  assert.deepEqual(sent.receipt.change.permissions.allowedPaths.removed, ['LESSONS.md', 'docs/说明.md']);
+});
 test('委派子会话不带 --task 也能 role-claim；声明后入口换成角色指引', async () => {
   const f = await fixture();
   await start(f);

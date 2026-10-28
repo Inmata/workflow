@@ -117,7 +117,7 @@ function isComposedSignal(event) {
   if (!['Bash', 'exec_command', 'PowerShell', 'powershell', 'pwsh'].includes(event.tool_name)) return false;
   const raw = signalCommand(event);
   // 入口可能藏在变量里（$wf=...; node $wf signal），命令里同时出现本插件入口和 signal 的输入参数或子命令就回执。
-  return typeof raw === 'string' && /workflow\.mjs/.test(raw) && /\bsignal\s+(?:--(?:base64|input)\b|(?:task-start|task-end|phase|packages|role-claim|disposition)\s+--)/.test(raw);
+  return typeof raw === 'string' && /workflow\.mjs/.test(raw) && /\bsignal\s+(?:--(?:base64|input)\b|(?:task-start|task-update|task-end|phase|packages|role-claim|disposition)\s+--)/.test(raw);
 }
 // 宿主 hook 超时：Codex 的 Interrupt/SessionEnd 只有 3 秒，其余 10 秒。锁等待预算必须留出
 // 启动、解析和落盘余量，预算耗尽时保守放行，不越过宿主上限。
