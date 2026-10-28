@@ -33,7 +33,7 @@ const help = {
   usage: 'node bin/workflow.mjs <命令> [--state-dir <本机状态目录>]',
   commands: [
     'install --agent codex|claude [--user-dir <宿主配置目录>]', 'uninstall --agent codex|claude', 'doctor [--agent codex|claude] [--project <目录>]',
-    'project onboard --root <目录> [--enable-learning|--skip-learning]（推荐：先全部预检，通过才接入并扫描；--enable-learning 同时启用后台复盘并注册计划任务，须用户在终端执行）',
+    'project onboard --root <目录> [--enable-learning|--skip-learning]（推荐：核心预检通过才接入并扫描；--enable-learning 同时启用后台复盘并注册计划任务，会真实调用模型，需用户同意）',
     'project remove --root <目录>（清除本机绑定、计划任务、管理区和本机数据；项目内资料只列出不删）',
     'project enable --root <目录> [--coexistence-mode bounded|pending-only]',
     'project disable --root <目录>', 'project attach-worktree --project <projectId> --root <目录>',

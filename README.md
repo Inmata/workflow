@@ -47,7 +47,7 @@ node bin/workflow.mjs doctor --agent codex
 
 Claude Code 在 Codeg 中以 auto 模式担任 Lead 时，分类器可能拦截委派。请在权限设置中放行 `mcp__codeg-mcp__delegate_to_agent`、`mcp__codeg-mcp__get_delegation_status`、`mcp__codeg-mcp__cancel_delegation` 和 `mcp__codeg-mcp__check_user_feedback`，或改用逐次确认的权限模式（见 [Codeg 接续](docs/adapters/codeg.md#接续)）。
 
-`install` 会做四件事：把当前源码复制成一份带摘要的发布副本（`releases/<version>-<digest>`）、把固定入口 `current` 指向它、在宿主配置里注册本插件的事件（Codex 写 `hooks.json`，Claude 写 `settings.json`）、记录安装事务。hook 命令只包含 `current` 路径，所以升级后路径不变，宿主信任只需做一次；旧副本保留作回滚。它**不会**写宿主信任、不会改项目、不会提交 Git。
+`install` 会做四件事：把当前源码复制成一份带摘要的发布副本（`releases/<version>-<digest>`）、把固定入口 `current` 指向它、在宿主配置里注册本插件的事件（Codex 写 `hooks.json`，Claude 写 `settings.json`）、记录安装事务。hook 命令只包含 `current` 路径，所以升级后路径不变，宿主信任只需做一次；旧副本保留作回滚。重复执行会核对 `current` 的实际目标：自有入口被删除、断链或错链时只重建或改指链接，不重写配置、不新建副本；`current` 被替换成用户自己的目录或指向安装目录外的链接时保留现场并报告 `conflict` 与路径。它**不会**写宿主信任、不会改项目、不会提交 Git。
 
 `doctor` 看的是四项不同的事，不要混为一谈：
 
@@ -66,7 +66,7 @@ Claude Code 在 Codeg 中以 auto 模式担任 Lead 时，分类器可能拦截�
 node bin/workflow.mjs project onboard --root "D:/你的项目"
 ```
 
-`onboard` 先把所有检查做完再写入：宿主是否已安装且版本一致、目录和 Git 身份、`AGENTS.md` 里有没有复制来的或残留的管理区、后台复盘执行器能否启动（只核对能力，不调用模型）。任何一项不过都不写入，并一次列出所有问题和可直接复制的修复命令；执行器缺专用配置时给出警告和登记命令。想同时启用后台复盘就加 `--enable-learning`（在你自己的终端执行；代理执行会被宿主自动审批拦截），不打算启用时加 `--skip-learning`。
+`onboard` 分开核对核心接入与可选后台复盘：宿主是否已安装且版本一致、目录和 Git 身份、`AGENTS.md` 里有没有复制来的或残留的管理区，这些核心检查全部通过才写入；任何一项不过都不写入，并一次列出所有问题和可直接复制的修复命令。后台复盘执行器只核对能力、不调用模型，预检问题单独报告，没加 `--enable-learning` 时不阻断核心接入；执行器缺专用配置时给出警告和登记命令。想同时启用后台复盘就加 `--enable-learning`（会按配置真实调用模型并消耗额度，需用户同意；当前会话权限允许时可由代理直接执行，否则在你自己的终端执行），不打算启用时加 `--skip-learning`。显式启用时分别报告接入与学习结果，学习失败不会写成全部成功。
 
 检查通过后，它在项目根目录插入一段很短的 `AGENTS.md` 管理区，建立本机绑定并完成首次对齐扫描，没加 `--enable-learning` 时，最后列出启用后台复盘的完整命令。它保留你原有的 AGENTS 正文，不要求你补 README、spec 或计划，也不会创建空 LESSONS。
 
