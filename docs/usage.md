@@ -141,7 +141,7 @@ node "<入口>" signal task-update ... --id update-3 --paths docs/new.md --paths
 
 变更追加到任务的 `updates`（`task show` 显示条数）；历史回执不改写，旧任务兼容。权限收缩不追溯取消已完成的产物，后续知识/对齐写入按新范围检查；直接 Edit/Write 不受本插件拦截。
 
-Lead 的活动任务结束回合时，Stop 会挡一次（等待用户、本回合已挡过时不挡）：有在途工作包时要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明为什么暂停（在途包全是 `builtin:` 通道时，宿主会通知结果，只要求说明在等什么）；没有在途包而未发 task-end 时给出缺项，按提示补齐后发 task-end，或向用户说明还没完成的部分。计划模式下，仅本回合显式 task-start/phase 或任务声明了 `plans` 才核对分包与通道；普通解释和讨论不因 `mode=plan` 单独挡。
+Lead 的活动任务结束回合时，Stop 会挡一次（等待用户、本回合已挡过时不挡）：有在途工作包时要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明为什么暂停（在途包全是 `builtin:` 通道时，宿主会通知结果，只要求说明在等什么）；没有在途包而未发 task-end 时给出缺项，按提示补齐后发 task-end，或向用户说明还没完成的部分。计划模式下，仅本回合显式 task-start/phase 才核对计划交付：一次列明分包与各包所用通道，已声明的 `channels`/包通道直接沿用，Lead 直接执行的任务不问 Worker，只有真实新增的角色或通道才请用户确认；历史 `plans` 和普通解释、讨论不因 `mode=plan` 单独挡，也不落到通用门禁阻挡。
 
 用户指定了各角色用哪个智能体时，task-start 加 `"channels": {"worker": "codeg:claude_code", "reviewer": "codeg:codex"}`，每个工作包填 `channel`。与声明不一致，或 delegated 任务的 worker 包由 Lead 实施（`channel: "lead"` 或 `handle: "lead-direct"`），须在同一 packages 信号附 `change` 列出该包，否则回执 `CHANNEL`。换新 packageId 返修时新包带 `"supersedes": "<旧包>"`，已交付或审查要求修订的轮次累计（同一交付轮次只计一次，同一轮迟到的交付引用或 FIX 不重复累计）、旧包自动收尾；从未产出的启动失败重派不增加返修。已有审查结论的 worker 包（含它接替过的旧包），审查缺项不能用 waivers 豁免，也不能改标 waived：重新送审最终交付版本，或用 supersedes 接替、canceled 放弃。`task show` 显示 `channels`。
 

@@ -229,20 +229,42 @@ test('Stop 与显式 save 后未再改状态不重复落盘；中间 save 后继
 test('计划模式普通讨论不单独阻挡；本回合显式进入计划交付才核对分包与通道', async () => {
   const f = await fixture();
   const entryOut = await event({ ...f, turnId: 'plan-1' }, 'UserPromptSubmit', { permission_mode: 'plan' });
-  assert.match(entryOut.hookSpecificOutput.additionalContext, /分几个工作包.*Worker 与 Reviewer 通道/);
-  // 本回合没有 task-start/phase，也没有声明 plans：普通解释直接放行。
+  assert.match(entryOut.hookSpecificOutput.additionalContext, /分几个工作包.*真实新增的角色或通道/);
+  // 本回合没有 task-start/phase：普通解释直接放行。
   assert.deepEqual(await event({ ...f, turnId: 'plan-1' }, 'Stop'), {});
 
   f.turnId = 'plan-2';
   await event(f, 'UserPromptSubmit', { permission_mode: 'plan' });
-  assert.equal((await emit(f, { action: 'task-start', goal: '交付计划', permissions: { mode: 'plan', allowedPaths: [] } })).result.accepted, true);
+  assert.equal((await emit(f, { action: 'task-start', goal: '交付计划', route: 'lead-direct', permissions: { mode: 'plan', allowedPaths: [] } })).result.accepted, true);
   const blocked = await event(f, 'Stop');
   assert.equal(blocked.decision, 'block');
-  assert.match(blocked.reason, /计划交付核对.*分几个包.*Worker 与 Reviewer 通道/);
+  assert.match(blocked.reason, /计划交付核对.*分几个包.*Lead 直接执行.*不需要询问 Worker/);
   assert.deepEqual(await event(f, 'Stop'), {});
 
-  // 结构化提问工具自动记 waiting-user，不再要求先发一次 phase。
+  // 历史 plans 不跨回合推断本回合在交付计划：活动任务声明过 plans，下一回合 plan 模式普通追问仍放行。
   f.turnId = 'plan-3';
+  await event(f, 'UserPromptSubmit', { permission_mode: 'plan' });
+  await emit(f, { action: 'task-start', goal: '按计划实施', route: 'lead-direct', plans: ['docs/plan.md'], permissions: { mode: 'plan', allowedPaths: [] } });
+  f.turnId = 'plan-4';
+  await event(f, 'UserPromptSubmit', { permission_mode: 'plan' });
+  assert.deepEqual(await event(f, 'Stop'), {});
+  // 同一回合本回合显式声明阶段时仍核对一次。
+  await emit(f, { action: 'phase', phase: 'executing' });
+  const explicit = await event(f, 'Stop');
+  assert.equal(explicit.decision, 'block');
+  assert.match(explicit.reason, /计划交付核对/);
+  assert.deepEqual(await event(f, 'Stop'), {});
+
+  // 计划模式普通讨论不落到通用门禁阻挡；有包在途时仍按在途阻挡。
+  f.turnId = 'plan-5';
+  await event(f, 'UserPromptSubmit', { permission_mode: 'plan' });
+  await emit(f, { action: 'packages', packages: [{ packageId: 'w1', role: 'worker', status: 'dispatched', channel: 'builtin:general-purpose' }] });
+  const inflight = await event(f, 'Stop');
+  assert.equal(inflight.decision, 'block');
+  assert.match(inflight.reason, /仍有 1 个工作包在途/);
+
+  // 结构化提问工具自动记 waiting-user，不再要求先发一次 phase。
+  f.turnId = 'plan-6';
   await event(f, 'UserPromptSubmit', { permission_mode: 'plan' });
   await event(f, 'PostToolUse', { tool_name: 'request_user_input', tool_input: { questions: [] }, tool_response: {} });
   assert.deepEqual(await event(f, 'Stop'), {});
@@ -253,4 +275,19 @@ test('计划模式普通讨论不单独阻挡；本回合显式进入计划交�
   await event(g, 'UserPromptSubmit', { permission_mode: 'plan' });
   await emit(g, { action: 'task-start', goal: '查看', route: 'operation-only', permissions: { mode: 'plan', allowedPaths: [] } });
   assert.deepEqual(await event(g, 'Stop'), {});
+});
+test('计划交付核对沿用已声明的通道，只对真实新增的角色或通道提问', async () => {
+  const f = await fixture();
+  f.turnId = 'plan-channel';
+  await event(f, 'UserPromptSubmit', { permission_mode: 'plan' });
+  await emit(f, {
+    action: 'task-start', goal: '交付计划', route: 'delegated',
+    permissions: { mode: 'plan', allowedPaths: [] },
+    channels: { worker: 'codeg:claude_code', reviewer: 'codeg:codex' },
+  });
+  const blocked = await event(f, 'Stop');
+  assert.equal(blocked.decision, 'block');
+  assert.match(blocked.reason, /已有明确安排直接沿用.*Worker 通道 codeg:claude_code.*Reviewer 通道 codeg:codex/);
+  assert.match(blocked.reason, /只有计划里真实新增的角色或通道且尚无明确安排时/);
+  assert.doesNotMatch(blocked.reason, /不需要询问 Worker/);
 });

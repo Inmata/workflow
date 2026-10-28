@@ -578,6 +578,28 @@ export function acceptSignal(state, payload, { root } = {}) {
   session.receipts[payload.signalId] = { hash: digest(JSON.stringify(payload)), result };
   return result;
 }
+// 计划交付提示：一次列明分包与所用通道；已有安排（任务声明的 channels 或包上填的 channel）
+// 直接沿用，Lead 直接执行的任务没有 Worker 就不问 Worker，只有真实新增的角色或通道才请用户确认。
+function planDeliveryReason(task) {
+  const labels = { worker: 'Worker', reviewer: 'Reviewer' };
+  const arranged = [];
+  for (const [role, channel] of Object.entries(task.channels || {})) arranged.push(`${labels[role] || role} 通道 ${channel}`);
+  const byChannel = new Map();
+  for (const item of Object.values(task.packages || {})) {
+    if (!item.channel) continue;
+    const ids = byChannel.get(item.channel) || [];
+    ids.push(item.packageId);
+    byChannel.set(item.channel, ids);
+  }
+  for (const [channel, ids] of byChannel) arranged.push(`包 ${ids.join('、')} 用 ${channel}`);
+  const existing = arranged.length
+    ? `已有明确安排直接沿用，不重复询问：${arranged.join('；')}。`
+    : '目前没有已声明的 Worker/Reviewer 通道。';
+  const ask = task.route === 'lead-direct'
+    ? '本任务由 Lead 直接执行，没有 Worker，不需要询问 Worker；只有计划里真实新增 Reviewer 或其他角色/通道且尚无明确安排时，才请用户确认。'
+    : '只有计划里真实新增的角色或通道且尚无明确安排时，才请用户确认；上面已有的安排不要重复询问。';
+  return `workflow 计划交付核对：本回合已进入计划交付但尚未向用户提问确认。若本回合在交付计划，请列出建议分流与工作包划分（分几个包、每包范围与依赖，或说明免拆包理由），一次列明各包所用通道。${existing}${ask}并在计划末尾写明 spec 影响（无影响写“无”）；结构化提问工具会自动记 waiting-user，文本提问先发 signal phase --phase waiting-user。若本回合只是回答讨论而非交付计划，直接回复即可（本回合不再重复阻挡）。`;
+}
 // 回合结束核对：Lead 没发 task-end 就收尾时，按门禁算一次缺项并挡下一轮。只读任务状态，只在 session 上记“本回合已挡”。
 // 经验采集独立于业务交付；Stop 从不启动复盘或要求补写经验。
 export function stop(state, project, session, event = {}, { root } = {}) {
@@ -587,15 +609,13 @@ export function stop(state, project, session, event = {}, { root } = {}) {
   if (['waiting-user', 'operation-only'].includes(session.phase)) return {};
   const task = session.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
   if (!task || task.lifecycle !== 'active' || task.route === 'operation-only') return {};
-  // 只有本回合显式进入任务阶段（task-start/phase，session.phase 不随新回合继承）或任务已声明 plans 时，
-  // 才在计划模式下核对分包与通道；普通解释不因 mode=plan 单独阻挡，也不扫描自然语言猜测意图。
-  const planDelivery = session.phase !== 'unknown' || Boolean(task.plans?.length);
-  if (planDelivery && (session.permissionMode === 'plan' || task.permissions?.mode === 'plan')) {
+  // 只认本回合显式进入任务阶段（task-start/phase；session.phase 不跨回合继承）。
+  // 历史 task.plans 不代表本回合在交付计划，普通解释不因 mode=plan 单独阻挡，也不扫描自然语言猜测意图。
+  const planDelivery = session.phase !== 'unknown';
+  const planning = session.permissionMode === 'plan' || task.permissions?.mode === 'plan';
+  if (planDelivery && planning) {
     session.stopBlockedTurn = session.turnId;
-    return {
-      decision: 'block',
-      reason: 'workflow 计划交付核对：本回合已进入计划交付但尚未向用户提问确认。若本回合在交付计划，请列出建议分流与工作包划分（分几个包、每包范围与依赖，或说明免拆包理由），按提问路径请用户指定 Worker 与 Reviewer 通道，并在计划末尾写明 spec 影响（无影响写“无”）；结构化提问工具会自动记 waiting-user，文本提问先发 signal phase --phase waiting-user。若本回合只是回答讨论而非交付计划，直接回复即可（本回合不再重复阻挡）。',
-    };
+    return { decision: 'block', reason: planDeliveryReason(task) };
   }
   // 有包在途也挡一次：Codeg 等宿主不会在子任务结束时唤醒父会话，Lead 收尾就再也收不到结果。
   const inflight = Object.entries(task.packages || {}).filter(([, item]) => item.status === 'dispatched');
@@ -609,6 +629,8 @@ export function stop(state, project, session, event = {}, { root } = {}) {
       : '宿主不会在子任务结束时唤醒本会话，结束回合就收不到结果。二选一：用阻塞等待（Codeg get_delegation_status 批量传入在途 task_id、wait_ms: 0；若 MCP 空闲超时断开而任务仍在运行则重调续等，等待期间不轮询、不跑无关命令）等到终态或 blocked_on 再收结果；或者向用户说明为什么暂停、何时由谁接续。';
     return { decision: 'block', reason: `workflow 回合结束核对：任务 ${task.taskId} 仍有 ${inflight.length} 个工作包在途（${list}）。${how}` };
   }
+  // 计划模式的普通讨论：计划阶段无法实施，不落到通用“门禁缺项/仍为 active”阻挡，以免打断讨论。
+  if (planning && !planDelivery) return {};
   let missing;
   try {
     // 没法检查（git 失败、浅克隆）不算缺项；其余照常核对。

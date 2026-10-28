@@ -150,7 +150,7 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   const inflight = ledger && task.lifecycle === 'active' ? Object.values(task.packages || {}).filter(p => p.status === 'dispatched').map(p => p.packageId) : [];
   const correction = inflight.length ? `有 ${inflight.length} 个工作包在途（${inflight.join('、')}）：若本条用户消息改变需求或范围，按中途纠正流程先核对已有成果、取消并确认停止，再以新基准和用户原话重新派发。` : '';
   const planning = role === 'lead' && (session?.permissionMode === 'plan' || (task?.lifecycle === 'active' && task.permissions?.mode === 'plan'));
-  const planHint = planning ? '当前为计划模式：交付计划时才须列出分几个工作包（每包范围与依赖）或说明免拆包理由，并按提问路径请用户指定或沿用 Worker 与 Reviewer 通道；普通解释和讨论不触发这项核对。' : '';
+  const planHint = planning ? '当前为计划模式：交付计划时才须列出分几个工作包（每包范围与依赖）或说明免拆包理由，并一次列明各包所用通道；已有安排（任务声明的 channels 或包通道）直接沿用，Lead 直接执行的任务不问 Worker，只有真实新增的角色或通道才请用户确认。普通解释和讨论不触发这项核对。' : '';
   const leadRepeat = role === 'lead' ? '交付计划时一次列工作包和所用通道，已有安排直接沿用；' : '';
   const base = repeat ? `入口与本会话上一回合相同（文档、信号用法不变）：${leadRepeat}信号用 identity 字段加 signal <action> 子命令；需要时重读 ${role === 'lead' ? 'Lead' : role === 'worker' ? 'Worker' : 'Reviewer'} 指引。` : instructions[role];
   const instruction = [base, planHint, note, learning, correction, degraded.join(' ')].filter(Boolean).join(' ');

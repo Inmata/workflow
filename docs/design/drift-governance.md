@@ -167,7 +167,7 @@ Lead 和 Worker 都可以在交付前运行它。指定 `--ref` 时先固定成�
 - phase 不是 `waiting-user`；
 - `stop_hook_active` 不为 true，且本回合还没挡过。
 
-计划模式的计划交付核对只在本回合显式 `task-start`/`phase`（`session.phase` 不跨回合继承）或活动任务已声明 `plans` 时触发；仅有 `mode=plan` 的普通解释放行，不扫描自然语言或文件名猜意图。
+计划模式的计划交付核对只在本回合显式 `task-start`/`phase`（`session.phase` 不跨回合继承）时触发，历史 `task.plans` 不跨回合推断；仅有 `mode=plan` 的普通解释与讨论放行，也不落到通用门禁阻挡，不扫描自然语言或文件名猜意图。提示一次列明分包与各包所用通道：已声明的 `channels` 或包通道直接沿用，Lead 直接执行的任务不问 Worker，只有真实新增的角色或通道才请用户确认。
 
 有 dispatched 工作包时（0.6.0 起）：返回 `{decision: 'block', reason}`，列出在途包和 handle，要求 Lead 继续有界等待结果，或向用户说明暂停原因。Codeg 不会在委派结束时唤醒父会话，0.5.x 在此放行，Lead 结束回合后就收不到子任务结果。
 
