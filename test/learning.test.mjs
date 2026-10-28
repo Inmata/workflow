@@ -302,6 +302,90 @@ test('P03-r1 作废仅重排本运行材料：其余运行已消费的材料保�
   assert.deepEqual((await readState(f.directory)).projects[f.projectId].learning.quarantine, {});
 });
 
+test('P03-r2 写入后用户再编辑已写入文件：偏离写入前快照即拒绝作废，隔离、提案与材料保持', async () => {
+  const f = await fixture(); await start(f);
+  await putKnowledge(f, 'K-old', '旧登录经验', '旧结论：直接重试', ['src/login.mjs']);
+  await observe(f, 1, { knowledgeId: 'K-old', kind: 'correction', explicit: true, verified: false, summary: '用户指出旧结论不成立' });
+  await finish(f);
+  await setLearningEnabled(f.directory, f.project, true);
+  const folder = path.join(f.project, '.workflow', 'knowledge');
+  const oldPath = path.join(folder, 'K-old.md'), newPath = path.join(folder, 'K-o1.md');
+  const oldContent = await readFile(oldPath, 'utf8');
+  const answer = { decisions: [{
+    observationIds: ['o1'], action: 'create', targetId: null, supersedes: 'K-old',
+    title: '新的登录经验', summary: '新的结论：先取消再重试', conditions: '当前项目', type: 'method',
+    importance: 'important', status: 'active', paths: ['src/login.mjs'], version: null,
+    tags: ['登录'], reason: '用户明确指出旧结论不成立',
+  }] };
+  // 替代提案先写新知识、再写旧知识；让第二步失败，留下部分写入。
+  const first = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true,
+    runner: async () => ({ status: 'completed', usage: { input_tokens: 10, output_tokens: 5 }, answer }),
+    checkpoint(stage, tx, result) { if (stage === 'prepared' && result.path.endsWith('K-old.md')) throw new Error('simulated write failure'); },
+  }));
+  assert.equal(first.status, 'recovery');
+  assert.ok((await readFile(newPath, 'utf8')).includes('新的登录经验'));
+  // 用户在部分写入后再次编辑已经落盘的正文：当前指纹既不是写入前快照，也不是提案正文。
+  const userContent = renderEntry(knowledgeEntry('K-o1', '用户再次编辑', '用户自己的新结论', ['src/login.mjs']));
+  await writeFile(newPath, userContent);
+  await assert.rejects(recoverReview(f.directory, f.project, first.id), { code: 'CONFLICT' });
+  await assert.rejects(resolveReview(f.directory, f.project, first.id, 'discard'), { code: 'CONFLICT' });
+  const project = await projectFor(f.directory, f.project);
+  const run = (await readItems(f.directory, project, 'runs')).find(r => r.id === first.id);
+  assert.equal(run.status, 'conflict');
+  assert.equal(run.proposal.changes.length, 2);
+  assert.equal(await readFile(newPath, 'utf8'), userContent);
+  assert.equal(await readFile(oldPath, 'utf8'), oldContent);
+  assert.deepEqual((await readState(f.directory)).projects[f.projectId].learning.quarantine, {
+    '.workflow/knowledge/K-o1.md': first.id,
+    '.workflow/knowledge/K-old.md': first.id,
+  });
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 1);
+});
+
+test('P03-r2 未写入的新建文件不阻止作废；文件还原到写入前快照后作废并关闭待办', async () => {
+  const f = await fixture(); await start(f);
+  await putKnowledge(f, 'K-old', '旧登录经验', '旧结论：直接重试', ['src/login.mjs']);
+  await observe(f, 1, { knowledgeId: 'K-old', kind: 'correction', explicit: true, verified: false, summary: '用户指出旧结论不成立' });
+  await observe(f, 2);
+  await finish(f);
+  await setLearningEnabled(f.directory, f.project, true);
+  const folder = path.join(f.project, '.workflow', 'knowledge');
+  const oldPath = path.join(folder, 'K-old.md'), newPath = path.join(folder, 'K-o2.md');
+  const oldContent = await readFile(oldPath, 'utf8');
+  const revise = { observationIds: ['o1'], action: 'revise', targetId: 'K-old', supersedes: null,
+    title: '旧登录经验', summary: '修订后的结论：先取消再重试', conditions: '当前项目', type: 'method',
+    importance: 'normal', status: 'active', paths: ['src/login.mjs'], version: null,
+    tags: ['经验'], reason: '用户明确指出旧结论不成立' };
+  const create = { observationIds: ['o2'], action: 'create', targetId: null, supersedes: null,
+    title: '新的登录经验', summary: '另一条验证结论', conditions: '登录接口', type: 'method',
+    importance: 'normal', status: 'active', paths: ['src/login.mjs'], version: null,
+    tags: ['登录'], reason: '根据本批验证结果整理' };
+  // 先写入已存在的旧知识，再让新建文件失败；新建文件始终未落盘。
+  const first = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true,
+    runner: async () => ({ status: 'completed', usage: { input_tokens: 10, output_tokens: 5 }, answer: { decisions: [revise, create] } }),
+    checkpoint(stage, tx, result) { if (stage === 'prepared' && result.path.endsWith('K-o2.md')) throw new Error('simulated write failure'); },
+  }));
+  assert.equal(first.status, 'recovery');
+  assert.notEqual(await readFile(oldPath, 'utf8'), oldContent);
+  await assert.rejects(readFile(newPath), { code: 'ENOENT' });
+  // 用户编辑已写入的旧知识制造冲突，再把文件还原到写入前快照。
+  await writeFile(oldPath, renderEntry(knowledgeEntry('K-old', '用户版本', '用户自己的结论', ['src/login.mjs'])));
+  await assert.rejects(recoverReview(f.directory, f.project, first.id), { code: 'CONFLICT' });
+  await writeFile(oldPath, oldContent);
+  const discarded = await resolveReview(f.directory, f.project, first.id, 'discard');
+  assert.equal(discarded.status, 'discarded');
+  assert.equal(discarded.restored, 0);
+  assert.equal(await readFile(oldPath, 'utf8'), oldContent);
+  await assert.rejects(readFile(newPath), { code: 'ENOENT' });
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 2);
+  assert.deepEqual((await readState(f.directory)).projects[f.projectId].learning.quarantine, {});
+  const state = await readState(f.directory);
+  const knowledgePending = Object.values(state.pending).filter(p => p.taskId === first.id && p.kind === 'knowledge-pending');
+  assert.equal(knowledgePending.length, 1);
+  assert.equal(knowledgePending[0].status, 'closed');
+});
+
+
 test('P03 跨项目锁争用只短延期，不额外等一个正常检查周期', async () => {
   const f = await fixture(); await start(f); await observe(f, 1); await finish(f);
   await setLearningEnabled(f.directory, f.project, true);

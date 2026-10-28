@@ -236,8 +236,8 @@ export async function recoverReview(directory, root, runId) {
     catch (error) { await settleRunFailure(directory, project, run, error); throw error; }
   });
 }
-// 作废只撤销尚未落盘的知识。事务记录显示提案内容仍在知识文件中时，作废会留下新旧并存、
-// 替代关系不完整，而材料仍待处理；因此按文件实际指纹判断，读不出或记录不可辨认时保守拒绝。
+// 作废只撤销尚未落盘的知识。事务记录显示文件已偏离写入前快照时，作废会留下新旧并存、
+// 替代关系不完整，而材料仍待处理；因此逐文件对照写入前快照判断，读不出或记录不可辨认时保守拒绝。
 async function writtenKnowledge(state, project, run) {
   const transactions = Object.values(state.transactions).filter(t => t.projectId === project.projectId && t.taskId === run.id);
   if (run.transactionId && !transactions.some(t => t.transactionId === run.transactionId)) return { transactionId: run.transactionId, unknown: true };
@@ -245,11 +245,13 @@ async function writtenKnowledge(state, project, run) {
     if (!file || typeof file.path !== 'string' || typeof file.after !== 'string') return { transactionId: tx.transactionId, unknown: true };
     // 未改变内容的文件不需要写入，也不构成残留。
     if (file.before === file.after) continue;
+    // 写入前快照只有两种可辨认表示：新建文件为 null，已存在文件为正文指纹。
+    if (file.before !== null && !/^[a-f0-9]{64}$/.test(file.before)) return { path: file.path, transactionId: tx.transactionId, unknown: true };
     let current;
     try { current = await document(await safeDocument(project.knowledgeRoot, file.path)); }
     catch { return { path: file.path, transactionId: tx.transactionId, unknown: true }; }
-    // 文件仍是本提案写入的正文（含崩溃前已写入但未落盘状态的情况）即视为知识已写入。
-    if (current.fingerprint === file.after) return { path: file.path, transactionId: tx.transactionId };
+    // 未写入的新建文件仍缺失（指纹 null）即等于写入前快照；其余任何偏离（已写入、写入后被编辑、已存在文件被删除）都算残留。
+    if (current.fingerprint !== file.before) return { path: file.path, transactionId: tx.transactionId };
   }
   return null;
 }
@@ -294,6 +296,8 @@ export async function resolveReview(directory, root, runId, decision) {
       const restored = await requeueRunMaterials(directory, project, run);
       run.status = 'discarded';
       run.resolvedAt = run.finishedAt = new Date().toISOString();
+      // 作废后本运行不再有待接续的知识写入，关闭其待办，避免重复提示。
+      for (const p of Object.values(state.pending)) if (p.taskId === run.id && p.projectId === project.projectId && p.kind === 'knowledge-pending') p.status = 'closed';
       // 作废只撤销本批次的待写隔离：不改用户文件或已写入知识，也不消费 inbox。
       for (const [relative, owner] of Object.entries(project.learning?.quarantine || {})) if (owner === run.id) delete project.learning.quarantine[relative];
       await putItem(directory, project, 'runs', run);
