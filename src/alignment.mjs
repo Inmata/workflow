@@ -62,6 +62,8 @@ async function walk(root, relative, depth, output) {
       continue;
     }
     if (!entry.isFile() || !candidate(entry.name)) continue;
+    // 发现未收录资料时，已收录文件不占名额，避免排序靠前的已确认来源掩盖后面的未确认资料。
+    if (output.ignore?.has(item)) continue;
     if (output.files.length >= output.limit) { output.truncated = true; continue; }
     const info = await lstat(path.join(root, item));
     if (info.isSymbolicLink()) { output.skipped.push({ path: item, reason: 'symlink' }); continue; }
@@ -164,9 +166,11 @@ async function addedEntries(root, item, known, docPath) {
     const child = relative ? `${relative}/${entry.name}` : entry.name;
     if (entry.isFile() && candidate(entry.name) && child !== docPath && !known.files.has(child)) return true;
     if (entry.isDirectory() && !SKIP_DIRS.has(entry.name) && depth < MAX_DEPTH && !known.directories.has(child)) {
-      const output = { files: [], directories: [], skipped: [], limit: 2, truncated: false };
+      const ignore = new Set(known.files);
+      if (docPath) ignore.add(docPath);
+      const output = { files: [], directories: [], skipped: [], limit: 2, truncated: false, ignore };
       await walk(root, child, depth + 1, output).catch(() => {});
-      if (output.files.some(file => file.path !== docPath && !known.files.has(file.path))) return true;
+      if (output.files.length > 0) return true;
     }
   }
   return false;
@@ -262,17 +266,29 @@ function replaceSection(text, heading, line) {
 }
 
 // 写入对齐文档会改变其父目录的 mtime；目录里仍有未收录资料时不能刷新，否则会掩盖新增来源。
+// 返回该目录是否已可安全登记：false 表示其中（含未登记子目录）仍有未收录资料。
 async function refreshDirectoryAt(alignment, target, parent) {
   const info = await lstat(path.join(target, parent)).catch(() => null);
-  if (!info || !info.isDirectory()) return;
+  if (!info || !info.isDirectory()) return false;
   const known = {
     files: new Set((alignment.files || []).map(file => file.path)),
     directories: new Set((alignment.directories || []).map(item => item.path)),
   };
-  if (await addedEntries(target, { path: parent }, known, alignment.docPath)) return;
+  if (await addedEntries(target, { path: parent }, known, alignment.docPath)) return false;
   const entry = (alignment.directories || []).find(item => item.path === parent);
   if (entry) entry.mtimeMs = info.mtimeMs;
   else alignment.directories = [...(alignment.directories || []), { path: parent, mtimeMs: info.mtimeMs }];
+  return true;
+}
+// 新目录和它的祖先都只在没有未收录资料时登记；遇到未收录资料立即停止，
+// 让上级目录 mtime 保持陈旧，下次检查仍能通过父目录搜索发现它。
+async function refreshDirectoryChain(alignment, target, directory) {
+  let current = directory;
+  for (;;) {
+    if (!await refreshDirectoryAt(alignment, target, current)) return;
+    if (current === '.') return;
+    current = path.posix.dirname(current);
+  }
 }
 async function refreshDirectory(alignment, target, relative) {
   await refreshDirectoryAt(alignment, target, path.posix.dirname(relative.replaceAll('\\', '/')));
@@ -322,7 +338,6 @@ async function confirmSource(target, source) {
 // 只刷新本次实际确认的来源；新增和删除都要求显式列出，未列出的变化保持 stale。
 async function confirmSources(alignment, target, sources) {
   const files = new Map((alignment.files || []).map(file => [file.path, file]));
-  const directories = new Map((alignment.directories || []).map(item => [item.path, item]));
   const confirmed = [], unconfirmed = [], affected = new Set();
   for (const source of sources) {
     const result = await confirmSource(target, source);
@@ -336,14 +351,9 @@ async function confirmSources(alignment, target, sources) {
     affected.add(path.posix.dirname(source.path));
   }
   alignment.files = [...files.values()];
-  // 新目录也要登记，否则之后在该目录新增的资料无法通过目录 mtime 发现。
-  for (const directory of affected) {
-    if (directories.has(directory)) continue;
-    const info = await lstat(path.join(target, directory)).catch(() => null);
-    if (info?.isDirectory()) directories.set(directory, { path: directory, mtimeMs: info.mtimeMs });
-  }
-  alignment.directories = [...directories.values()];
-  for (const directory of affected) await refreshDirectoryAt(alignment, target, directory);
+  // 新目录和祖先只在其中所有候选资料都已收录时才登记当前 mtime；
+  // 否则不登记，父目录的搜索下次仍能发现未确认来源。
+  for (const directory of affected) await refreshDirectoryChain(alignment, target, directory);
   return { confirmed, unconfirmed };
 }
 

@@ -281,6 +281,48 @@ test('sources 支持新增、删除与 decisions/findings 一次提交', async (
   assert.deepEqual(status.directoryChanged, []);
 });
 
+test('新目录只确认部分来源时，未确认来源仍触发 stale', async () => {
+  const f = await fixture();
+  await documents(f.project, { 'docs/a.md': '原始\n' });
+  await scanAlignment(f.directory, f.project);
+  await documents(f.project, { 'docs/new/a.md': '新增 a\n', 'docs/new/b.md': '新增 b\n' });
+  const first = await apply(f, { content: '# 项目对齐\n', sources: [await snapshot(f.project, 'docs/new/a.md')] });
+  assert.deepEqual(first.confirmed, ['docs/new/a.md']);
+  let status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, true, JSON.stringify(status));
+  assert.ok(status.directoryChanged.includes('docs'), JSON.stringify(status));
+  // 目录基线不能提前把 docs/new 记为已同步，否则第二次检查会被跳过。
+  status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, true, JSON.stringify(status));
+  await apply(f, { content: '# 项目对齐\n', sources: [await snapshot(f.project, 'docs/new/b.md')] });
+  status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, false, JSON.stringify(status));
+  assert.deepEqual(status.directoryChanged, []);
+});
+
+test('多层新增目录中已确认文件不占用未收录搜索名额', async () => {
+  const f = await fixture();
+  await documents(f.project, { 'docs/a.md': '原始\n' });
+  await scanAlignment(f.directory, f.project);
+  await documents(f.project, {
+    'docs/new/deep/a.md': 'a\n',
+    'docs/new/deep/b.md': 'b\n',
+    'docs/new/deep/c.md': 'c\n',
+  });
+  const first = await apply(f, {
+    content: '# 项目对齐\n',
+    sources: [await snapshot(f.project, 'docs/new/deep/a.md'), await snapshot(f.project, 'docs/new/deep/b.md')],
+  });
+  assert.deepEqual(first.confirmed, ['docs/new/deep/a.md', 'docs/new/deep/b.md']);
+  let status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, true, JSON.stringify(status));
+  assert.ok(status.directoryChanged.includes('docs'), JSON.stringify(status));
+  await apply(f, { content: '# 项目对齐\n', sources: [await snapshot(f.project, 'docs/new/deep/c.md')] });
+  status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.stale, false, JSON.stringify(status));
+  assert.deepEqual(status.directoryChanged, []);
+});
+
 test('sources 拒绝越界路径、无效快照、重复与对齐文档自身', async () => {
   const f = await fixture();
   await scanAlignment(f.directory, f.project);
