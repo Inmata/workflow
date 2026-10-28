@@ -83,7 +83,7 @@ packages 的 `handle` 填宿主委派 ID（Codeg task_id）时，委派状态查
 | phase 为 waiting-user 或 operation-only | 放行 |
 | 绑定任务不是 active，或 route=operation-only | 放行 |
 | 计划模式（`permission_mode=plan` 或活动任务 `permissions.mode=plan`）但本回合没有显式 `task-start`/`phase` | 放行：普通解释不因 `mode=plan` 单独核对，也不落到通用门禁阻挡（计划模式无法实施，阻挡只会打断讨论）；历史 `task.plans` 不推断本回合在交付计划。有 dispatched 工作包时仍按下一条在途阻挡。不扫描自然语言或文件名猜意图 |
-| 计划模式且本回合已显式进入任务阶段（`session.phase` 非 `unknown`，不跨回合继承），尚未 waiting-user | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：提醒交付计划时一次列明分包与各包所用通道；任务已声明的 `channels` 或包上已填的 `channel` 直接沿用，Lead 直接执行的任务不问 Worker，只有真实新增的角色或通道才请用户确认；并写明 spec 影响；实际 spec 漂移仍由 task-end 门禁检查 |
+| 计划模式且本回合已显式进入任务阶段（`session.phase` 非 `unknown`，不跨回合继承），尚未 waiting-user | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：提醒交付计划时一次列明分包与各包所用通道；任务已声明的 `channels` 或包上已填的 `channel` 直接沿用，Lead 直接执行的任务不问 Worker，只有真实新增的角色或通道才请用户确认；并写明 spec 影响；实际 spec 漂移仍由 task-end 门禁检查。与下一条在途包同时成立时仍只阻挡一次，reason 先列在途包，再以“另：”附计划交付核对 |
 | 有 dispatched 工作包 | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：列出在途包与 handle。在途包全部是 `builtin:` 通道时，说明宿主会在子代理结束时通知本会话，只需向用户说明在等什么；否则要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明暂停原因与接续方式（Codeg 不会在委派结束时唤醒 Lead） |
 | 其余（Lead 的活动任务尚未 task-end） | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：有门禁缺项时列出缺项，要求补齐后 task-end 或向用户说明未完成项；无缺项时提醒发 task-end；任务关联的计划未改动时，同一 reason 附回写提醒 |
 | Interrupt / StopFailure | 增 interruptEpoch、撤销票据、挂起任务、保存 business-incomplete、释放会话归属；同一任务仍被其他有效 Lead 会话持有时只保存本会话，不挂起任务 |

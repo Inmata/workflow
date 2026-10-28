@@ -276,6 +276,21 @@ test('计划模式普通讨论不单独阻挡；本回合显式进入计划交�
   await emit(g, { action: 'task-start', goal: '查看', route: 'operation-only', permissions: { mode: 'plan', allowedPaths: [] } });
   assert.deepEqual(await event(g, 'Stop'), {});
 });
+test('计划交付核对与在途包同时成立时合并为一次阻挡，在途提示在前', async () => {
+  const f = await fixture();
+  f.turnId = 'plan-inflight';
+  await event(f, 'UserPromptSubmit', { permission_mode: 'plan' });
+  const started = await emit(f, { action: 'task-start', goal: '交付计划', route: 'delegated', permissions: { mode: 'plan', allowedPaths: [] } });
+  assert.equal(started.result.accepted, true, JSON.stringify(started.result));
+  await emit(f, { action: 'phase', phase: 'executing' });
+  await emit(f, { action: 'packages', packages: [{ packageId: 'w9', role: 'worker', status: 'dispatched', handle: 'task-9', channel: 'codeg:codex' }] });
+  const blocked = await event(f, 'Stop');
+  assert.equal(blocked.decision, 'block');
+  assert.match(blocked.reason, /仍有 1 个工作包在途（w9\(task-9\)）.*get_delegation_status/);
+  assert.match(blocked.reason, /另：workflow 计划交付核对/);
+  // 同回合已挡过一次，第二次 Stop 放行。
+  assert.deepEqual(await event(f, 'Stop'), {});
+});
 test('计划交付核对沿用已声明的通道，只对真实新增的角色或通道提问', async () => {
   const f = await fixture();
   f.turnId = 'plan-channel';

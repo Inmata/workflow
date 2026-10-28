@@ -613,21 +613,23 @@ export function stop(state, project, session, event = {}, { root } = {}) {
   // 历史 task.plans 不代表本回合在交付计划，普通解释不因 mode=plan 单独阻挡，也不扫描自然语言猜测意图。
   const planDelivery = session.phase !== 'unknown';
   const planning = session.permissionMode === 'plan' || task.permissions?.mode === 'plan';
-  if (planDelivery && planning) {
-    session.stopBlockedTurn = session.turnId;
-    return { decision: 'block', reason: planDeliveryReason(task) };
-  }
   // 有包在途也挡一次：Codeg 等宿主不会在子任务结束时唤醒父会话，Lead 收尾就再也收不到结果。
   const inflight = Object.entries(task.packages || {}).filter(([, item]) => item.status === 'dispatched');
-  if (inflight.length) {
+  // 计划交付核对与在途包同时成立时仍只挡一次，reason 合并两者并在途优先，避免首次提示漏掉在途结果。
+  if ((planDelivery && planning) || inflight.length) {
     session.stopBlockedTurn = session.turnId;
-    const list = inflight.map(([id, item]) => item.handle ? `${id}(${item.handle})` : id).join('、');
-    // 宿主内置子代理结束时会通知父会话，只需说明在等什么；其余（Codeg 或未填通道）必须同回合阻塞等待。
-    const builtin = inflight.every(([, item]) => item.channel?.startsWith('builtin:'));
-    const how = builtin
-      ? '这些包由宿主内置子代理执行，结束时宿主会通知本会话：向用户说明在等哪些包、结果回来后做什么，再结束回合。'
-      : '宿主不会在子任务结束时唤醒本会话，结束回合就收不到结果。二选一：用阻塞等待（Codeg get_delegation_status 批量传入在途 task_id、wait_ms: 0；若 MCP 空闲超时断开而任务仍在运行则重调续等，等待期间不轮询、不跑无关命令）等到终态或 blocked_on 再收结果；或者向用户说明为什么暂停、何时由谁接续。';
-    return { decision: 'block', reason: `workflow 回合结束核对：任务 ${task.taskId} 仍有 ${inflight.length} 个工作包在途（${list}）。${how}` };
+    let reason = '';
+    if (inflight.length) {
+      const list = inflight.map(([id, item]) => item.handle ? `${id}(${item.handle})` : id).join('、');
+      // 宿主内置子代理结束时会通知父会话，只需说明在等什么；其余（Codeg 或未填通道）必须同回合阻塞等待。
+      const builtin = inflight.every(([, item]) => item.channel?.startsWith('builtin:'));
+      const how = builtin
+        ? '这些包由宿主内置子代理执行，结束时宿主会通知本会话：向用户说明在等哪些包、结果回来后做什么，再结束回合。'
+        : '宿主不会在子任务结束时唤醒本会话，结束回合就收不到结果。二选一：用阻塞等待（Codeg get_delegation_status 批量传入在途 task_id、wait_ms: 0；若 MCP 空闲超时断开而任务仍在运行则重调续等，等待期间不轮询、不跑无关命令）等到终态或 blocked_on 再收结果；或者向用户说明为什么暂停、何时由谁接续。';
+      reason = `workflow 回合结束核对：任务 ${task.taskId} 仍有 ${inflight.length} 个工作包在途（${list}）。${how}`;
+    }
+    if (planDelivery && planning) reason = reason ? `${reason} 另：${planDeliveryReason(task)}` : planDeliveryReason(task);
+    return { decision: 'block', reason };
   }
   // 计划模式的普通讨论：计划阶段无法实施，不落到通用“门禁缺项/仍为 active”阻挡，以免打断讨论。
   if (planning && !planDelivery) return {};
