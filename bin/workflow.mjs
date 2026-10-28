@@ -41,7 +41,7 @@ const help = {
     'project align apply|decide|suggest --root <目录> --input <JSON文件>（sources 增量确认来源基线）',
     'context --role lead|worker|reviewer [--project <目录>] [--session <sessionId>]',
     'task show --task <taskId> [--project <目录>]（只读查看分流、工作包账本、变更条数与门禁缺项）',
-    'spec check [--project <目录>] [--ref <提交>]（只读检查 .spec 管辖文件是否漂移；有发现时退出码 1）',
+    'spec check [--project <目录>] [--ref <提交>]（只读检查 .spec 管辖文件是否漂移；指定 ref 时 spec 与代码均取自该提交；有发现或失败时退出码 1）',
     'signal <task-start|phase|role-claim|task-end|packages> --session <id> --turn <id> --id <signalId> [--task <id>] [--goal --route --mode --paths a,b --plans a,b --channels worker=x,reviewer=y --parent | --phase --delivery | --role --package | --final-ref] [--input <补充字段 JSON>]（推荐：身份由本机状态补齐）',
     'signal --input <JSON文件> | --base64 <UTF-8 JSON>（完整 payload，兼容写法）',
     'knowledge inspect --path <资料路径> [--project <目录>]',
@@ -80,9 +80,9 @@ async function showTask(state, root, taskId) {
   const task = state.tasks[taskKey(resolved.project.projectId, taskId)];
   if (!task) fail('TASK', '任务不存在或不属于当前项目');
   const { taskId: id, goal, parentTaskId, route = null, channels = null, lifecycle, packages = {}, validation = null, waivers = [], finalRef = null, changes = [] } = task;
-  const gate = lifecycle === 'active' ? gateReport(state, task, finalRef) : { missing: [], findings: [] };
+  const gate = lifecycle === 'active' ? gateReport(state, task, finalRef, resolved.worktree) : { missing: [], findings: [] };
   const plans = (task.plans || []).map(plan => plan.path);
-  const planUnchanged = lifecycle === 'active' ? unchangedPlans(state, task) : [];
+  const planUnchanged = lifecycle === 'active' ? unchangedPlans(state, task, resolved.worktree) : [];
   return { taskId: id, goal, parentTaskId, route, channels, lifecycle, packages: Object.values(packages), validation, waivers, finalRef, changes: changes.length, gateMissing: gate.missing, specFindings: gate.findings, plans, planUnchanged, note: '门禁核对声明记录一致性，不证明审查或测试真实发生' };
 }
 async function main() {

@@ -242,7 +242,7 @@ export async function handleHook(directory, event, options = {}) {
         if (payload?.sessionId !== event.session_id || payload.projectId !== project.projectId || payload.turnId !== session.turnId) return contextOutput(name, 'workflow 未接受：信号不属于当前宿主会话/项目/回合');
         const before = structuredClone(state);
         let result;
-        try { result = acceptSignal(state, payload); }
+        try { result = acceptSignal(state, payload, { root: resolved.worktree }); }
         catch (error) {
           // A rejected signal must not persist a partially changed phase or candidate disposition.
           for (const key of Object.keys(state)) delete state[key];
@@ -254,7 +254,7 @@ export async function handleHook(directory, event, options = {}) {
         return contextOutput(name, `workflow 回执：${JSON.stringify(result)}`);
       }
       if (name === 'Stop') {
-        const output = stop(state, project, session, event);
+        const output = stop(state, project, session, event, { root: resolved.worktree });
         // The budget must be durable before returning a continuation decision.
         await save();
         return output;

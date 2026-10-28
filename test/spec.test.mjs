@@ -131,6 +131,57 @@ test('id 重名报 duplicate-id；没有 .spec 跳过；不是 git 仓库返回 
   assert.match(failed.detail, /not a git repository/i);
 });
 
+test('显式 ref 使用目标提交的 spec 定义：新增 spec 不误报，删除 spec 按该版本判无 spec', async () => {
+  const root = path.join(await temporary('spec-ref-'), 'repo');
+  await mkdir(root);
+  git(root, ['init', '-q', '-b', 'main']);
+  const base = await commit(root, { 'src/x.mjs': 'x1\n' }, 'no spec yet');
+  const withSpec = await commit(root, { '.spec/new/spec.md': spec(['src/x.mjs']) }, 'add spec');
+  // 目标提交没有 .spec：跳过，不能拿当前磁盘新增的 spec 去回溯历史提交。
+  assert.deepEqual(checkSpecs(root, { ref: base }), { ok: true, ref: base, skipped: 'no-spec', findings: [] });
+  assert.equal(checkSpecs(root, { ref: withSpec }).ok, true);
+  const changed = await commit(root, { 'src/x.mjs': 'x2\n' }, 'change x');
+  assert.deepEqual(kinds(checkSpecs(root, { ref: changed })), ['new:src/x.mjs:drift']);
+  // 删除 spec 的提交按该提交判无 spec，不能回退到 HEAD 或当前磁盘的其他定义。
+  await rename(path.join(root, '.spec/new/spec.md'), path.join(root, 'old-spec.md'));
+  git(root, ['add', '-A']);
+  git(root, ['commit', '-q', '-m', 'drop spec']);
+  const dropped = git(root, ['rev-parse', 'HEAD']);
+  assert.deepEqual(checkSpecs(root, { ref: dropped }), { ok: true, ref: dropped, skipped: 'no-spec', findings: [] });
+  // HEAD 下空目录仍算“有 .spec 但没有 spec.md”，不报漂移；目标提交则按提交树判无 spec。
+  assert.equal(checkSpecs(root).ok, true);
+  assert.equal(checkSpecs(root).skipped, undefined);
+  // 分支名先固定成 OID，返回的 ref 是实际检查的提交。
+  assert.equal(checkSpecs(root, { ref: 'main' }).ref, dropped);
+});
+
+test('显式 ref 使用目标提交的 spec 路径：改路径不误报旧提交，新提交按新 id 报漂移', async () => {
+  const root = await repo();
+  const before = git(root, ['rev-parse', 'HEAD']);
+  // 只改 spec 路径（id 随之改变），不动代码。
+  await mkdir(path.join(root, '.spec/renamed'));
+  await rename(path.join(root, '.spec/a/spec.md'), path.join(root, '.spec/renamed/spec.md'));
+  git(root, ['add', '-A']);
+  git(root, ['commit', '-q', '-m', 'rename spec']);
+  // 旧提交的 spec 路径仍存在于该提交；不能拿当前磁盘的新路径算版本，否则会误报历史漂移。
+  assert.equal(checkSpecs(root, { ref: before }).ok, true);
+  assert.equal(checkSpecs(root).ok, true);
+  const changed = await commit(root, { 'src/a.mjs': 'a2\n' }, 'change a');
+  assert.deepEqual(kinds(checkSpecs(root, { ref: changed })), ['renamed:src/a.mjs:drift']);
+  assert.equal(checkSpecs(root, { ref: before }).ok, true);
+});
+
+test('显式 ref 读取失败与无 spec 区分：有 spec 但不是 git 仓库报 git，不回退成无 spec', async () => {
+  const plain = await temporary('spec-plain-ref-');
+  await put(plain, '.spec/a/spec.md', spec(['x.mjs']));
+  const result = checkSpecs(plain, { ref: 'main' });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'git');
+  // 没有 Git 边界且工作区没有 .spec 时，不存在可读的历史定义，按无 spec 跳过。
+  const empty = await temporary('spec-plain-ref-empty-');
+  assert.equal(checkSpecs(empty, { ref: 'main' }).skipped, 'no-spec');
+});
+
 test('frontmatter 解析：块列表、行内列表、引号与注释；其他字段忽略', () => {
   assert.deepEqual(codeList('---\nhue: 3\ncode:\n  - "src/a b.mjs"\n  - ./src/c.mjs # 注释\nrelated:\n  - docs/x.md\n---\n'), ['src/a b.mjs', 'src/c.mjs']);
   assert.deepEqual(codeList('---\ncode: [src/a.mjs, \'src/b.mjs\']\n---\n'), ['src/a.mjs', 'src/b.mjs']);

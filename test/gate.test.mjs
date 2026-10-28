@@ -6,6 +6,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { emptyState, readState } from '../src/store.mjs';
 import { acceptSignal, openTurn, taskKey } from '../src/protocol.mjs';
 import { codexQuestionFeature, doctor } from '../src/install.mjs';
+import { attachWorktree } from '../src/projects.mjs';
 import { cli, emit, event, fixture, git, start, temporary } from './helpers.mjs';
 
 const delegated = (f, extra = {}) => emit(f, { action: 'task-start', goal: '分工任务', route: 'delegated', permissions: { mode: 'write', allowedPaths: ['README.md'] }, ...extra });
@@ -260,6 +261,50 @@ test('spec 漂移进入门禁：lead-direct 与无 route 都检查，operation-o
     assert.equal(task.lifecycle, 'active');
     assert.equal(task.validation, undefined);
   }
+});
+
+// 附加 worktree：主树保持主分支，worktree 用自己的分支；两个目录绑定同一 project。
+async function worktreeOf(f, name) {
+  const tree = path.join(f.area, name);
+  git(f.project, ['worktree', 'add', '-q', '-b', name, tree]);
+  await attachWorktree(f.directory, f.projectId, tree);
+  return { ...f, project: tree };
+}
+
+test('task-end 使用当前 worktree：附加 worktree 的漂移会拦住，主树干净也不漏', async () => {
+  const f = await specProject();
+  const w = await worktreeOf(f, 'wt-drift');
+  await emit(w, { action: 'task-start', goal: '改搜索', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  await writeFile(path.join(w.project, 'src', 'search.mjs'), 'export const v = 3;\n');
+  git(w.project, ['commit', '-q', '-am', 'change in worktree']);
+  assert.equal(git(f.project, ['status', '--porcelain']), '');
+  const ended = await emit(w, { action: 'task-end' });
+  assert.equal(ended.result.reason, 'GATE', JSON.stringify(ended.result));
+  assert.deepEqual(ended.result.missing, ['spec:search']);
+  assert.equal(ended.result.findings[0].kind, 'drift');
+  assert.equal(ended.result.findings[0].commits.length, 1);
+});
+
+test('task-end 在附加 worktree 时不误用主树的未提交改动', async () => {
+  const f = await specProject();
+  const w = await worktreeOf(f, 'wt-clean');
+  await emit(w, { action: 'task-start', goal: '改搜索', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  // 只弄脏主树；worktree 干净时不应因为主树工作区而拦。
+  await writeFile(path.join(f.project, 'src', 'search.mjs'), 'export const v = 9;\n');
+  const ended = await emit(w, { action: 'task-end' });
+  assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
+});
+
+test('计划基线使用当前 worktree：计划只在附加 worktree 时仍提醒回写', async () => {
+  const f = await specProject();
+  const w = await worktreeOf(f, 'wt-plan');
+  await mkdir(path.join(w.project, 'docs'), { recursive: true });
+  await writeFile(path.join(w.project, 'docs', 'plan.md'), '# 计划\n- [ ] 第一项\n');
+  const started = await emit(w, { action: 'task-start', goal: '按计划实施', route: 'lead-direct', plans: ['docs/plan.md'], permissions: { mode: 'write', allowedPaths: ['docs/plan.md'] } });
+  assert.equal(started.result.accepted, true, JSON.stringify(started.result));
+  const ended = await emit(w, { action: 'task-end' });
+  assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
+  assert.deepEqual(ended.result.planUnchanged, ['docs/plan.md']);
 });
 
 test('spec 缺项不能豁免（类别和完整条目都返回 WAIVER），Spec-OK 空提交放行后结束', async () => {

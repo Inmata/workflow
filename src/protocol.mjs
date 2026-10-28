@@ -117,7 +117,7 @@ function waiverInput(value) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) fail('WAIVER', '豁免需为 {step, reason}');
     const step = textField(item.step, 'waiver.step');
     // spec 漂移只能更新 spec 或做 Spec-OK 空提交消除，让“不用改 spec”的判断留在 git 历史里；spec-check（没法检查）可豁免。
-    if (step === 'spec' || step.startsWith('spec:')) fail('WAIVER', 'spec 漂移不能豁免：更新 spec，或用 Spec-OK 空提交写明理由');
+    if (step === 'spec' || step.startsWith('spec:')) fail('WAIVER', 'spec 漂移不能豁免：更新 spec，或在内容提交附 Spec-OK 写明理由；需要追认既有历史时才用空提交');
     return { step, reason: textField(item.reason, 'waiver.reason') };
   });
 }
@@ -189,31 +189,33 @@ function planBaselines(root, plans) {
   return plans.map(relative => ({ path: relative, digest: root ? fileDigest(root, relative) : null }));
 }
 // 内容未变才算没回写；文件不见了按已归档或改名处理，读不到基线时不提醒。
-export function unchangedPlans(state, task) {
-  const root = state.projects[task.projectId]?.root;
+// root 为可信调用方给出的当前 worktree；缺省回落到项目主根。
+export function unchangedPlans(state, task, root) {
+  root ||= state.projects[task.projectId]?.root;
   if (!root || !task.plans?.length) return [];
   return task.plans.filter(plan => plan.digest && fileDigest(root, plan.path) === plan.digest).map(plan => plan.path);
 }
 const planReminder = paths => `关联计划 ${paths.join('、')} 自任务开始后没有改动：按 Lead 指引回写本任务完成的条目、偏离和剩余事项；确实不需要回写时在交付说明里写明理由。计划已全部完成时提议归档。`;
 // 门禁只核对 Lead 声明记录的一致性；插件看不到 Worker 真实产出，不证明审查或测试真实发生。
-export function gateMissing(state, task, finalRef) {
-  return gateReport(state, task, finalRef).missing;
+export function gateMissing(state, task, finalRef, root) {
+  return gateReport(state, task, finalRef, root).missing;
 }
 // spec 检查对 lead-direct、delegated 和未声明 route 的旧任务都生效；项目没有 .spec 时跳过。
-function specMissing(state, task, finalRef) {
-  const root = state.projects[task.projectId]?.root;
+// root 是 resolveProject 给出的当前 worktree，而不是 project.root，避免附加 worktree 的 drift 被主树漏掉。
+function specMissing(state, task, finalRef, root) {
+  root ||= state.projects[task.projectId]?.root;
   if (task.route === 'operation-only' || !root) return { missing: [], findings: [] };
   const report = checkSpecs(root, { ref: finalRef || undefined });
   const missing = [...new Set(report.findings.map(f => `spec:${f.id}`))];
   if (report.error) missing.push(`spec-check:${report.error}`);
   return { missing, findings: report.findings };
 }
-export function gateReport(state, task, finalRef) {
+export function gateReport(state, task, finalRef, root) {
   const missing = [];
   for (const child of Object.values(state.tasks)) {
     if (child.projectId === task.projectId && child.parentTaskId === task.taskId && child.lifecycle === 'active') missing.push(`child:${child.taskId}`);
   }
-  const spec = specMissing(state, task, finalRef);
+  const spec = specMissing(state, task, finalRef, root);
   if (task.route !== 'delegated') return { missing: [...missing, ...spec.missing], findings: spec.findings };
   const packages = Object.values(task.packages || {});
   for (const item of packages) if (!TERMINAL_PACKAGE.includes(item.status)) missing.push(`terminal:${item.packageId}`);
@@ -229,7 +231,8 @@ export function gateReport(state, task, finalRef) {
 // 审过的 worker 包，审查缺项（未 PASS 或审的不是最终交付版本）也不抵扣：只能补审或用 supersedes 接替。
 const reviewed = (task, entry) => entry.startsWith('review:') && wasReviewed(task, task.packages?.[entry.slice('review:'.length)]);
 const waived = (task, entry, waivers) => !(entry === 'spec' || entry.startsWith('spec:')) && !reviewed(task, entry) && waivers.some(w => w.step === entry || w.step === entry.split(':')[0]);
-export function acceptSignal(state, payload) {
+// options.root 只接受入口用 resolveProject 核对过的当前 worktree；payload 里的路径不参与检查根选择。
+export function acceptSignal(state, payload, { root } = {}) {
   identifier(payload?.signalId, 'signalId');
   const initial = currentIdentity(state, payload, { replay: true, requireTask: false });
   const receipt = initial.session.receipts[payload.signalId];
@@ -271,7 +274,7 @@ export function acceptSignal(state, payload) {
       const plans = payload.plans === undefined ? null : planInput(payload.plans);
       const channels = payload.channels === undefined ? null : channelsInput(payload.channels);
       task = { projectId: project.projectId, taskId: payload.taskId, goal: payload.goal, parentTaskId: payload.parentTaskId || null, route: payload.route || null, lifecycle: 'active', repairIssued: false, deliveries: {}, candidates: {}, packages: {}, permissions, createdAt: new Date().toISOString() };
-      if (plans) task.plans = planBaselines(project.root, plans);
+      if (plans) task.plans = planBaselines(root || project.root, plans);
       if (channels) task.channels = channels;
       state.tasks[key] = task;
     } else {
@@ -283,7 +286,7 @@ export function acceptSignal(state, payload) {
       if (payload.plans !== undefined) {
         const plans = planInput(payload.plans);
         if (task.plans?.length && JSON.stringify(task.plans.map(p => p.path)) !== JSON.stringify(plans)) fail('PLAN', '任务已声明其他计划');
-        task.plans ||= planBaselines(project.root, plans);
+        task.plans ||= planBaselines(root || project.root, plans);
       }
       // 通道同样只能首次或补声明：改用其他通道走 packages 的 change 记录，不改声明。
       if (payload.channels !== undefined) {
@@ -316,10 +319,10 @@ export function acceptSignal(state, payload) {
       if (payload.validation !== undefined) task.validation = validationInput(payload.validation);
       if (payload.finalRef !== undefined) identifier(payload.finalRef, 'finalRef');
       const waivers = [...(task.waivers || []), ...(payload.waivers === undefined ? [] : waiverInput(payload.waivers))];
-      const report = gateReport(state, task, payload.finalRef);
+      const report = gateReport(state, task, payload.finalRef, root);
       const missing = report.missing.filter(entry => !waived(task, entry, waivers));
       if (missing.length) {
-        const specText = report.findings.length ? `。spec 检查：${describeFindings(report.findings)}；更新 spec，或用 Spec-OK 空提交写明不需要更新的理由` : '';
+        const specText = report.findings.length ? `。spec 检查：${describeFindings(report.findings)}；更新 spec，或在内容提交附 Spec-OK 写明不需要更新的理由（需要追认既有历史时才用空提交）` : '';
         const reviewText = missing.some(entry => reviewed(task, entry)) ? '。已安排审查的包不能豁免审查缺项：让审查结论对上最终交付版本（reviewedRef=deliveredRef），或用 supersedes 接替' : '';
         const error = new WorkflowError('GATE', `完成门禁未满足：${missing.join(', ')}${specText}${reviewText}`);
         error.missing = missing;
@@ -332,7 +335,7 @@ export function acceptSignal(state, payload) {
       session.phase = 'unknown';
       if (!task.route) extra = { warning: 'route-missing' };
       else if (task.route === 'delegated') extra = { gate: 'declared-records-consistent' };
-      const stale = unchangedPlans(state, task);
+      const stale = unchangedPlans(state, task, root);
       if (stale.length) extra = { ...extra, planUnchanged: stale, reminder: planReminder(stale) };
     } else if (payload.action !== 'disposition') fail('ACTION', '未知信号动作');
     if (payload.action === 'disposition' || payload.disposition) {
@@ -354,7 +357,7 @@ export function acceptSignal(state, payload) {
 }
 // 回合结束核对：Lead 没发 task-end 就收尾时，按门禁算一次缺项并挡下一轮。只读任务状态，只在 session 上记“本回合已挡”。
 // 经验采集独立于业务交付；Stop 从不启动复盘或要求补写经验。
-export function stop(state, project, session, event = {}) {
+export function stop(state, project, session, event = {}, { root } = {}) {
   if (!session || session.role || session.interrupted) return {};
   if (event.stop_hook_active === true || session.stopBlockedTurn === session.turnId) return {};
   // 提问等待用户、本回合声明为纯操作时不核对。
@@ -384,7 +387,7 @@ export function stop(state, project, session, event = {}) {
   let missing;
   try {
     // 没法检查（git 失败、浅克隆）不算缺项；其余照常核对。
-    missing = gateMissing(state, task).filter(entry => !entry.startsWith('spec-check:') && !waived(task, entry, task.waivers || []));
+    missing = gateMissing(state, task, undefined, root).filter(entry => !entry.startsWith('spec-check:') && !waived(task, entry, task.waivers || []));
   } catch { return {}; }
   session.stopBlockedTurn = session.turnId;
   const reason = missing.length
@@ -392,7 +395,7 @@ export function stop(state, project, session, event = {}) {
     : `workflow 回合结束核对：任务 ${task.taskId} 门禁已无缺项但仍为 active。工作已完成就发 task-end 结束任务；还没完成就向用户说明剩余事项。`;
   // 计划提醒附在已有的一次阻挡里，本身不新增阻挡。
   let stale = [];
-  try { stale = unchangedPlans(state, task); } catch {}
+  try { stale = unchangedPlans(state, task, root); } catch {}
   return { decision: 'block', reason: stale.length ? `${reason} 另：${planReminder(stale)}` : reason };
 }
 export function interrupt(state, project, session) {

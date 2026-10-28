@@ -38,15 +38,15 @@
 
 返修链（0.6.2）：换新 packageId 返修时，新包在创建时带 `supersedes:<旧包>`，旧包须同角色、存在且未被接替；新包 attempts 为旧包加一，旧包记 `supersededBy`，在途的旧包改为 canceled，delivered 改为 consumed，已终态不变。被接替的 worker 包不再要求审查，审查缺项落到链上最新的包。supersedes 只能在创建时声明，违反返回 `PACKAGE`。沿用同一 packageId 重新派发的做法不变。
 
-task-end 门禁：父任务有 active 子任务（`parentTaskId`）时列 `child:<id>`。除 `operation-only` 外（含未声明 route 的旧任务）都做 spec 检查（见下文），有问题的 spec 各列一条 `spec:<id>`，检查不了时列 `spec-check:<原因>`。仅 `route=delegated` 再核对：每包终态（`terminal:<id>`）；每个未取消/未豁免/未被接替的 worker 包，存在 `reviews` 指向它、`verdict=PASS` 且 `reviewedRef` 等于其 `deliveredRef` 的 reviewer 包（`review:<id>`）；存在 validation，给了 finalRef 时 `validation.ref` 必须相同（`validation`）。`waivers:[{step, reason}]` 的 step 可写完整条目或类别（`review`、`validation`、`terminal`、`child`、`spec-check`），累计记入任务；step 为 `spec` 或 `spec:<id>` 返回 `WAIVER`，已记录的同类旧豁免也不抵扣。本包或它沿 supersedes 接替过的旧包有 reviewer 包给出过 verdict 时（0.6.2；取消、失败而没给结论的审查包不算），其 `review:<id>` 缺项不受任何豁免抵扣，该包也不能改标 waived（返回 `PACKAGE`）：只能让审查对上最终交付版本、用 supersedes 接替，或 canceled 放弃（放弃即不交付该包的改动，由 Lead 在交付说明里写明）；从未审过的包照旧可豁免。被接替的包状态不再可改。缺项返回 `{accepted:false, reason:'GATE', missing:[...], findings?}`，消息附 spec 发现说明，状态整体回滚。未声明 route 的旧任务接受并附 `warning:'route-missing'`；delegated 通过时附 `gate:'declared-records-consistent'`。门禁只核对声明记录的一致性，不证明审查或测试真实发生。`task show --task <id>` 只读查看账本、`changes` 条数、`gateMissing`、`specFindings`、`plans` 和 `planUnchanged`。
+task-end 门禁：父任务有 active 子任务（`parentTaskId`）时列 `child:<id>`。除 `operation-only` 外（含未声明 route 的旧任务）都做 spec 检查（见下文；检查根是入口 `resolveProject` 给出的当前 worktree，不是项目主根），有问题的 spec 各列一条 `spec:<id>`，检查不了时列 `spec-check:<原因>`。仅 `route=delegated` 再核对：每包终态（`terminal:<id>`）；每个未取消/未豁免/未被接替的 worker 包，存在 `reviews` 指向它、`verdict=PASS` 且 `reviewedRef` 等于其 `deliveredRef` 的 reviewer 包（`review:<id>`）；存在 validation，给了 finalRef 时 `validation.ref` 必须相同（`validation`）。`waivers:[{step, reason}]` 的 step 可写完整条目或类别（`review`、`validation`、`terminal`、`child`、`spec-check`），累计记入任务；step 为 `spec` 或 `spec:<id>` 返回 `WAIVER`，已记录的同类旧豁免也不抵扣。本包或它沿 supersedes 接替过的旧包有 reviewer 包给出过 verdict 时（0.6.2；取消、失败而没给结论的审查包不算），其 `review:<id>` 缺项不受任何豁免抵扣，该包也不能改标 waived（返回 `PACKAGE`）：只能让审查对上最终交付版本、用 supersedes 接替，或 canceled 放弃（放弃即不交付该包的改动，由 Lead 在交付说明里写明）；从未审过的包照旧可豁免。被接替的包状态不再可改。缺项返回 `{accepted:false, reason:'GATE', missing:[...], findings?}`，消息附 spec 发现说明，状态整体回滚。未声明 route 的旧任务接受并附 `warning:'route-missing'`；delegated 通过时附 `gate:'declared-records-consistent'`。门禁只核对声明记录的一致性，不证明审查或测试真实发生。`task show --task <id>` 只读查看账本、`changes` 条数、`gateMissing`、`specFindings`、`plans` 和 `planUnchanged`。
 
-计划软门禁：`plans` 为 1-10 项项目内相对路径（不含 `..`、不能是绝对路径），记入 `task.plans:[{path, digest}]`，digest 取声明时的文件内容摘要，文件不存在时为 null。收尾时内容摘要仍与基线相同的计划列为 `planUnchanged`；文件已不存在（按归档或改名处理）、基线为 null 时不列。它不进 `missing`、不需要豁免：task-end 照常接受，回执附 `planUnchanged` 与 `reminder`；Stop 只在已有的那一次阻挡里附上提醒，不新增阻挡。插件不判断计划是否做完，只看有没有回写。
+计划软门禁：`plans` 为 1-10 项项目内相对路径（不含 `..`、不能是绝对路径），记入 `task.plans:[{path, digest}]`，digest 取声明时的文件内容摘要（声明与收尾都从入口当前 worktree 读取），文件不存在时为 null。收尾时内容摘要仍与基线相同的计划列为 `planUnchanged`；文件已不存在（按归档或改名处理）、基线为 null 时不列。它不进 `missing`、不需要豁免：task-end 照常接受，回执附 `planUnchanged` 与 `reminder`；Stop 只在已有的那一次阻挡里附上提醒，不新增阻挡。插件不判断计划是否做完，只看有没有回写。
 
 ## spec 检查
 
 spec 位于 `.spec/<id>/spec.md`，`<id>` 为目录名，可嵌套，`.spec` 内不得重名。frontmatter 的 `code:` 只列具体文件（不写目录或通配），`related:` 只供阅读；其他字段忽略。格式与 [SpexCode](https://github.com/shuxueshuxue/spexcode) 一致，检测由 workflow 自己实现。
 
-对每个 spec 的每个 `code:` 文件，从检查版本（finalRef，缺省 `HEAD`）往回看：
+对每个 spec 的每个 `code:` 文件，从检查版本（finalRef，缺省 `HEAD`）往回看：缺省 `HEAD` 时看当前 worktree 的文件和未提交改动；显式 `finalRef`/`--ref` 先固定成提交 OID，spec 清单、正文、`code:` 路径和存在性都从该提交读取。
 
 | kind | 条件 |
 | --- | --- |
@@ -55,9 +55,9 @@ spec 位于 `.spec/<id>/spec.md`，`<id>` 为目录名，可嵌套，`.spec` 内
 | `missing` | 被管辖文件在检查版本中不存在 |
 | `duplicate-id` | `.spec` 内两个目录同名 |
 
-放行用提交信息的 `Spec-OK: <id>[, <id>]` trailer，按 id 匹配：写在空提交（单父且树与父提交相同）上覆盖它可达的全部祖先；写在内容提交上只豁免该提交。每次从 git 历史现算，不保存哈希。浅克隆返回 `error:'shallow'`，git 不可用或超时（10 秒）返回 `error:'git'`，并在 `detail` 附 git 的第一行报错（例如沙箱用户不是仓库所有者时的 dubious ownership），门禁中显示为 `spec-check:<原因>`；没有 `.spec` 目录时 `skipped:'no-spec'`，不报缺项。git 调用不经 shell，参数逐个传入并带 `--literal-pathspecs`。
+放行用提交信息的 `Spec-OK: <id>[, <id>]` trailer，按 id 匹配：写在空提交（单父且树与父提交相同）上覆盖它可达的全部祖先；写在内容提交上只豁免该提交。优先在内容提交上附 Spec-OK；空提交用于追认既有历史。每次从 git 历史现算，不保存哈希。浅克隆返回 `error:'shallow'`，git 不可用或超时（10 秒）返回 `error:'git'`，并在 `detail` 附 git 的第一行报错（例如沙箱用户不是仓库所有者时的 dubious ownership），门禁中显示为 `spec-check:<原因>`；没有 `.spec` 目录时 `skipped:'no-spec'`，不报缺项；显式版本按目标提交判断，目标提交没有 `.spec` 同样跳过，不混入当前磁盘定义，读取失败则返回 `error:'git'`，不回退到 HEAD。git 调用不经 shell，参数逐个传入并带 `--literal-pathspecs`。
 
-`spec check --project <root> [--ref <commit>]` 只读输出 `{ok, ref, findings:[{id, spec, code, kind, commits}], error?, detail?, skipped?}`，有发现或检查失败时退出码为 1。
+`spec check --project <root> [--ref <commit>]` 只读输出 `{ok, ref, findings:[{id, spec, code, kind, commits}], error?, detail?, skipped?}`；指定 `--ref` 时 `ref` 为固定后的提交 OID，否则为 `HEAD`。有发现或检查失败时退出码为 1。task-end 自带同一检查，显式命令只用于提前诊断。
 
 role-claim 的 taskId 填工作包所属的 Lead 任务 ID（仅作标识，不绑定任务）；只能在会话没有自己的活动任务时发出，同一会话不能改声明其他角色；声明后该会话的 task-start、packages、task-end 等业务信号返回 `ROLE`。宿主内置子代理的事件带 `agent_id`（Claude Agent 工具、Codex spawn_agent 均实测，`session_id` 与父会话相同），整体放行，不开回合。内置子代理与 Lead 共用会话，没有自己的 workflow 身份：它调用本插件 signal（直接或组合命令）时只回一条说明，信号不记录、状态不变，让它直接完成工作包交回 Lead。
 

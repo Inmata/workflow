@@ -298,7 +298,7 @@ npm run demo
 
 0.5.1 的变化：只改规则文档，代码行为不变。计划末尾加“spec 影响”一节，你说“执行”即同时批准其中的 spec 改动，流程仍是“计划 → 执行”两步（见[计划和 spec 怎么配合](#计划和-spec-怎么配合)）。升级后重装宿主即可，不需要重新接入。
 
-0.5.0 的变化：重要功能可以在 `.spec/<id>/spec.md` 写长期说明并用 `code:` 列出管辖文件；`task-end` 时插件从 git 历史检查“管辖文件改了、spec 没跟着更新”，未处理不能结束（更新 spec，或做 `Spec-OK` 空提交放行，见[使用说明](docs/usage.md#spec-检查)），`spec check` 的 git 失败附带原因。Lead 没发 `task-end` 就结束回合时，Stop 会挡一次并列出缺项。Worker 交付多一行“文档影响”，Reviewer 对照 spec 核对。说“重新对齐”即触发完整对齐，含补 spec 清单，跑完 scan 不算完成。README 写明 `disable`/`remove`/`uninstall` 删什么、留什么。项目没有 `.spec` 时行为与 0.4.2 相同，只多了 Stop 的提醒；AGENTS 管理区未变，不需要重新接入。
+0.5.0 的变化：重要功能可以在 `.spec/<id>/spec.md` 写长期说明并用 `code:` 列出管辖文件；`task-end` 时插件从 git 历史检查“管辖文件改了、spec 没跟着更新”，未处理不能结束（更新 spec，或在内容提交上附 `Spec-OK`；需要追认既有历史时才用空提交，见[使用说明](docs/usage.md#spec-检查)），`spec check` 的 git 失败附带原因。Lead 没发 `task-end` 就结束回合时，Stop 会挡一次并列出缺项。Worker 交付多一行“文档影响”，Reviewer 对照 spec 核对。说“重新对齐”即触发完整对齐，含补 spec 清单，跑完 scan 不算完成。README 写明 `disable`/`remove`/`uninstall` 删什么、留什么。项目没有 `.spec` 时行为与 0.4.2 相同，只多了 Stop 的提醒；AGENTS 管理区未变，不需要重新接入。
 
 宿主是否实际执行 hook、压缩后的上下文行为以及外部编码代理的具体接续能力，会随 Codex / Codeg / Claude Code 版本变化。`doctor --agent <宿主>` 能核对对应注册与副本完整性；以 `/hooks` 和真实会话回调确认宿主侧状态。
 

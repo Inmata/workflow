@@ -124,18 +124,22 @@ Lead 的活动任务结束回合时，Stop 会挡一次（等待用户、本回�
 
 ### spec 检查
 
-项目有 `.spec/<id>/spec.md` 时，task-end 前检查被管辖文件（frontmatter 的 `code:`）改了而 spec 没跟着更新的情况：
+项目有 `.spec/<id>/spec.md` 时，task-end 会检查被管辖文件（frontmatter 的 `code:`）改了而 spec 没跟着更新的情况；正常收尾不必先单独运行同一份检查。需要提前诊断时用只读命令：
 
 ```powershell
 node "<入口>" spec check --project "<项目目录>"
 node "<入口>" spec check --project "<项目目录>" --ref "<commit>"
 ```
 
-有发现时退出码为 1，`findings` 列出 spec、文件、类型（drift/uncommitted-drift/missing/duplicate-id）和未被 spec 见过的提交。处理办法：更新 spec 后提交；或代码改动不影响 spec 时做一次放行空提交，理由写进正文：
+检查根是命令所在目录对应的当前 worktree（附加 worktree 就检查该 worktree），不是项目主目录。缺省检查 `HEAD` 与未提交改动；指定 `--ref` 时先固定成提交，spec 清单、正文、`code:` 路径和文件存在性都取自该提交，输出里的 `ref` 也是固定后的提交 OID。
+
+有发现时退出码为 1，`findings` 列出 spec、文件、类型（drift/uncommitted-drift/missing/duplicate-id）和未被 spec 见过的提交。处理办法：更新 spec 后提交；或代码改动不影响 spec 时，在内容提交上附 `Spec-OK`，理由写进提交正文：
 
 ```powershell
-git commit --allow-empty -m "spec: search 无需更新" -m "重命名内部变量，行为不变。" --trailer "Spec-OK: search"
+git commit -m "refactor: search 无需更新" -m "重命名内部变量，行为不变。" --trailer "Spec-OK: search"
 ```
+
+需要追认既有的历史提交时，才按现有空提交语义做一次放行（`git commit --allow-empty` 加同一 trailer）；空提交覆盖其全部祖先。
 
 spec 缺项不能用 waivers 豁免；浅克隆或 git 失败导致的 `spec-check:<原因>` 可以豁免。完整规则见[协议](design/protocol.md#spec-检查)。
 
