@@ -186,13 +186,13 @@ Windows 计划任务只在当前用户登录时运行，无常驻插件服务。
 node bin/workflow.mjs learning review --root "D:/项目" --now
 # 崩溃后恢复已保存提案，不再次调用模型
 node bin/workflow.mjs learning recover --root "D:/项目" --run "<运行ID>"
-# 内容冲突时保留旧提案或作废并重新排队材料
+# 内容冲突时保留旧提案，或在本运行尚未写入知识时作废并重新排队材料
 node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --keep
 node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --discard
 # 查看通知历史，按需确认
 node bin/workflow.mjs learning acknowledge --root "D:/项目"
 ```
 
-超时、模型失败、结果不完整不消费原始材料。写后崩溃以指纹恢复，未完成批次的知识暂不召回。与用户新编辑冲突时保留原文和提案，不自动覆盖，也不再反复自动提交：用 `learning resolve --run <运行ID> --keep` 保留提案供人工核对后 `learning recover`，或 `--discard` 作废并重新排队材料。作废不消费 inbox、不丢人工编辑，下一次新模型调用仍按正常额度计算。等待更多证据的材料标为 `waiting`，相同知识 ID 或适用条件出现新材料后重新进入队列，避免每天重读同一材料。
+超时、模型失败、结果不完整不消费原始材料。写后崩溃以指纹恢复，未完成批次的知识暂不召回。与用户新编辑冲突时保留原文和提案，不自动覆盖，也不再反复自动提交：用 `learning resolve --run <运行ID> --keep` 保留提案供人工核对后 `learning recover`；只有本运行尚未写入任何项目知识时才可用 `--discard`，作废会撤销本批隔离并把本运行已标记的材料恢复为待处理，不丢人工编辑，下一次新模型调用仍按正常额度计算。若已写入部分知识（例如替代提案只写入了新知识），作废会留下新旧知识并存，命令会被拒绝；先 `--keep` 再人工核对后用 `learning recover` 完成，或按事务快照还原后再作废。等待更多证据的材料标为 `waiting`，相同知识 ID 或适用条件出现新材料后重新进入队列，避免每天重读同一材料。
 
 停用或撤销：先 `learning disable` 停止维护，再 `learning schedule remove` 移除自有计划任务，最后按需撤销宿主安装。本机材料、正式知识、旧副本和迁移备份均保留。回退旧代码前恢复匹配的 v1 状态备份，不能让旧程序直接写 v2 状态。

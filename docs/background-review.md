@@ -146,7 +146,7 @@ node bin/workflow.mjs learning status --root "D:/项目"
 node bin/workflow.mjs learning review --root "D:/项目" --now
 # 有完整提案的中断运行，按保存的提案恢复，不再调用模型
 node bin/workflow.mjs learning recover --root "D:/项目" --run "<运行ID>"
-# 内容冲突时选择保留提案（核对后仍可手动 recover）或作废并重新排队材料
+# 内容冲突时选择保留提案（核对后仍可手动 recover）或作废并重新排队材料（仅限本运行尚未写入知识）
 node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --keep
 node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --discard
 ```
@@ -162,14 +162,14 @@ node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --d
 | `timeout` | 超过 `maxRunMinutes` 被终止；材料保留，占用当日额度 |
 | `failed` | 模型失败、结果无效或隔离未生效，`reason` 说明原因；材料保留 |
 | `deferred` | 业务任务、只读会话或复盘锁竞争导致暂缓；提案已保存，条件允许后由下次检查先重试提交，不再调用模型 |
-| `conflict` | 提案与人工编辑冲突，未覆盖任何文件；用 `learning resolve --keep` 保留或 `--discard` 作废 |
+| `conflict` | 提案与人工编辑冲突，未覆盖任何文件；用 `learning resolve --keep` 保留，或在本运行尚未写入知识时用 `--discard` 作废 |
 | `kept` | 已选择保留冲突提案；核对后用 `learning recover` 手动应用，处理前不自动重试 |
 | `recovery` | 写入事务未完整结束；提案保留，按既有事务恢复语义处理，不会把未完成事务当成 pending |
 | `recovery-required` | 有未完成的运行需要辨认；有提案的会在条件允许时自动接续，其余用 `learning recover` 处理 |
 
 错误码 `BUSY` 表示项目还有活动的业务任务，等业务结束后再跑。`LOCKED` 表示另一个复盘正在运行，所有项目共用一个复盘锁。这两类短延期不会推进正常检查时间，也不会再次调用模型：下次检查或有界短重试会先补提交已保存的提案。
 
-内容冲突不会反复按旧 baseline 自动提交。`--keep` 保留提案和待写隔离，人工核对冲突后可再执行 `learning recover`；`--discard` 作废旧提案并撤销本批隔离，材料保持未处理、人工编辑不被覆盖，下一次新模型调用仍按正常额度计算。
+内容冲突不会反复按旧 baseline 自动提交。`--keep` 保留提案和待写隔离，人工核对冲突后可再执行 `learning recover`。`--discard` 只撤销尚未写入任何项目知识的运行：作废旧提案、撤销本批隔离，并把本运行已标记的材料恢复为待处理，人工编辑不被覆盖，下一次新模型调用仍按正常额度计算。若事务记录或文件指纹显示本运行已写入部分知识（例如替代提案只写入了新知识、旧知识因写入失败未落盘），作废会留下新旧知识并存且材料仍待处理，因此会被拒绝；此时先 `--keep` 保留提案，人工核对后用 `learning recover` 完成，或按事务快照还原后再作废。
 
 ## 5. 计划任务管理
 

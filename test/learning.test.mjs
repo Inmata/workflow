@@ -228,6 +228,80 @@ test('P03 冲突提案可显式保留，人工核对后手动恢复一次即可�
   assert.deepEqual(await recoverReview(f.directory, f.project, first.id), { id: first.id, status: 'completed', replayed: true });
 });
 
+test('P03-r1 部分知识写入后冲突不得作废：保留隔离、提案与用户编辑，指引保留后人工恢复', async () => {
+  const f = await fixture(); await start(f);
+  await putKnowledge(f, 'K-old', '旧登录经验', '旧结论：直接重试', ['src/login.mjs']);
+  await observe(f, 1, { knowledgeId: 'K-old', kind: 'correction', explicit: true, verified: false, summary: '用户指出旧结论不成立' });
+  await finish(f);
+  await setLearningEnabled(f.directory, f.project, true);
+  const folder = path.join(f.project, '.workflow', 'knowledge');
+  const oldPath = path.join(folder, 'K-old.md');
+  const oldContent = await readFile(oldPath, 'utf8');
+  const answer = { decisions: [{
+    observationIds: ['o1'], action: 'create', targetId: null, supersedes: 'K-old',
+    title: '新的登录经验', summary: '新的结论：先取消再重试', conditions: '当前项目', type: 'method',
+    importance: 'important', status: 'active', paths: ['src/login.mjs'], version: null,
+    tags: ['登录'], reason: '用户明确指出旧结论不成立',
+  }] };
+  // 替代提案先写新知识、再写旧知识；让第二步失败，留下部分写入。
+  const first = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true,
+    runner: async () => ({ status: 'completed', usage: { input_tokens: 10, output_tokens: 5 }, answer }),
+    checkpoint(stage, tx, result) { if (stage === 'prepared' && result.path.endsWith('K-old.md')) throw new Error('simulated write failure'); },
+  }));
+  assert.equal(first.status, 'recovery');
+  assert.equal(await readFile(oldPath, 'utf8'), oldContent);
+  assert.ok((await readFile(path.join(folder, 'K-o1.md'), 'utf8')).includes('新的登录经验'));
+  // 用户编辑旧知识后恢复，冲突发生在再次提交前；此时新知识已经落盘。
+  const userContent = renderEntry(knowledgeEntry('K-old', '用户手工版本', '用户自己的结论', ['src/login.mjs']));
+  await writeFile(oldPath, userContent);
+  await assert.rejects(recoverReview(f.directory, f.project, first.id), { code: 'CONFLICT' });
+  await assert.rejects(resolveReview(f.directory, f.project, first.id, 'discard'), { code: 'CONFLICT' });
+  const project = await projectFor(f.directory, f.project);
+  assert.equal((await readItems(f.directory, project, 'runs')).find(r => r.id === first.id).status, 'conflict');
+  assert.deepEqual((await readState(f.directory)).projects[f.projectId].learning.quarantine, {
+    '.workflow/knowledge/K-o1.md': first.id,
+    '.workflow/knowledge/K-old.md': first.id,
+  });
+  assert.equal(await readFile(oldPath, 'utf8'), userContent);
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 1);
+  assert.ok((await readEntries(project)).some(e => e.id === 'K-o1'));
+});
+
+test('P03-r1 作废仅重排本运行材料：其余运行已消费的材料保持原状', async () => {
+  const f = await fixture(); await start(f); await observe(f, 1); await observe(f, 2); await finish(f);
+  await setLearningEnabled(f.directory, f.project, true);
+  const inbox = path.join(f.directory, 'projects', f.projectId, 'inbox');
+  const o1File = path.join(inbox, 'o1.json'), o2File = path.join(inbox, 'o2.json');
+  let captured;
+  const first = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true, runner: async () => {
+    captured = JSON.parse(await readFile(o2File, 'utf8'));
+    // 第一条材料更新成功后再让第二条读取失败，构造部分消费；本批只有 wait/dismiss，没有知识写入。
+    await writeFile(o2File, 'not-json');
+    return { status: 'completed', usage: { input_tokens: 10, output_tokens: 5 }, answer: { decisions: [
+      { observationIds: ['o1'], action: 'dismiss', reason: '重复材料' },
+      { observationIds: ['o2'], action: 'dismiss', reason: '重复材料' },
+    ] } };
+  } }));
+  assert.equal(first.status, 'recovery');
+  const consumed = JSON.parse(await readFile(o1File, 'utf8'));
+  assert.equal(consumed.status, 'processed');
+  assert.equal(consumed.runId, first.id);
+  // 第二条材料已被其他运行消费，恢复时转为冲突；本批没有知识写入，允许作废。
+  await writeFile(o2File, JSON.stringify({ ...captured, status: 'processed', runId: 'other-run', processedAt: new Date().toISOString() }, null, 2) + '\n');
+  await assert.rejects(recoverReview(f.directory, f.project, first.id), { code: 'CONFLICT' });
+  const discarded = await resolveReview(f.directory, f.project, first.id, 'discard');
+  assert.equal(discarded.status, 'discarded');
+  assert.equal(discarded.restored, 1);
+  const restored = JSON.parse(await readFile(o1File, 'utf8'));
+  assert.equal(restored.status, 'pending');
+  assert.equal(restored.runId, undefined);
+  const other = JSON.parse(await readFile(o2File, 'utf8'));
+  assert.equal(other.status, 'processed');
+  assert.equal(other.runId, 'other-run');
+  assert.equal((await learningStatus(f.directory, f.project)).pending, 1);
+  assert.deepEqual((await readState(f.directory)).projects[f.projectId].learning.quarantine, {});
+});
+
 test('P03 跨项目锁争用只短延期，不额外等一个正常检查周期', async () => {
   const f = await fixture(); await start(f); await observe(f, 1); await finish(f);
   await setLearningEnabled(f.directory, f.project, true);

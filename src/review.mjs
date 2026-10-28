@@ -236,6 +236,42 @@ export async function recoverReview(directory, root, runId) {
     catch (error) { await settleRunFailure(directory, project, run, error); throw error; }
   });
 }
+// 作废只撤销尚未落盘的知识。事务记录显示提案内容仍在知识文件中时，作废会留下新旧并存、
+// 替代关系不完整，而材料仍待处理；因此按文件实际指纹判断，读不出或记录不可辨认时保守拒绝。
+async function writtenKnowledge(state, project, run) {
+  const transactions = Object.values(state.transactions).filter(t => t.projectId === project.projectId && t.taskId === run.id);
+  if (run.transactionId && !transactions.some(t => t.transactionId === run.transactionId)) return { transactionId: run.transactionId, unknown: true };
+  for (const tx of transactions) for (const file of tx.files || []) {
+    if (!file || typeof file.path !== 'string' || typeof file.after !== 'string') return { transactionId: tx.transactionId, unknown: true };
+    // 未改变内容的文件不需要写入，也不构成残留。
+    if (file.before === file.after) continue;
+    let current;
+    try { current = await document(await safeDocument(project.knowledgeRoot, file.path)); }
+    catch { return { path: file.path, transactionId: tx.transactionId, unknown: true }; }
+    // 文件仍是本提案写入的正文（含崩溃前已写入但未落盘状态的情况）即视为知识已写入。
+    if (current.fingerprint === file.after) return { path: file.path, transactionId: tx.transactionId };
+  }
+  return null;
+}
+// 作废不消费 inbox：只把本运行标记为 processed/waiting 的材料恢复为 pending，
+// 已被其他运行消费的材料保持原状。
+async function requeueRunMaterials(directory, project, run) {
+  const restored = [];
+  for (const outcome of run.proposal?.outcomes || []) {
+    if (typeof outcome?.id !== 'string') continue;
+    const raw = await readText(path.join(projectData(directory, project), 'inbox', outcome.id + '.json'));
+    if (raw === null) continue;
+    let item;
+    try { item = JSON.parse(raw); } catch { fail('CONFLICT', '材料记录不可读，无法确认作废不会消费 inbox；请先核对材料文件'); }
+    if (item?.runId !== run.id || !['processed', 'waiting'].includes(item.status)) continue;
+    item.status = 'pending';
+    delete item.runId;
+    delete item.processedAt;
+    restored.push(item);
+  }
+  for (const item of restored) await putItem(directory, project, 'inbox', item);
+  return restored.length;
+}
 export async function resolveReview(directory, root, runId, decision) {
   if (!['keep', 'discard'].includes(decision)) fail('INPUT', '需要选择保留（keep）或作废（discard）');
   return withLock(directory, 'background-review', async () => {
@@ -250,12 +286,18 @@ export async function resolveReview(directory, root, runId, decision) {
         await putItem(directory, project, 'runs', run);
         return { id: run.id, status: 'kept', note: '提案保留；核对冲突后用 learning recover 手动应用' };
       }
+      const written = await writtenKnowledge(state, project, run);
+      if (written) {
+        const where = written.path ? `（${written.path}）` : '';
+        fail('CONFLICT', `本运行已写入部分知识${where}，直接作废会留下不完整的新旧知识且材料仍待处理；请先 --keep 保留提案，人工核对后用 learning recover 完成，或按事务快照还原后再作废`);
+      }
+      const restored = await requeueRunMaterials(directory, project, run);
       run.status = 'discarded';
       run.resolvedAt = run.finishedAt = new Date().toISOString();
       // 作废只撤销本批次的待写隔离：不改用户文件或已写入知识，也不消费 inbox。
       for (const [relative, owner] of Object.entries(project.learning?.quarantine || {})) if (owner === run.id) delete project.learning.quarantine[relative];
       await putItem(directory, project, 'runs', run);
-      return { id: run.id, status: 'discarded', pending: run.batch.length, note: '材料保持未处理；知识文件与人工编辑未改动，下次复盘按正常额度调用' };
+      return { id: run.id, status: 'discarded', pending: run.batch.length, restored, note: '材料保持未处理；知识文件与人工编辑未改动，下次复盘按正常额度调用' };
     });
   });
 }
