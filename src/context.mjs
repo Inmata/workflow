@@ -36,7 +36,7 @@ function learningState(learning, root, stateDir) {
     : `后台复盘已启用但计划任务未登记：请用户在自己的终端执行 \`${command(['learning', 'schedule', 'install', '--root', root], { stateDir })}\`，代理执行会被宿主自动审批拦截。`;
 }
 function alignmentNote(role, alignment, session, task) {
-  if (role !== 'lead') return '';
+  if (role !== 'lead' || !alignment || alignment.error) return '';
   const note = alignmentAction(alignment);
   // 计划会话可扫描、提问和起草，写入被 authorizeWrite 拒绝；提示回到可写模式再 apply/decide，避免反复重试。
   // Codex 的 Plan 协作模式在 hook 中仍报 permission_mode=default，所以同时看活动任务声明的 plan 权限。
@@ -64,6 +64,34 @@ export function compactLedger(task) {
     changes: task.changes?.length || 0,
   };
 }
+// 可选读取单独成段：hooks 在状态锁外调用，失败只降级为短提示，不回滚已保存的入口身份。
+export async function readOptionalContext(state, resolved, sessionId, options = {}) {
+  const project = resolved.project;
+  const session = sessionId ? state.sessions[sessionKey(project.projectId, sessionId)] : null;
+  const task = session?.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
+  const optional = {};
+  try { optional.alignment = await inspectAlignment(project); }
+  catch (error) { optional.alignment = { error: { code: error.code || 'IO' } }; }
+  if (options.directory && task?.lifecycle === 'active') {
+    try { optional.knowledge = await selectKnowledge(options.directory, project.root, { text: task.goal, paths: task.permissions.allowedPaths }); }
+    catch (error) { optional.knowledge = { error: { code: error.code || 'IO' } }; }
+  }
+  return optional;
+}
+// 自动入口只附命中、重要遗漏摘要与总数；排除清单和完整诊断留给显式查询。
+function knowledgeSummary(knowledge) {
+  return {
+    selected: knowledge.selected,
+    total: knowledge.total,
+    excludedTotal: knowledge.excludedTotal,
+    criticalOmitted: knowledge.criticalOmitted,
+    criticalOmittedTotal: knowledge.criticalOmittedTotal,
+    skippedTotal: knowledge.skippedTotal,
+    ...(knowledge.missing ? { missing: true } : {}),
+    version: knowledge.version,
+    chars: knowledge.chars,
+  };
+}
 export async function projectContext(state, resolved, role = 'lead', sessionId, options = {}) {
   if (!['lead', 'worker', 'reviewer'].includes(role)) fail('ROLE', '未知角色');
   const project = resolved.project;
@@ -79,7 +107,8 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   const briefKey = `${role}@${PRODUCT_VERSION}`;
   const repeat = Boolean(options.incremental && !options.full && session?.briefed === briefKey);
   if (options.incremental && session) session.briefed = briefKey;
-  const alignment = await inspectAlignment(project);
+  const optional = options.optional || await readOptionalContext(state, resolved, sessionId, options);
+  const alignment = optional.alignment;
   const notices = role === 'lead' ? (project.learning?.notices || []).filter(n => !n.acknowledged && !n.deliveredAt) : [];
   if (options.incremental) for (const notice of notices) notice.deliveredAt = new Date().toISOString();
   const task = session?.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
@@ -87,12 +116,32 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   // 接入不自动授权后台维护（会真实调用模型）；Lead 在接入阶段补问一次，避免漏做。
   const learning = role !== 'lead' ? '' : project.learning?.enabled ? learningState(project.learning, project.root, options.directory)
     : !project.learning?.changedAt ? learningNote(project.root, options.directory) : '';
+  const degraded = [];
+  if (alignment?.error) degraded.push(`对齐状态未读取（${alignment.error.code}）：本回合不判断对齐变化，核心入口已保存。`);
   let knowledge;
   if (options.directory && task?.lifecycle === 'active') {
-    knowledge = await selectKnowledge(options.directory, project.root, { text: task.goal, paths: task.permissions.allowedPaths });
-    const key = JSON.stringify([task.taskId, task.goal, task.permissions.allowedPaths, knowledge.version]);
-    if (options.incremental && session.contextKey === key) knowledge = { unchanged: true, version: knowledge.version };
-    else if (options.incremental) session.contextKey = key;
+    knowledge = optional.knowledge || { error: { code: 'IO' } };
+    if (knowledge.error) {
+      degraded.push(`可选知识未检索（${knowledge.error.code}）：核心入口和任务状态已保存，修复后用 knowledge select 显式查询。`);
+      if (options.incremental && session) session.contextKey = null;
+      knowledge = { unavailable: knowledge.error };
+    } else if (knowledge.unavailable) {
+      degraded.push(knowledge.unavailable.kind === 'missing'
+        ? `知识目录不存在（${knowledge.unavailable.code}）：可选知识为空，核心入口已保存。`
+        : `可选知识读取失败（${knowledge.unavailable.code}）：已跳过，核心入口和任务状态不受影响，修复后用 knowledge select 显式查询。`);
+      if (options.incremental && session) session.contextKey = null;
+      knowledge = { unavailable: knowledge.unavailable };
+    } else {
+      // contextKey 只标记本次实际生成的内容；失败回合清空，下一次仍会重新检索。
+      const key = JSON.stringify([task.taskId, task.goal, task.permissions.allowedPaths, knowledge.version]);
+      if (options.incremental && session.contextKey === key) knowledge = { unchanged: true, version: knowledge.version };
+      else {
+        if (options.incremental && session) session.contextKey = key;
+        if (knowledge.skippedTotal) degraded.push(`有 ${knowledge.skippedTotal} 条知识文件无法解析，已跳过；完整诊断用 knowledge select 查询。`);
+        if (knowledge.excludedTotal) degraded.push(`可选知识另有 ${knowledge.excludedTotal} 条未附带（重要项 ${knowledge.criticalOmittedTotal} 条）；完整诊断用 knowledge select 查询。`);
+        knowledge = knowledgeSummary(knowledge);
+      }
+    }
   }
   // 挂起任务（会话结束或中断后续接）也给账本，Lead 据此 task-start 续接而不重复派工。
   const ledger = role === 'lead' && ['active', 'suspended'].includes(task?.lifecycle) ? compactLedger(task) : null;
@@ -103,7 +152,7 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   const planHint = planning ? '当前处于计划阶段：交付计划时须列出分几个工作包（每包范围与依赖）或说明免拆包理由，并按提问路径请用户指定 Worker 与 Reviewer 通道。' : '';
   const leadRepeat = role === 'lead' ? '交付计划时列工作包并问 Worker/Reviewer 通道；' : '';
   const base = repeat ? `入口与本会话上一回合相同（文档、信号用法不变）：${leadRepeat}信号用 identity 字段加 signal <action> 子命令；需要时重读 ${role === 'lead' ? 'Lead' : role === 'worker' ? 'Worker' : 'Reviewer'} 指引。` : instructions[role];
-  const instruction = [base, planHint, note, learning, correction].filter(Boolean).join(' ');
+  const instruction = [base, planHint, note, learning, correction, degraded.join(' ')].filter(Boolean).join(' ');
   const signal = repeat ? { command: signalUsage().command } : signalUsage();
   return {
     enabled: true, projectId: project.projectId, root: project.root, worktree: resolved.worktree,

@@ -102,6 +102,8 @@ PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输�
 
 `knowledge inspect --project <root> --path <relative>` 输出 `{path,exists,content,fingerprint}`，缺文件 fingerprint=null。`knowledge apply` 输入身份字段与 `changes:[{path,baseline,content,responsibility,reason,evidence,candidateIds}]`、`candidates`。candidate 包含 `id,taskId,workPackage,conditions,finding,recommendation,evidence`。
 
+`knowledge select|explain` 是显式查询，返回 `selected`、完整 `excluded`（含原因）、`criticalOmitted`、`skipped` 以及 `excludedTotal/skippedTotal` 等总数。hook 自动入口只注入 `selected`、重要遗漏摘要和总数；程序化检索的排除清单按条数与字符双预算截断，`excludedOmitted` 说明省略数量。检索逐条解析知识文件：损坏、权限或路径/链接检查失败的条目跳过并记录 `skipped`，其他有效条目继续召回；写路径仍使用严格读取，跳过不等于可写授权。
+
 仅当前有效 write 任务及 allowedPaths 内非敏感 UTF-8 文本可写。禁止绝对路径、`..`、Git/客户端配置、凭据文件、二进制；遇到链接/硬链接拒绝自动写入并要求先核对目标。检查祖先 realpath 防目录链接逃逸。新文件必须有实际正文。非敏感声明和证据由 Lead 核对；插件拒绝常见凭据内容，不复制全仓或完整聊天。
 
 处理顺序：状态锁 → 校验当前身份/修订号 → 每目标文件锁 → 读取基线 → 保存前快照和后内容到本机事务目录并持久化 prepared → 再核指纹 → 同目录临时文件原子替换 → 记录 applied 指纹 → 持久化状态。每个文件独立，部分成功返回 partial；未成功项创建 knowledge-pending。单任务/候选稳定 ID 去重，同候选内容冲突拒绝，重复申请不追加相同经验。
@@ -118,7 +120,7 @@ PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输�
 
 `apply` 用 `workflow-alignment:begin/end` 标记区维护正文，标记外逐字保留；`decide`、`suggest` 按 `## 已裁决记录`、`## 结构建议` 标题定位小节（到下一个标题或管理区结束标记为止，末节不越过标记），同一 ID 原位替换，首条记录替换“- 暂无”类占位行。写入前核对输入 `baseline`，不一致返回 `CONFLICT` 并保留原文；写入使用同目录临时文件原子替换。首次 `apply`/`decide`/`suggest` 若索引为空，会先补一次只读扫描，保证后续变更检测有效。
 
-`projectContext` 注入 `alignment:{path,exists,docExists,stale,changed,missing,directoryChanged,pendingDecisions,pendingFindings}`。`stale` 只由索引文件大小/mtime 和父目录 mtime 变化得出，不读正文；`pendingDecisions`/`pendingFindings` 以对齐文档表格为准并与索引状态合并，绕过 `decide`/`suggest` 直接写表也不会漏计；`exists=false` 时按未对齐处理。hook 不自动写项目文件，只提示 Lead 增量更新或逐条确认待裁决项。
+`projectContext` 注入 `alignment:{path,exists,docExists,stale,changed,missing,directoryChanged,pendingDecisions,pendingFindings}`。`stale` 只由索引文件大小/mtime 和父目录 mtime 变化得出，不读正文；`pendingDecisions`/`pendingFindings` 以对齐文档表格为准并与索引状态合并，绕过 `decide`/`suggest` 直接写表也不会漏计；`exists=false` 时按未对齐处理。对齐读取失败时改为注入 `alignment:{error:{code}}` 和一句短降级提示，不按未对齐处理，也不回滚已保存的入口身份。hook 不自动写项目文件，只提示 Lead 增量更新或逐条确认待裁决项。
 
 ## 安装和版本
 

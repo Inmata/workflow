@@ -137,7 +137,7 @@ async function main() {
     if (action === 'capture') return capture(directory, await inputJSON(options));
     if (action === 'feedback') return feedback(directory, await inputJSON(options));
     if (action === 'revise') return reviseKnowledge(directory, root, await inputJSON(options));
-    if (['select', 'explain'].includes(action)) return selectKnowledge(directory, root, { text: options.query || '', paths: options.path ? [options.path] : [], version: options.version });
+    if (['select', 'explain'].includes(action)) return selectKnowledge(directory, root, { text: options.query || '', paths: options.path ? [options.path] : [], version: options.version, full: true });
     const { applyKnowledge, inspectKnowledge, recoverTransaction } = await import('../src/knowledge.mjs');
     if (action === 'inspect') return inspectKnowledge(directory, root, options.path);
     if (action === 'apply') return applyKnowledge(directory, await inputJSON(options));

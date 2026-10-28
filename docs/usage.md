@@ -73,7 +73,7 @@ node bin/workflow.mjs project align suggest --root "D:/已接入项目" --input 
 
 ### 任务与回执
 
-hook 提供 project/session/turn/ticket/interruptEpoch/expectedRevision。context 只读当前身份和最多一项本项目知识待办。每个新用户回合 phase=unknown；新业务创建稳定 taskId，后续回合/恢复显式沿用原 ID。跨会话接续也沿用任务预算和原权限。
+hook 提供 project/session/turn/ticket/interruptEpoch/expectedRevision。context 只读当前身份和最多一项本项目知识待办。每个新用户回合 phase=unknown；新业务创建稳定 taskId，后续回合/恢复显式沿用原 ID。跨会话接续也沿用任务预算和原权限。入口先保存身份和回合状态，再读取对齐与知识；可选读取失败只给短降级说明，不回滚入口。自动入口的知识只带命中、重要遗漏摘要和总数，完整排除/跳过诊断用 `knowledge select|explain` 显式查询。
 
 常用动作用子命令，一条命令完成，不需要临时文件（`<sessionId>`、`<turnId>` 取本次入口的 identity；`--id` 是 signalId，每个新动作唯一，重试同一动作时命令保持不变）：
 

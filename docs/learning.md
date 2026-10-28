@@ -134,7 +134,7 @@ node "<hook 给出的入口>" knowledge capture --input observation.json
 
 `id` 使用字母或数字开头、字母数字下划线连字符组成的稳定标识，最多 128 字符，不用 Windows 设备名。`kind` 可为 `correction/failure/success/method/preference`；`legacy` 供旧候选导入。`verified` 只有实际证据支持时才设为 true，`explicit` 只用于用户明确表达。纠正或已验证失败应引用被反驳的 `knowledgeId`，这样旧经验立即停止默认召回，无需等待批量复盘。未能定位旧条目时先检索，不能声称已停用特定知识。任务设置 `permissions.learning=false` 禁止采集。
 
-检索先筛状态、适用路径与版本，再按内容相关度、重要性、成熟度排序。限定版本的知识需传 `--version` 才匹配。`select` 与 `explain` 都返回选中项、排除原因和重要条目因预算遗漏的列表；这是本地词项匹配，语义召回效果需要试点验证。hook 仅在活动任务上下文变化时重复注入摘要。
+检索先筛状态、适用路径与版本，再按内容相关度、重要性、成熟度排序。限定版本的知识需传 `--version` 才匹配。检索逐条解析：损坏、权限或路径/链接检查失败的条目跳过并保留诊断，其余有效条目照常召回；写路径仍按严格校验，跳过不构成可写授权。`select` 与 `explain` 是显式查询，返回选中项、全部排除原因和跳过诊断；hook 自动入口只附命中、重要遗漏摘要与总数，排除清单受条数与字符预算，截断时保留总数。知识目录缺失与读取故障给不同降级提示，修复文件后下一次检索会重新解析，不永久缓存失败。这是本地词项匹配，语义召回效果需要试点验证。hook 仅在活动任务上下文变化时重复注入摘要。
 
 `knowledge feedback --input feedback.json` 的公共字段为当前身份、`knowledgeId`、`outcome`。`shown/adopted` 另给事件 `id`，仅记展示或采纳；`success/failure/correction` 另给上述 `observation`，必须有具体证据，不因“用了”就晋升。
 

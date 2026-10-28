@@ -102,37 +102,67 @@ export function parseEntry(content) {
   if (renderEntry(entry) !== content) fail('KNOWLEDGE', '知识正文与元数据不同；请通过 revise 更新并保留原因');
   return entry;
 }
+const KNOWLEDGE_FOLDER = '.workflow/knowledge/';
+// 自动入口只带命中、重要遗漏摘要与总数；排除清单按条数和字符双预算截断，完整诊断留给显式查询。
+const EXCLUDED_SHOWN = 10;
+const EXCLUDED_SHOWN_CHARS = 1200;
+const SKIPPED_SHOWN = 5;
+const IMPORTANT_SHOWN = 5;
+
+async function entryFrom(project, relative) {
+  const doc = await document(await safeDocument(project.knowledgeRoot, relative));
+  const value = parseEntry(doc.content);
+  if (entryPath(value.id) !== relative) fail('KNOWLEDGE', '知识 ID 与文件名不一致');
+  return { ...value, fingerprint: doc.fingerprint, path: relative };
+}
+// 维护/写入路径保持严格：跳过损坏条目只用于召回，不能据此获得可写授权。
 export async function readEntries(project) {
   const folder = path.join(project.knowledgeRoot, '.workflow', 'knowledge');
   const names = await readdir(folder).catch(e => { if (e.code === 'ENOENT') return []; throw e; });
-  const entries = [];
+  const entries = [], skipped = [];
   for (const name of names.sort()) {
     if (!name.endsWith('.md')) continue;
-    const relative = '.workflow/knowledge/' + name;
-    const doc = await document(await safeDocument(project.knowledgeRoot, relative));
-    const value = parseEntry(doc.content);
-    if (entryPath(value.id) !== relative) fail('KNOWLEDGE', '知识 ID 与文件名不一致');
-    entries.push({ ...value, fingerprint: doc.fingerprint, path: relative });
+    const relative = KNOWLEDGE_FOLDER + name;
+    try { entries.push(await entryFrom(project, relative)); }
+    catch (error) { skipped.push({ path: relative, code: error.code || 'IO', message: error.message }); }
   }
+  if (skipped.length) fail(skipped[0].code, `${skipped[0].path}: ${skipped[0].message}`);
   return entries;
 }
+// 召回路径逐条解析：坏条目跳过并留下诊断，其余有效条目继续参与检索。
 async function indexedEntries(directory, project) {
-  const names = await readdir(path.join(project.knowledgeRoot, '.workflow', 'knowledge')).catch(e => { if (e.code === 'ENOENT') return []; throw e; });
-  const files = [];
+  const folder = path.join(project.knowledgeRoot, '.workflow', 'knowledge');
+  let names;
+  try { names = await readdir(folder); }
+  catch (error) { if (error.code === 'ENOENT') return { entries: [], skipped: [], missing: true }; throw error; }
+  const files = [], skipped = [], readable = [];
   for (const name of names.filter(n => n.endsWith('.md')).sort()) {
-    const file = await safeDocument(project.knowledgeRoot, '.workflow/knowledge/' + name);
-    const info = await lstat(file);
-    files.push([name, info.size, info.mtimeMs]);
+    const relative = KNOWLEDGE_FOLDER + name;
+    try {
+      const file = await safeDocument(project.knowledgeRoot, relative);
+      const info = await lstat(file);
+      files.push([name, info.size, info.mtimeMs]);
+      readable.push(relative);
+    } catch (error) { skipped.push({ path: relative, code: error.code || 'IO', message: error.message }); }
   }
   const signature = digest(JSON.stringify(files));
   const cacheFile = path.join(projectData(directory, project), 'knowledge-index.json');
   try {
     const cached = JSON.parse(await readText(cacheFile));
-    if (cached?.signature === signature && Array.isArray(cached.entries)) return cached.entries;
+    if (cached?.schemaVersion === 2 && cached.signature === signature && Array.isArray(cached.entries) && Array.isArray(cached.skipped)) {
+      // 当前目录扫描发现的坏路径优先；缓存补充上次解析失败但 stat 仍正常的条目。
+      const merged = new Map([...cached.skipped, ...skipped].map(item => [item.path, item]));
+      return { entries: cached.entries, skipped: [...merged.values()], missing: false };
+    }
   } catch {}
-  const entries = await readEntries(project);
-  await writeJSON(cacheFile, { schemaVersion: 1, signature, entries });
-  return entries;
+  const entries = [];
+  for (const relative of readable) {
+    try { entries.push(await entryFrom(project, relative)); }
+    catch (error) { skipped.push({ path: relative, code: error.code || 'IO', message: error.message }); }
+  }
+  // 索引缓存写入失败不影响本次召回；签名包含坏文件，修复后自然重新解析。
+  await writeJSON(cacheFile, { schemaVersion: 2, signature, entries, skipped }).catch(() => {});
+  return { entries, skipped, missing: false };
 }
 export function maturityFor(evidence, type, status) {
   if (status !== 'active') return 'unverified';
@@ -150,10 +180,16 @@ const tokens = text => [...new Set((text.toLowerCase().match(/[a-z0-9_-]{2,}|[\u
 export async function selectKnowledge(directory, root, query = {}) {
   const project = await projectFor(directory, root);
   const { values: config } = await learningConfig(directory, project);
-  const entries = await indexedEntries(directory, project);
+  let index;
+  try { index = await indexedEntries(directory, project); }
+  catch (error) {
+    return { selected: [], excluded: [], excludedTotal: 0, excludedOmitted: 0, criticalOmitted: [], criticalOmittedTotal: 0, skipped: [], skippedTotal: 0, total: 0, version: null, chars: 0, unavailable: { kind: 'io', code: error.code || 'IO' } };
+  }
+  const entries = index.entries;
   const terms = tokens(query.text || '');
   const paths = query.paths || [];
-  const selected = [], excluded = [];
+  const full = query.full === true;
+  const selected = [], allExcluded = [];
   const ranked = entries.map(e => {
     const scoped = !e.scope?.paths?.length || paths.some(p => e.scope.paths.some(s => p === s || p.startsWith(s.replace(/\/$/, '') + '/')));
     const version = !e.scope?.version || e.scope.version === query.version;
@@ -168,11 +204,32 @@ export async function selectKnowledge(directory, root, query = {}) {
     const summary = { id: e.id, title: e.title, summary: e.summary, conditions: e.conditions, maturity: e.maturity, importance: e.importance, path: e.path };
     const size = JSON.stringify(summary).length;
     const why = reason || (selected.length >= config.retrievalLimit || used + size > config.retrievalChars ? '召回预算不足' : null);
-    if (why) excluded.push({ id: e.id, reason: why, critical: e.importance === 'critical' && !reason });
+    if (why) allExcluded.push({ id: e.id, reason: why, critical: e.importance === 'critical' && !reason });
     else { selected.push(summary); used += size; }
   }
-  const version = digest(JSON.stringify([entries.map(e => [e.id, e.fingerprint]), project.learning?.disputes || {}, project.learning?.quarantine || {}, config.retrievalLimit, config.retrievalChars]));
-  return { selected, excluded, criticalOmitted: excluded.filter(e => e.critical), version, chars: used };
+  // 排除原因按条数和字符预算输出；显式查询（full）返回完整诊断，截断时由总数说明数量。
+  const excluded = [];
+  let excludedChars = 0;
+  for (const item of allExcluded) {
+    if (!full) {
+      if (excluded.length >= EXCLUDED_SHOWN) break;
+      const size = JSON.stringify(item).length;
+      if (excludedChars + size > EXCLUDED_SHOWN_CHARS) break;
+      excludedChars += size;
+    }
+    excluded.push(item);
+  }
+  const critical = allExcluded.filter(item => item.critical);
+  const version = digest(JSON.stringify([entries.map(e => [e.id, e.fingerprint]), index.skipped.map(item => [item.path, item.code]), project.learning?.disputes || {}, project.learning?.quarantine || {}, config.retrievalLimit, config.retrievalChars]));
+  const missing = index.missing;
+  // 目录缺失本身是正常空库；已启用学习时缺失才提示，且与读取故障用不同 kind 区分。
+  const unavailable = missing && project.learning?.enabled ? { kind: 'missing', code: 'ENOENT' } : null;
+  return {
+    selected, excluded, excludedTotal: allExcluded.length, excludedOmitted: allExcluded.length - excluded.length,
+    criticalOmitted: full ? critical : critical.slice(0, IMPORTANT_SHOWN), criticalOmittedTotal: critical.length,
+    skipped: full ? index.skipped : index.skipped.slice(0, SKIPPED_SHOWN), skippedTotal: index.skipped.length,
+    total: ranked.length, missing, unavailable, version, chars: used,
+  };
 }
 export async function feedback(directory, input) {
   if (!['shown', 'adopted', 'success', 'failure', 'correction'].includes(input.outcome)) fail('INPUT', '未知反馈');

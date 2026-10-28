@@ -2,7 +2,7 @@ import path from 'node:path';
 import { archiveLifecycleEvents, canonical, digest, id, mutate, observeHost, readState, recordLifecycleEvent, samePath, within } from './store.mjs';
 import { acceptSignal, consumeLifecycleEvents, interrupt, LIFECYCLE_EVENTS, openTurn, pendingFor, sessionKey, stop, taskKey, TERMINAL_PACKAGE } from './protocol.mjs';
 import { resolveProject } from './projects.mjs';
-import { projectContext, signalUsage } from './context.mjs';
+import { projectContext, readOptionalContext, signalUsage } from './context.mjs';
 import { PRODUCT_ROOT, PRODUCT_VERSION } from './entry.mjs';
 
 export const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'Interrupt', 'SessionEnd', 'PreCompact', 'PostCompact'];
@@ -183,7 +183,7 @@ export async function handleHook(directory, event, options = {}) {
     }
     // 事件文件的归档要等状态提交成功后再执行；保存失败时事件留在原处，下次入口靠回执幂等跳过。
     let lifecycleArchive = [];
-    const output = await mutate(directory, async (state, save) => {
+    let output = await mutate(directory, async (state, save) => {
       const resolved = await resolveProject(state, event.cwd, probe);
       if (!resolved) return {};
       const project = resolved.project;
@@ -217,7 +217,8 @@ export async function handleHook(directory, event, options = {}) {
         const upgraded = seenVersion && PRODUCT_VERSION && seenVersion !== PRODUCT_VERSION ? `workflow 插件已从 ${seenVersion} 升级到 ${PRODUCT_VERSION}：本会话早先读取的指引和命令可能已过时，请提醒用户开新会话；继续工作时以下面的入口为准。
 ` : '';
         // 已 role-claim 的委派会话注入对应角色的最小上下文，不再给 Lead 指引。
-        return contextOutput(name, `${upgraded}workflow 入口：${JSON.stringify(await projectContext(state, resolved, session?.role || 'lead', event.session_id, { directory, incremental: true, full: name === 'SessionStart' || Boolean(upgraded) }))}`);
+        // 核心身份和回合状态随本次事务保存；对齐/知识等可选读取移到锁外，失败不回滚入口。
+        return { entry: { state, resolved, role: session.role || 'lead', turnId: session.turnId, ticket: session.ticket, taskId: session.taskId || null, upgraded } };
       }
       if (!session) return lifecycleOutput;
       // Codex 严格核对 turn_id；Claude 的 prompt_id 只在入口事件保证存在，后续事件按当前回合关联。
@@ -271,6 +272,25 @@ export async function handleHook(directory, event, options = {}) {
       if (name === 'PostCompact') return {};
       return {};
     }, { budgetMs: lockBudget(name) });
+    // 可选知识/对齐在状态锁外读取；失败已在 readOptionalContext 内降级，不影响已保存的入口身份。
+    if (output?.entry) {
+      const entry = output.entry;
+      const optional = await readOptionalContext(entry.state, entry.resolved, event.session_id, { directory });
+      const rendered = await mutate(directory, async state => {
+        const live = state.sessions[sessionKey(entry.resolved.project.projectId, event.session_id)];
+        // 输出前复核 session/turn：可选读取期间被新入口替换时，不把旧回合内容附到新回合。
+        if (!live || live.turnId !== entry.turnId || live.ticket !== entry.ticket || (live.taskId || null) !== entry.taskId) return { stale: true };
+        // 使用提交时的项目记录，避免可选读取期间的项目状态变化被旧快照覆盖。
+        const project = state.projects[entry.resolved.project.projectId] || entry.resolved.project;
+        const context = await projectContext(state, { ...entry.resolved, project }, entry.role, event.session_id, {
+          directory, incremental: true, full: name === 'SessionStart' || Boolean(entry.upgraded), optional,
+        });
+        return { text: `${entry.upgraded}workflow 入口：${JSON.stringify(context)}` };
+      }, { budgetMs: lockBudget(name) });
+      output = rendered?.text ? contextOutput(name, rendered.text)
+        : rendered?.stale ? contextOutput(name, 'workflow 入口回合已被新的入口替换：本次未附加可选上下文；新回合已按最新状态建立。')
+        : {};
+    }
     // 状态已提交：此时再归档事件；归档失败不影响已保存的回执，下次消费幂等跳过。
     const archived = await archiveLifecycleEvents(directory, lifecycleArchive);
     // 失败分类如实说明：原因文件写入与事件移动是两种不同后果，不能混为一谈。

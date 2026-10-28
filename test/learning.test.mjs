@@ -1,8 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { readFile, readdir, writeFile } from 'node:fs/promises';
-import { capture, feedback, maturityFor, readEntries, readItems, reviseKnowledge, selectKnowledge } from '../src/learning.mjs';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { capture, feedback, maturityFor, readEntries, readItems, renderEntry, reviseKnowledge, selectKnowledge } from '../src/learning.mjs';
 import { projectContext } from '../src/context.mjs';
 import { learningConfig, setLearningConfig, setLearningEnabled, projectFor } from '../src/learning-config.mjs';
 import { dueReason, learningStatus, recoverReview, reviewOnce } from '../src/review.mjs';
@@ -243,4 +243,100 @@ test('新增 CLI 配置和状态入口可往返；检查和预览不启用模型
   assert.equal(JSON.parse(status.stdout).enabled, false);
   assert.equal(cli(['learning', 'schedule', 'preview', ...args]).status, 0);
   assert.equal(cli(['knowledge', 'explain', ...args, '--query', '登录']).status, 0);
+});
+
+function knowledgeEntry(id, title, summary, paths = []) {
+  return {
+    schemaVersion: 1, id, generation: 1, title, summary, conditions: '当前项目', type: 'method', importance: 'normal', status: 'active',
+    scope: { paths, version: null }, tags: ['经验'],
+    evidence: [{ id: 'e1', incidentId: 'i1', kind: 'success', verified: true, createdAt: '2026-10-21T10:00:00Z', generation: 1 }],
+    history: [], supersedes: null, maturity: 'verified',
+  };
+}
+async function putKnowledge(f, id, title, summary, paths = []) {
+  const folder = path.join(f.project, '.workflow', 'knowledge');
+  await mkdir(folder, { recursive: true });
+  await writeFile(path.join(folder, id + '.md'), renderEntry(knowledgeEntry(id, title, summary, paths)));
+}
+function entrance(output) {
+  const text = output.hookSpecificOutput?.additionalContext;
+  assert.ok(text?.startsWith('workflow 入口：'), JSON.stringify(output));
+  return { text, context: JSON.parse(text.slice('workflow 入口：'.length)) };
+}
+
+test('P02 坏知识条目只跳过自身：新回合与 signal 正常、有效条目仍召回，修复后恢复', async () => {
+  const f = await fixture(); await start(f);
+  await putKnowledge(f, 'K-good', '登录超时经验', '登录超时先取消请求', ['README.md']);
+  await writeFile(path.join(f.project, '.workflow', 'knowledge', 'K-bad.md'), '<!-- workflow-knowledge\n{"id":"K-bad"}\n-->\n\n# 坏条目\n');
+  f.turnId = 'turn-2';
+  const { context } = entrance(await event(f, 'UserPromptSubmit'));
+  assert.ok(context.knowledge.selected.some(item => item.id === 'K-good'), JSON.stringify(context.knowledge));
+  assert.equal(context.knowledge.skippedTotal, 1);
+  assert.match(context.instruction, /无法解析/);
+  const session = Object.values((await readState(f.directory)).sessions).find(item => item.sessionId === f.sessionId);
+  assert.equal(session.turnId, 'turn-2');
+  assert.ok(session.ticket);
+  const signal = await emit(f, { action: 'phase', phase: 'executing' });
+  assert.equal(signal.result.accepted, true);
+  // 完整诊断留在显式查询里，自动入口只给总数。
+  const diagnostic = await selectKnowledge(f.directory, f.project, { text: '登录', paths: ['README.md'], full: true });
+  assert.equal(diagnostic.skipped[0].path, '.workflow/knowledge/K-bad.md');
+  // 修复同一文件后自然重新解析，不需要清缓存。
+  await putKnowledge(f, 'K-bad', '登录重试', '先取消请求再重试', ['README.md']);
+  const repaired = await selectKnowledge(f.directory, f.project, { text: '登录', paths: ['README.md'] });
+  assert.equal(repaired.skippedTotal, 0);
+  assert.ok(repaired.selected.some(item => item.id === 'K-bad'));
+});
+
+test('P02 知识目录缺失与读取故障提示可区分，入口身份仍然保存', async () => {
+  const missing = await fixture();
+  await setLearningEnabled(missing.directory, missing.project, true);
+  await start(missing);
+  missing.turnId = 'turn-2';
+  const absent = entrance(await event(missing, 'UserPromptSubmit')).context;
+  assert.equal(absent.knowledge.unavailable.kind, 'missing');
+  assert.match(absent.instruction, /知识目录不存在/);
+  const io = await fixture();
+  await mkdir(path.join(io.project, '.workflow'), { recursive: true });
+  await writeFile(path.join(io.project, '.workflow', 'knowledge'), '占用目录名');
+  await start(io);
+  io.turnId = 'turn-2';
+  const failed = entrance(await event(io, 'UserPromptSubmit')).context;
+  assert.equal(failed.knowledge.unavailable.kind, 'io');
+  assert.ok(failed.knowledge.unavailable.code);
+  assert.match(failed.instruction, /可选知识读取失败/);
+});
+
+test('P02 大量未匹配知识不撑大自动入口；排除清单受预算，显式查询给完整诊断', async () => {
+  const f = await fixture(); await start(f);
+  await putKnowledge(f, 'K-hit', '登录超时经验', '登录超时先取消请求', ['README.md']);
+  for (let i = 0; i < 5; i++) await putKnowledge(f, `K-other${i}`, `无关经验 ${i}`, `页面配色与间距 ${i}`);
+  f.turnId = 'turn-2';
+  const small = entrance(await event(f, 'UserPromptSubmit'));
+  assert.equal(small.context.knowledge.excludedTotal, 5);
+  for (let i = 5; i < 60; i++) await putKnowledge(f, `K-other${i}`, `无关经验 ${i}`, `页面配色与间距 ${i}`);
+  f.turnId = 'turn-3';
+  const big = entrance(await event(f, 'UserPromptSubmit'));
+  assert.equal(big.context.knowledge.excludedTotal, 60);
+  assert.equal(big.context.knowledge.excluded, undefined);
+  // 排除条目只体现在总数，不按条数线性进入入口正文。
+  assert.ok(big.text.length - small.text.length < 300, `${small.text.length} -> ${big.text.length}`);
+  const limited = await selectKnowledge(f.directory, f.project, { text: '登录', paths: ['README.md'] });
+  assert.ok(limited.excluded.length <= 10);
+  assert.equal(limited.excludedOmitted, 60 - limited.excluded.length);
+  const full = await selectKnowledge(f.directory, f.project, { text: '登录', paths: ['README.md'], full: true });
+  assert.equal(full.excluded.length, 60);
+});
+
+test('P02 对齐读取失败单独降级，不阻断新回合保存', async () => {
+  const f = await fixture(); await start(f);
+  await mutate(f.directory, async state => {
+    state.projects[f.projectId].alignment = { docPath: '.', files: [], directories: [] };
+  });
+  f.turnId = 'turn-2';
+  const { context } = entrance(await event(f, 'UserPromptSubmit'));
+  assert.ok(context.alignment.error.code);
+  assert.match(context.instruction, /对齐状态未读取/);
+  const session = Object.values((await readState(f.directory)).sessions).find(item => item.sessionId === f.sessionId);
+  assert.equal(session.turnId, 'turn-2');
 });
