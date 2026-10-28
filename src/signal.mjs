@@ -6,6 +6,9 @@ const IDENTITY_FIELDS = ['schemaVersion', 'projectId', 'sessionId', 'turnId', 't
 const FIELD_OPTIONS = ['task', 'goal', 'route', 'mode', 'paths', 'paths-mode', 'plans', 'channels', 'parent', 'phase', 'delivery', 'role', 'package', 'final-ref'];
 // task-update 只接受这些便捷字段；其余字段属于其他动作，给出即报错，不能静默丢弃。
 const TASK_UPDATE_OPTIONS = ['task', 'goal', 'mode', 'paths', 'paths-mode'];
+// 命令行全局解析器还接受 --path、--ref 等与信号无关的选项；task-update 只放行实际会用到的公共选项。
+// 清单与 bin/workflow.mjs 的解析器保持一致：身份、项目定位、输入与状态目录。
+const TASK_UPDATE_COMMON_OPTIONS = ['session', 'turn', 'id', 'project', 'root', 'state-dir', 'input', 'base64'];
 const list = value => value === undefined ? undefined : value.split(',').map(item => item.trim()).filter(Boolean);
 // 命令行与 --input 可各给一半权限：按 mode/allowedPaths 子字段合并；同一子字段两处冲突时拒绝，避免整体覆盖后静默丢字段。
 function mergePermissions(cli, input) {
@@ -69,8 +72,9 @@ export function buildSignal(state, resolved, action, options, extra = {}) {
       ...(permissions !== undefined ? { permissions } : {}),
     });
   } else if (action === 'task-update') {
-    const unsupported = FIELD_OPTIONS.filter(key => !TASK_UPDATE_OPTIONS.includes(key) && options[key] !== undefined);
-    if (unsupported.length) fail('UNSUPPORTED', `task-update 不支持 ${unsupported.map(key => `--${key}`).join('、')}；只能用 --goal、--mode、--paths 与 --paths-mode`);
+    // 按实际传入的参数检查：全局解析器接受的 --path/--ref 等不属于 task-update，静默丢弃会让调用方误以为生效。
+    const unsupported = Object.keys(options).filter(key => !TASK_UPDATE_OPTIONS.includes(key) && !TASK_UPDATE_COMMON_OPTIONS.includes(key));
+    if (unsupported.length) fail('UNSUPPORTED', `task-update 不支持 ${unsupported.map(key => `--${key}`).join('、')}；只能用 --task、--goal、--mode、--paths、--paths-mode，公共选项限 --session、--turn、--id、--project、--root、--state-dir、--input、--base64`);
     // 只带调用方明确给出的字段；省略的 mode/allowedPaths 保持原值。allowedPathsMode 缺省按 replace。
     const cli = {};
     if (options.mode !== undefined) cli.mode = options.mode;

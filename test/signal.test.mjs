@@ -142,6 +142,41 @@ test('task-update 当前动作不支持的便捷参数直接报错，不再静�
   }
   assert.equal(JSON.stringify(await readState(f.directory)), before);
 });
+test('task-update 拒绝全局解析器接受但本动作不用的参数，--path 与 --goal 混用不静默丢弃', async () => {
+  const f = await fixture();
+  await start(f);
+  const before = JSON.stringify(await readState(f.directory));
+  const cases = [['path', 'docs/a.md'], ['ref', 'HEAD'], ['agent', 'codex'], ['user-dir', f.area], ['max-files', '5'], ['pending', 'p1'], ['transaction', 't1'], ['owner', 'someone'], ['coexistence-mode', 'bounded'], ['query', 'x'], ['run', 'r1'], ['version', '1']];
+  for (const [key, value] of cases) {
+    const result = JSON.parse(build(f, 'task-update', ['--id', `bad-${key}`, '--goal', '新目标', `--${key}`, value]).stdout);
+    assert.equal(result.error, 'UNSUPPORTED', `${key}: ${result.message}`);
+    assert.match(result.message, new RegExp(`--${key}`));
+  }
+  for (const key of ['global', 'now', 'skip-learning', 'enable-learning', 'keep', 'discard']) {
+    const result = JSON.parse(build(f, 'task-update', ['--id', `bad-${key}`, '--goal', '新目标', `--${key}`]).stdout);
+    assert.equal(result.error, 'UNSUPPORTED', `${key}: ${result.message}`);
+    assert.match(result.message, new RegExp(`--${key}`));
+  }
+  assert.equal(JSON.stringify(await readState(f.directory)), before);
+});
+test('task-update 合法公共选项与业务选项的完整 CLI 调用仍被接受', async () => {
+  const f = await fixture();
+  await start(f);
+  const sent = await accept(f, 'task-update', ['--project', f.project, '--id', 'u-full', '--task', 'task-1', '--goal', '完整调用', '--mode', 'write', '--paths', 'README.md', '--paths-mode', 'append']);
+  assert.equal(sent.receipt.accepted, true, JSON.stringify(sent));
+  assert.equal(sent.receipt.goal, '完整调用');
+  assert.deepEqual(sent.receipt.permissions.allowedPaths, ['README.md', 'LESSONS.md', 'docs/说明.md']);
+  assert.equal(sent.payload.allowedPathsMode, 'append');
+  const file = path.join(f.area, 'update-full.json');
+  await writeFile(file, JSON.stringify({ permissions: { mode: 'write' } }));
+  const withInput = JSON.parse(build(f, 'task-update', ['--project', f.project, '--id', 'u-input', '--goal', '带输入', '--input', file]).stdout);
+  assert.equal(withInput.error, undefined, JSON.stringify(withInput));
+  assert.equal(withInput.workflow_signal.goal, '带输入');
+  const encoded = Buffer.from(JSON.stringify({ permissions: { mode: 'write' } })).toString('base64');
+  const withBase64 = JSON.parse(build(f, 'task-update', ['--id', 'u-base64', '--goal', '带 base64', '--base64', encoded]).stdout);
+  assert.equal(withBase64.error, undefined, JSON.stringify(withBase64));
+  assert.equal(withBase64.workflow_signal.goal, '带 base64');
+});
 test('委派子会话不带 --task 也能 role-claim；声明后入口换成角色指引', async () => {
   const f = await fixture();
   await start(f);
