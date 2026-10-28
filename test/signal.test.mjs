@@ -6,7 +6,7 @@ import { mutate, readState } from '../src/store.mjs';
 import { buildSignal } from '../src/signal.mjs';
 import { sessionKey } from '../src/protocol.mjs';
 import { resolveProject } from '../src/projects.mjs';
-import { cli, entry, event, fixture, start } from './helpers.mjs';
+import { cli, emit, entry, event, fixture, start } from './helpers.mjs';
 
 // 便捷子命令：CLI 只读状态拼 payload，交给 PostToolUse 接受；返回 CLI 结果与 hook 回执。
 function build(f, action, args = [], session = f) {
@@ -226,15 +226,31 @@ test('Stop 与显式 save 后未再改状态不重复落盘；中间 save 后继
     assert.equal(await readFile(stateFile, 'utf8'), broken);
   }
 });
-test('计划阶段入口提示分包与角色确认；未提问就 Stop 挡一次，调提问工具后 Stop 放行', async () => {
+test('计划模式普通讨论不单独阻挡；本回合显式进入计划交付才核对分包与通道', async () => {
   const f = await fixture();
   const entryOut = await event({ ...f, turnId: 'plan-1' }, 'UserPromptSubmit', { permission_mode: 'plan' });
   assert.match(entryOut.hookSpecificOutput.additionalContext, /分几个工作包.*Worker 与 Reviewer 通道/);
-  const blocked = await event({ ...f, turnId: 'plan-1' }, 'Stop');
+  // 本回合没有 task-start/phase，也没有声明 plans：普通解释直接放行。
+  assert.deepEqual(await event({ ...f, turnId: 'plan-1' }, 'Stop'), {});
+
+  f.turnId = 'plan-2';
+  await event(f, 'UserPromptSubmit', { permission_mode: 'plan' });
+  assert.equal((await emit(f, { action: 'task-start', goal: '交付计划', permissions: { mode: 'plan', allowedPaths: [] } })).result.accepted, true);
+  const blocked = await event(f, 'Stop');
   assert.equal(blocked.decision, 'block');
   assert.match(blocked.reason, /计划交付核对.*分几个包.*Worker 与 Reviewer 通道/);
-  assert.deepEqual(await event({ ...f, turnId: 'plan-1' }, 'Stop'), {});
-  await event({ ...f, turnId: 'plan-2' }, 'UserPromptSubmit', { permission_mode: 'plan' });
-  await event({ ...f, turnId: 'plan-2' }, 'PostToolUse', { tool_name: 'request_user_input', tool_input: { questions: [] }, tool_response: {} });
-  assert.deepEqual(await event({ ...f, turnId: 'plan-2' }, 'Stop'), {});
+  assert.deepEqual(await event(f, 'Stop'), {});
+
+  // 结构化提问工具自动记 waiting-user，不再要求先发一次 phase。
+  f.turnId = 'plan-3';
+  await event(f, 'UserPromptSubmit', { permission_mode: 'plan' });
+  await event(f, 'PostToolUse', { tool_name: 'request_user_input', tool_input: { questions: [] }, tool_response: {} });
+  assert.deepEqual(await event(f, 'Stop'), {});
+
+  // 计划模式下的纯操作路线即使在显式任务阶段也放行。
+  const g = await fixture();
+  g.turnId = 'plan-op';
+  await event(g, 'UserPromptSubmit', { permission_mode: 'plan' });
+  await emit(g, { action: 'task-start', goal: '查看', route: 'operation-only', permissions: { mode: 'plan', allowedPaths: [] } });
+  assert.deepEqual(await event(g, 'Stop'), {});
 });

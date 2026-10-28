@@ -90,7 +90,7 @@ node bin/workflow.mjs project align status --root "D:/你的项目"
 | 看状态、推送指定提交、快进拉取 | Lead 直接做，零 Worker / 零 Reviewer，声明 operation-only |
 | 单点文本、低风险小改 | Lead 可直接做 |
 | 真实代码修复、关键行为 | 派 Worker 实施，再派独立 Reviewer 审查 |
-| 需要等你拍板 | 先标 waiting-user，不会猜着往下做 |
+| 需要等你拍板 | 结构化提问自动记 waiting-user（文本提问先声明），不会猜着往下做 |
 | 你中断了 | 只保存状态，不会在你下次进来时偷偷接着干 |
 
 一切写操作只在你明确要求时才发生。插件不会自动 add / commit / push / 发布，也不会替你改版本号。
@@ -232,7 +232,7 @@ node bin/workflow.mjs project onboard --root "D:/你的项目"
 
 还是两步：写计划，你核对后说“执行”，开始实施。spec 不单独核对，并进计划里一起看。
 
-1. 写计划：给出建议分流（`lead-direct` 还是 `delegated`）；需要分工或独立审查时，列出分几个工作包、每包的范围与依赖，并询问你指定哪个智能体担任 Worker 和 Reviewer。计划末尾有一节“spec 影响”，列出要新建、修改、删除哪些 spec 条目以及改后的验收句子；不涉及 spec 时写“无”。
+1. 写计划：给出建议分流（`lead-direct` 还是 `delegated`）；需要分工或独立审查时，一次列出分几个工作包、每包的范围、依赖和所用通道。已有明确安排直接沿用，无 Worker 的任务不问 Worker，只有真实新增角色或通道时才问你指定。计划末尾有一节“spec 影响”，列出要新建、修改、删除哪些 spec 条目以及改后的验收句子；不涉及 spec 时写“无”。
 2. 你核对计划时把分包、角色指定和“spec 影响”一起确认。说“执行”，这些安排就一起批准。
 3. 实施：Lead 按这一节改 spec，作为验收交给 Worker，Reviewer 逐条核对。只有计划没写到的 spec 改动、或要改已批准的验收时，才会再问你。
 4. 收尾：spec 和代码在同一任务里提交；漏改 spec 时 task-end 被门禁挡住。Lead 同时在原计划里回写本任务完成了什么、偏离了什么、还剩什么；task-start 声明了 `plans` 而计划没动时，插件会提醒，但不挡结束。

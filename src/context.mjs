@@ -100,7 +100,7 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   const pending = Object.values(state.pending).filter(p => p.projectId === project.projectId && p.kind === 'knowledge-pending' && p.status === 'open').slice(0, 1);
   const identity = session && !session.interrupted ? { schemaVersion: 1, projectId: project.projectId, sessionId, taskId: session.taskId, turnId: session.turnId, ticket: session.ticket, interruptEpoch: session.interruptEpoch, expectedRevision: session.revision } : null;
   const instructions = {
-    lead: '首次或范围变化时读公共方法和 Lead 指引。交付计划时须给出建议分流与工作包划分（几包、每包范围与依赖），并按提问路径请用户指定或确认 Worker 与 Reviewer 通道。新业务用 signal task-start 声明 route（identity.taskId 为空时自拟 taskId，如 task-<简短英文>；续接沿用原 ID）；同一任务改目标或增/减权限范围用 signal task-update（仅该任务有效 Lead；只记录本机声明，宿主只读/计划权限仍优先），不必结束重开；简单任务 lead-direct 只需 task-start 和 task-end 两条信号。提问前 phase waiting-user；派发/消费/审查结论用 packages 批量记录（handle 填委派 ID，channel 填实际通道；用户指定通道时 task-start 带 channels，换通道先告诉用户并附 change；换新 packageId 返修用 supersedes）。明确纠正、失败原因或已验证方法出现时按 learningGuide 用 knowledge capture 保存；任务开始或范围变化用 knowledge select 检索经验。当前用户要求优先于历史经验。受委派的工作包会话（给出 packageId 与 worker/reviewer 角色）不按 Lead 行事：先 signal role-claim --role <角色> --package <packageId>，再读对应角色指引。',
+    lead: '首次或范围变化时读公共方法和 Lead 指引。交付计划时一次给出建议分流、工作包划分（几包、每包范围与依赖）和所用通道；已有明确安排直接沿用，无 Worker 的任务不问 Worker，真实新增角色或通道时才按提问路径问用户。新业务用 signal task-start 声明 route（identity.taskId 为空时自拟 taskId，如 task-<简短英文>；续接沿用原 ID）；同一任务改目标或增/减权限范围用 signal task-update（仅该任务有效 Lead；只记录本机声明，宿主只读/计划权限仍优先），不必结束重开；简单任务 lead-direct 只需 task-start 和 task-end 两条信号。结构化提问工具会自动记 waiting-user，文本提问先发 phase waiting-user；派发/消费/审查结论用 packages 批量记录（handle 填委派 ID，channel 填实际通道；用户指定通道时 task-start 带 channels，换通道先告诉用户并附 change；换新 packageId 返修用 supersedes）。明确纠正、失败原因或已验证方法出现时按 learningGuide 用 knowledge capture 保存；任务开始或范围变化用 knowledge select 检索经验。当前用户要求优先于历史经验。受委派的工作包会话（给出 packageId 与 worker/reviewer 角色）不按 Lead 行事：先 signal role-claim --role <角色> --package <packageId>，再读对应角色指引。',
     worker: '先读公共方法和 Worker 指引。只读工作包直接资料，必要的直接依赖可读；按阶段或范围变化说明【目标】和最小读取范围。不加载 Lead 调度，不递归创建代理，不发 task-start/packages。协作需要 workflow 身份而当前没有时，停止寻找并报告 Lead。复用有效证据；包内已授权的补测直接做，范围外补测先说明缺口交 Lead。发现随正常交付回报。',
     reviewer: '先读公共方法、Reviewer 指引和工作包指定范围。只读审查，不改源码、测试或配置，不递归创建代理，不发 task-start/packages。没有 workflow 身份时，停止寻找并报告 Lead。复用与待审版本匹配的证据；包内已授权的定向检查直接做，范围外补测先说明缺口交 Lead。完成即交回。',
   };
@@ -150,8 +150,8 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   const inflight = ledger && task.lifecycle === 'active' ? Object.values(task.packages || {}).filter(p => p.status === 'dispatched').map(p => p.packageId) : [];
   const correction = inflight.length ? `有 ${inflight.length} 个工作包在途（${inflight.join('、')}）：若本条用户消息改变需求或范围，按中途纠正流程先核对已有成果、取消并确认停止，再以新基准和用户原话重新派发。` : '';
   const planning = role === 'lead' && (session?.permissionMode === 'plan' || (task?.lifecycle === 'active' && task.permissions?.mode === 'plan'));
-  const planHint = planning ? '当前处于计划阶段：交付计划时须列出分几个工作包（每包范围与依赖）或说明免拆包理由，并按提问路径请用户指定 Worker 与 Reviewer 通道。' : '';
-  const leadRepeat = role === 'lead' ? '交付计划时列工作包并问 Worker/Reviewer 通道；' : '';
+  const planHint = planning ? '当前为计划模式：交付计划时才须列出分几个工作包（每包范围与依赖）或说明免拆包理由，并按提问路径请用户指定或沿用 Worker 与 Reviewer 通道；普通解释和讨论不触发这项核对。' : '';
+  const leadRepeat = role === 'lead' ? '交付计划时一次列工作包和所用通道，已有安排直接沿用；' : '';
   const base = repeat ? `入口与本会话上一回合相同（文档、信号用法不变）：${leadRepeat}信号用 identity 字段加 signal <action> 子命令；需要时重读 ${role === 'lead' ? 'Lead' : role === 'worker' ? 'Worker' : 'Reviewer'} 指引。` : instructions[role];
   const instruction = [base, planHint, note, learning, correction, degraded.join(' ')].filter(Boolean).join(' ');
   const signal = repeat ? { command: signalUsage().command } : signalUsage();

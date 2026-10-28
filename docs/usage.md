@@ -108,7 +108,7 @@ node "<本次hook提供的bin/workflow.mjs>" signal --input "<任务JSON文件>"
 
 使用独立直接 shell 调用，当前支持 node/实际 Node 路径加本插件绝对入口；不串接其他 shell 命令（包括前置 `cd`；组合命令只得到“须单独直接调用”的提示，不更新状态）。PowerShell 中文 JSON 用 UTF-8 文件加 --input，不通过 5.1 原生文本管道；--base64 仅作兼容，长串可能被宿主脱敏成占位符而失效。signal 只输出 workflow_signal，当前 PostToolUse 接受回执才表示状态更新；拒绝时用 context 重读 identity/revision，不换 ID 绕过。权限系统或分类器拒绝命令时同样不换写法重试，向用户说明未记录的步骤。
 
-`action=phase` 声明 executing/operation-only/waiting-user/delivering；delivering 加 deliveryId，可同时提交 disposition。普通查看、指定提交 push、明确快进 pull 用 operation-only，默认零 Worker/Reviewer；低风险单点 Lead 实施，关键行为安排必要独立审查。工具提问和普通文本反问均先 waiting-user。
+`action=phase` 声明 executing/operation-only/waiting-user/delivering；delivering 加 deliveryId，可同时提交 disposition。普通查看、指定提交 push、明确快进 pull 用 operation-only，默认零 Worker/Reviewer；低风险单点 Lead 实施，是否独立审查按行为与失败代价决定。结构化提问工具由 hook 自动记 waiting-user；普通文本反问和未识别工具先发 phase waiting-user。
 
 旧交付处置保留兼容：`no-new-learning`、引用真实成功事务的 `updated`、引用已保存待办的 `pending-recovery`。新任务无需每次提交处置，Stop 不追加经验轮次。出现有据材料时按[经验学习](learning.md)采集，复盘由独立调度决定。
 
@@ -141,7 +141,7 @@ node "<入口>" signal task-update ... --id update-3 --paths docs/new.md --paths
 
 变更追加到任务的 `updates`（`task show` 显示条数）；历史回执不改写，旧任务兼容。权限收缩不追溯取消已完成的产物，后续知识/对齐写入按新范围检查；直接 Edit/Write 不受本插件拦截。
 
-Lead 的活动任务结束回合时，Stop 会挡一次（等待用户、本回合已挡过时不挡）：有在途工作包时要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明为什么暂停（在途包全是 `builtin:` 通道时，宿主会通知结果，只要求说明在等什么）；没有在途包而未发 task-end 时给出缺项，按提示补齐后发 task-end，或向用户说明还没完成的部分。
+Lead 的活动任务结束回合时，Stop 会挡一次（等待用户、本回合已挡过时不挡）：有在途工作包时要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明为什么暂停（在途包全是 `builtin:` 通道时，宿主会通知结果，只要求说明在等什么）；没有在途包而未发 task-end 时给出缺项，按提示补齐后发 task-end，或向用户说明还没完成的部分。计划模式下，仅本回合显式 task-start/phase 或任务声明了 `plans` 才核对分包与通道；普通解释和讨论不因 `mode=plan` 单独挡。
 
 用户指定了各角色用哪个智能体时，task-start 加 `"channels": {"worker": "codeg:claude_code", "reviewer": "codeg:codex"}`，每个工作包填 `channel`。与声明不一致，或 delegated 任务的 worker 包由 Lead 实施（`channel: "lead"` 或 `handle: "lead-direct"`），须在同一 packages 信号附 `change` 列出该包，否则回执 `CHANNEL`。换新 packageId 返修时新包带 `"supersedes": "<旧包>"`，已交付或审查要求修订的轮次累计（同一交付轮次只计一次，同一轮迟到的交付引用或 FIX 不重复累计）、旧包自动收尾；从未产出的启动失败重派不增加返修。已有审查结论的 worker 包（含它接替过的旧包），审查缺项不能用 waivers 豁免，也不能改标 waived：重新送审最终交付版本，或用 supersedes 接替、canceled 放弃。`task show` 显示 `channels`。
 

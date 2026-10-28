@@ -14,7 +14,7 @@
 
 用户级宿主配置（Codex `hooks.json`、Claude `settings.json`）作为本版唯一注册途径，发布副本和文档一起固定版本。元数据不另外自动注册同一事件。安装不写 trust 记录；发现与信任需实际宿主核对。修改配置后新会话/新连接验证，复用旧连接可能仍加载旧配置。全局 CLI 版本不代表 ACP 内嵌版本。Claude 侧字段差异见[适配说明](claude.md)。
 
-SessionStart/UserPromptSubmit 提供入口；PostToolUse 限定本插件 signal 输出；Stop 做回合结束核对（见[协议](../design/protocol.md)）；Interrupt 保存而不续轮；压缩保留任务与预算。明确 transcript_path=null 才按后台过滤，缺字段不当后台；未知事件/损坏状态放行。等待工具或文本反问先 waiting-user，插件不读问号/关键词猜测。
+SessionStart/UserPromptSubmit 提供入口；PostToolUse 限定本插件 signal 输出；Stop 做回合结束核对（见[协议](../design/protocol.md)）；Interrupt 保存而不续轮；压缩保留任务与预算。明确 transcript_path=null 才按后台过滤，缺字段不当后台；未知事件/损坏状态放行。已识别的等待工具在 PostToolUse 自动记 waiting-user，普通文本反问由 Lead 显式声明；插件不读问号/关键词猜测。
 
 Codex 0.160.1 的 PostCompact 不支持 additionalContext，安装不为它设置 additionalContextLimit，回调仅记录观测并保留状态。压缩后的入口和既有票据由支持附加上下文的 compact SessionStart 提供；是否实际触发该入口须在真实宿主核验，不能用合成压缩事件代替。
 

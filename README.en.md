@@ -92,7 +92,7 @@ No commands to remember. Make a request in the Claude Code main session and Clau
 | Check status, push a given commit, fast-forward pull | Lead does it directly, zero Workers / zero Reviewers, declared operation-only |
 | Single text edit, low-risk small change | Lead may do it directly |
 | Real code fix, key behavior | A Worker implements, then an independent Reviewer reviews |
-| Needs your decision | Marked waiting-user first; no guessing ahead |
+| Needs your decision | Structured questions are marked waiting-user automatically (text questions are declared first); no guessing ahead |
 | You interrupted | State is saved only; it does not quietly continue next time you come back |
 
 Write operations happen only when you explicitly ask. The plugin never adds, commits, pushes or publishes automatically, and never changes version numbers for you.
@@ -234,7 +234,7 @@ Changes in each version are listed in GitHub Releases.
 
 Still two steps: write the plan, you review it and say "go", implementation starts. Specs are not reviewed separately; they are part of the plan.
 
-1. Writing the plan: propose the route (`lead-direct` or `delegated`); when splitting work or adding independent review, list how many work packages there are, each package's scope and dependencies, and ask which agent you want for Worker and Reviewer. End the plan with a "Spec impact" section listing which spec entries to create, change or remove, with the acceptance sentences as they will read afterwards; write "none" if no spec is affected.
+1. Writing the plan: propose the route (`lead-direct` or `delegated`); when splitting work or adding independent review, list at once how many work packages there are, each package's scope, dependencies and channels. Reuse clear existing arrangements; do not ask about a Worker when the task has none, and ask only when a role or channel is genuinely new. End the plan with a "Spec impact" section listing which spec entries to create, change or remove, with the acceptance sentences as they will read afterwards; write "none" if no spec is affected.
 2. You review the package breakdown, role assignment and "Spec impact" together with the plan. Saying "go" approves all of them at once.
 3. Implementation: the Lead changes the specs as listed and hands them to Workers as acceptance criteria; the Reviewer checks them one by one. You are asked again only for spec changes the plan did not cover, or to change approved acceptance criteria.
 4. Wrap-up: the spec and the code are committed in the same task; if the spec was missed, task-end is blocked by the gate. The Lead also writes back to the plan what this task finished, where it deviated, and what remains; if task-start declared `plans` and the plan is untouched, the plugin reminds the Lead without blocking completion.

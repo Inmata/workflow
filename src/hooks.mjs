@@ -226,9 +226,12 @@ export async function handleHook(directory, event, options = {}) {
       if (event.event_id) session.observed[event.event_id] = digest(JSON.stringify({ name, turn: event.turn_id }));
       if (name === 'PostToolUse') {
         if (question) {
-          session.phase = 'waiting-user';
-          session.revision += 1;
-          session.revisionReason = '提问工具';
+          // 已显式发过 waiting-user 或同一回合再次调用提问工具时不重复修改同一状态。
+          if (session.phase !== 'waiting-user') {
+            session.phase = 'waiting-user';
+            session.revision += 1;
+            session.revisionReason = '提问工具';
+          }
           return {};
         }
         if (nearMiss) {

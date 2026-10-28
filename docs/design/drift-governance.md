@@ -167,6 +167,8 @@ Lead 和 Worker 都可以在交付前运行它。指定 `--ref` 时先固定成�
 - phase 不是 `waiting-user`；
 - `stop_hook_active` 不为 true，且本回合还没挡过。
 
+计划模式的计划交付核对只在本回合显式 `task-start`/`phase`（`session.phase` 不跨回合继承）或活动任务已声明 `plans` 时触发；仅有 `mode=plan` 的普通解释放行，不扫描自然语言或文件名猜意图。
+
 有 dispatched 工作包时（0.6.0 起）：返回 `{decision: 'block', reason}`，列出在途包和 handle，要求 Lead 继续有界等待结果，或向用户说明暂停原因。Codeg 不会在委派结束时唤醒父会话，0.5.x 在此放行，Lead 结束回合后就收不到子任务结果。
 
 没有在途包时的动作：按 `task-end` 门禁计算全部缺项（`child`、`terminal`、`review`、`validation`、`spec`，已记入任务的 waivers 照常抵扣）。有缺项时返回 `{decision: 'block', reason}`，`reason` 列出缺项，要求 Lead 二选一：补齐后发 `task-end`，或者向用户说明哪些还没完成。没有缺项但任务仍未结束时，同样挡一次，提醒发 `task-end`。
@@ -183,7 +185,7 @@ Lead 和 Worker 都可以在交付前运行它。指定 `--ref` 时先固定成�
 - Lead 从没发过 `task-start`，或某项工作从未记进工作包。插件只知道已记录的内容。
 - hook 没有执行（宿主信任失效等）。
 
-误挡：Lead 用普通文字中途汇报、没用提问工具时也会被挡一次，代价是多一轮简短回复，不影响之后的 `task-end`。
+误挡：非计划模式下，Lead 用普通文字中途汇报但任务仍为 active、未发 `task-end` 时也会被挡一次，代价是多一轮简短回复，不影响之后的 `task-end`。计划模式的普通讨论不再单独触发。
 
 远端 CI 加分支保护能强制阻止带漂移的代码进入 main，但只能看到 git 里的内容（审查与验证记录在本机），而且需要改成走 PR 合并。第一期不提供，需要时 `spec check` 可以直接在 CI 里运行。
 

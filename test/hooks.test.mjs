@@ -4,7 +4,7 @@ import path from 'node:path';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { handleHook } from '../src/hooks.mjs';
 import { readState, withLock } from '../src/store.mjs';
-import { cli, deliver, entry, event, fixture, identity, start } from './helpers.mjs';
+import { cli, deliver, emit, entry, event, fixture, identity, start } from './helpers.mjs';
 
 test('V10 显式 null transcript 后台过滤，缺字段仍接受正常入口', async () => {
   const f = await fixture();
@@ -103,6 +103,35 @@ test('未知会话与未知事件保守放行，不建立业务任务', async ()
     assert.equal(output.decision, undefined);
   }
   assert.equal(Object.keys((await readState(f.directory)).tasks).length, 0);
+});
+test('结构化提问自动记 waiting-user 且同一回合只改一次；未知工具不自动记', async () => {
+  const phaseOf = async f => Object.values((await readState(f.directory)).sessions).find(s => s.sessionId === f.sessionId).phase;
+  const revisionOf = async f => Object.values((await readState(f.directory)).sessions).find(s => s.sessionId === f.sessionId).revision;
+  const f = await fixture();
+  await start(f);
+  const before = await revisionOf(f);
+  await event(f, 'PostToolUse', { tool_name: 'request_user_input', tool_input: { questions: [] }, tool_response: {} });
+  assert.equal(await phaseOf(f), 'waiting-user');
+  assert.equal(await revisionOf(f), before + 1);
+  // 同一回合再次调用提问工具：状态已相同，不再产生第二次修改。
+  await event(f, 'PostToolUse', { tool_name: 'request_user_input', tool_input: { questions: [] }, tool_response: {} });
+  assert.equal(await revisionOf(f), before + 1);
+
+  // 已显式发过 waiting-user 时，提问工具不再重复修改。
+  const g = await fixture();
+  await start(g);
+  await emit(g, { action: 'phase', phase: 'waiting-user' });
+  const declared = await revisionOf(g);
+  await event(g, 'PostToolUse', { tool_name: 'request_user_input', tool_input: { questions: [] }, tool_response: {} });
+  assert.equal(await revisionOf(g), declared);
+
+  // 不认识的工具不自动记录。
+  const h = await fixture();
+  await start(h);
+  const plain = await revisionOf(h);
+  await event(h, 'PostToolUse', { tool_name: 'some_other_question_tool', tool_input: {}, tool_response: {} });
+  assert.equal(await phaseOf(h), 'executing');
+  assert.equal(await revisionOf(h), plain);
 });
 test('提问工具按宿主分表：原生与 Codeg MCP 名称置 waiting-user，跨宿主名称不误认', async () => {
   const { claudeEvent, claudeStart } = await import('./helpers.mjs');

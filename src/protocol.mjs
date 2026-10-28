@@ -586,15 +586,17 @@ export function stop(state, project, session, event = {}, { root } = {}) {
   // 提问等待用户、本回合声明为纯操作时不核对。
   if (['waiting-user', 'operation-only'].includes(session.phase)) return {};
   const task = session.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
-  // 计划阶段没向用户提问确认分包与 Worker/Reviewer 通道就收尾时，挡一次提醒补齐（已调提问工具或发 waiting-user 的已在上方放行）。
-  if (session.permissionMode === 'plan' || (task?.lifecycle === 'active' && task.permissions?.mode === 'plan')) {
+  if (!task || task.lifecycle !== 'active' || task.route === 'operation-only') return {};
+  // 只有本回合显式进入任务阶段（task-start/phase，session.phase 不随新回合继承）或任务已声明 plans 时，
+  // 才在计划模式下核对分包与通道；普通解释不因 mode=plan 单独阻挡，也不扫描自然语言猜测意图。
+  const planDelivery = session.phase !== 'unknown' || Boolean(task.plans?.length);
+  if (planDelivery && (session.permissionMode === 'plan' || task.permissions?.mode === 'plan')) {
     session.stopBlockedTurn = session.turnId;
     return {
       decision: 'block',
-      reason: 'workflow 计划交付核对：当前处于计划阶段但尚未向用户提问确认。若本回合在交付计划，请列出建议分流与工作包划分（分几个包、每包范围与依赖，或说明免拆包理由），并按提问路径请用户指定 Worker 与 Reviewer 通道（提问工具会自动记 waiting-user，文本提问先发 signal phase --phase waiting-user）；若本回合只是回答讨论而非交付计划，直接回复即可（本回合不再重复阻挡）。',
+      reason: 'workflow 计划交付核对：本回合已进入计划交付但尚未向用户提问确认。若本回合在交付计划，请列出建议分流与工作包划分（分几个包、每包范围与依赖，或说明免拆包理由），按提问路径请用户指定 Worker 与 Reviewer 通道，并在计划末尾写明 spec 影响（无影响写“无”）；结构化提问工具会自动记 waiting-user，文本提问先发 signal phase --phase waiting-user。若本回合只是回答讨论而非交付计划，直接回复即可（本回合不再重复阻挡）。',
     };
   }
-  if (!task || task.lifecycle !== 'active' || task.route === 'operation-only') return {};
   // 有包在途也挡一次：Codeg 等宿主不会在子任务结束时唤醒父会话，Lead 收尾就再也收不到结果。
   const inflight = Object.entries(task.packages || {}).filter(([, item]) => item.status === 'dispatched');
   if (inflight.length) {

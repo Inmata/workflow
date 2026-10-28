@@ -62,7 +62,7 @@ spec 位于 `.spec/<id>/spec.md`，`<id>` 为目录名，可嵌套，`.spec` 内
 
 role-claim 的 taskId 填工作包所属的 Lead 任务 ID（仅作标识，不绑定任务）；只能在会话没有自己的活动任务时发出，同一会话不能改声明其他角色；声明后该会话的 task-start、packages、task-end 等业务信号返回 `ROLE`。宿主内置子代理的事件带 `agent_id`（Claude Agent 工具、Codex spawn_agent 均实测，`session_id` 与父会话相同），整体放行，不开回合。内置子代理与 Lead 共用会话，没有自己的 workflow 身份：它调用本插件 signal（直接或组合命令）时只回一条说明，信号不记录、状态不变，让它直接完成工作包交回 Lead。
 
-phase 为 `unknown`、`operation-only`、`executing`、`waiting-user`、`delivering`。`operation-only` 无经验回执要求。例行查看、指定提交 push、无冲突快进 pull 在文档中分流，插件不执行业务命令。
+phase 为 `unknown`、`operation-only`、`executing`、`waiting-user`、`delivering`。`operation-only` 无经验回执要求。例行查看、指定提交 push、无冲突快进 pull 在文档中分流，插件不执行业务命令。已识别的结构化提问工具（宿主原生与 Codeg MCP）在 PostToolUse 自动把 phase 置为 `waiting-user`，不必先发 phase；同一回合重复调用或已显式声明 waiting-user 时不重复修改。其他工具与普通文本提问仍由 Lead 显式发 phase。
 
 disposition（旧接口兼容，不再是 task-end 的前置）：
 
@@ -81,8 +81,9 @@ packages 的 `handle` 填宿主委派 ID（Codeg task_id）时，委派状态查
 | 未绑定、缺身份、子角色会话、已中断 | 放行 |
 | stop_hook_active=true，或本回合已挡过（`session.stopBlockedTurn` 等于当前 turnId） | 放行 |
 | phase 为 waiting-user 或 operation-only | 放行 |
-| 计划阶段（`permission_mode=plan` 或活动任务 `permissions.mode=plan`）且尚未 waiting-user | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：提醒交付计划时列出工作包划分并询问用户指定 Worker 与 Reviewer 通道 |
 | 绑定任务不是 active，或 route=operation-only | 放行 |
+| 计划模式（`permission_mode=plan` 或活动任务 `permissions.mode=plan`）但本回合没有显式 `task-start`/`phase`，活动任务也未声明 `plans` | 放行：普通解释不因 `mode=plan` 单独核对；不扫描自然语言或文件名猜意图 |
+| 计划模式且本回合已显式进入任务阶段（`session.phase` 非 `unknown`，不跨回合继承）或活动任务已声明 `plans`，尚未 waiting-user | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：提醒交付计划时列出工作包划分、询问用户指定 Worker 与 Reviewer 通道，并写明 spec 影响；实际 spec 漂移仍由 task-end 门禁检查 |
 | 有 dispatched 工作包 | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：列出在途包与 handle。在途包全部是 `builtin:` 通道时，说明宿主会在子代理结束时通知本会话，只需向用户说明在等什么；否则要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明暂停原因与接续方式（Codeg 不会在委派结束时唤醒 Lead） |
 | 其余（Lead 的活动任务尚未 task-end） | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：有门禁缺项时列出缺项，要求补齐后 task-end 或向用户说明未完成项；无缺项时提醒发 task-end；任务关联的计划未改动时，同一 reason 附回写提醒 |
 | Interrupt / StopFailure | 增 interruptEpoch、撤销票据、挂起任务、保存 business-incomplete、释放会话归属；同一任务仍被其他有效 Lead 会话持有时只保存本会话，不挂起任务 |
