@@ -205,7 +205,9 @@ export function gateMissing(state, task, finalRef, root) {
 function specMissing(state, task, finalRef, root) {
   root ||= state.projects[task.projectId]?.root;
   if (task.route === 'operation-only' || !root) return { missing: [], findings: [] };
-  const report = checkSpecs(root, { ref: finalRef || undefined });
+  // 门禁是日常收尾路径：非 Git 且没有 .spec 的接入项目没有版本可查，维持原有“无 spec”跳过；
+  // 显式 finalRef 在 Git 内无效、或非 Git 但存在 .spec 时仍报 spec-check:git。
+  const report = checkSpecs(root, { ref: finalRef || undefined, skipNonGitNoSpec: true });
   const missing = [...new Set(report.findings.map(f => `spec:${f.id}`))];
   if (report.error) missing.push(`spec-check:${report.error}`);
   return { missing, findings: report.findings };

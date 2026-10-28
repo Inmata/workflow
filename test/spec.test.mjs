@@ -190,6 +190,10 @@ test('显式 ref 读取失败与无 spec 区分：非 Git 目录或无 spec 也�
   const invalid = checkSpecs(root, { ref: 'no-such-ref' });
   assert.equal(invalid.ok, false);
   assert.equal(invalid.error, 'git');
+  // 任务门禁选项只放宽“非 Git 且没有 .spec”这一种：有 .spec 或 ref 在 Git 内无效仍失败。
+  assert.deepEqual(checkSpecs(empty, { ref: 'main', skipNonGitNoSpec: true }), { ok: true, ref: 'main', skipped: 'no-spec', findings: [] });
+  assert.equal(checkSpecs(plain, { ref: 'main', skipNonGitNoSpec: true }).error, 'git');
+  assert.equal(checkSpecs(root, { ref: 'no-such-ref', skipNonGitNoSpec: true }).error, 'git');
 });
 
 test('frontmatter 解析：块列表、行内列表、引号与注释；其他字段忽略', () => {

@@ -340,6 +340,25 @@ test('旧任务里记录的 spec 豁免也不抵扣；spec-check 可豁免', asy
   assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
 });
 
+test('非 Git 且无 .spec 的接入项目：带 finalRef 收尾不新增 spec-check 缺项', async () => {
+  const f = await fixture();
+  await emit(f, { action: 'task-start', goal: '接入项目日常改动', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  const ended = await emit(f, { action: 'task-end', finalRef: 'v1' });
+  assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
+  const task = (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
+  assert.equal(task.lifecycle, 'complete');
+  assert.equal(task.finalRef, 'v1');
+
+  // 反向：非 Git 但存在 .spec 时不能当成无 spec，仍报 spec-check:git。
+  // Git 仓库内无效 finalRef 的反向用例已由上方“旧任务里记录的 spec 豁免也不抵扣”覆盖。
+  const g = await fixture();
+  await mkdir(path.join(g.project, '.spec', 'a'), { recursive: true });
+  await writeFile(path.join(g.project, '.spec', 'a', 'spec.md'), '---\ncode:\n  - README.md\n---\n');
+  await emit(g, { action: 'task-start', goal: '有 spec 的非 Git 项目', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  const blocked = await emit(g, { action: 'task-end', finalRef: 'v1' });
+  assert.deepEqual(blocked.result.missing, ['spec-check:git']);
+});
+
 test('delegated 门禁同时列出 spec 缺项；task show 显示 spec 发现与变更条数', async () => {
   const f = await specProject();
   await delegated(f);

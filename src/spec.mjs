@@ -87,15 +87,25 @@ function commitSpecs(root, commit) {
   }
   return specs.sort((a, b) => a.spec.localeCompare(b.spec));
 }
+// 没有 Git 边界的目录没有可读历史；工作树的 .git 可以是目录或文件。
+function insideGitWorkTree(root) {
+  for (let cursor = root; ; cursor = path.dirname(cursor)) {
+    try { lstatSync(path.join(cursor, '.git')); return true; } catch { /* 继续向上找仓库边界 */ }
+    if (path.dirname(cursor) === cursor) return false;
+  }
+}
 // 检查版本缺省为 HEAD；只有检查 HEAD 时才看当前 worktree 的文件与未提交改动。
 // 显式 ref 先固定成提交 OID，spec 清单、正文、code 路径和存在性都取自该提交。
-// 显式 ref 没有可跳过的“无 spec”分支：先解析 ref，非 Git 目录或 ref 无效一律按读取失败报错。
-export function checkSpecs(root, { ref } = {}) {
+// 显式 ref 默认没有可跳过的“无 spec”分支：先解析 ref，非 Git 目录或 ref 无效一律按读取失败报错。
+// skipNonGitNoSpec 供任务门禁使用：检查根不在 Git 工作树内且本地没有 .spec 时没有版本可查，
+// 按无 spec 跳过；Git 内的无效 ref、或非 Git 但存在 .spec 仍按读取失败报错。CLI 不开启。
+export function checkSpecs(root, { ref, skipNonGitNoSpec = false } = {}) {
   const label = ref || 'HEAD';
   const head = label === 'HEAD';
   // HEAD 且工作区没有 .spec 时不必拉起 git，保持原有快速跳过。
   let specs = head ? collectSpecs(root) : null;
   if (head && !specs) return { ok: true, ref: label, skipped: 'no-spec', findings: [] };
+  if (!head && skipNonGitNoSpec && !insideGitWorkTree(root) && !collectSpecs(root)) return { ok: true, ref: label, skipped: 'no-spec', findings: [] };
   const findings = [];
   let displayRef = label;
   try {

@@ -103,7 +103,7 @@ git commit -m "refactor: search 无需更新" -m "重命名内部变量，行为
 
 - 浅克隆：提交历史不完整，无法判断哪些提交没被 spec 见过。返回 `spec-check:shallow`。
 - git 不可用或超时：返回 `spec-check:git`。
-- 项目没有 `.spec` 目录：跳过，不报缺项。
+- 项目没有 `.spec` 目录：跳过，不报缺项。非 Git 的接入项目即使 task-end 带了 `finalRef` 也按此处理；非 Git 但存在 `.spec` 时仍报 `spec-check:git`。
 
 前两种是“没法检查”，不是漂移。Lead 写明理由后可以用 waiver 跳过（step 写 `spec-check` 或完整条目），跳过记入任务。
 
