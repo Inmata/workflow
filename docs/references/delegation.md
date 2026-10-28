@@ -5,7 +5,16 @@ Lead 派发 Worker/Reviewer 时读本页；简单任务（lead-direct）不需�
 ## 派工
 
 1. 使用已有确认计划，核对实际工作区、分支、基准及用户未提交改动。每包写目标、产出、最小读取、允许修改范围、业务所有权、接口签名/错误/异步语义、真实消费入口、验收、指定验证与包内已授权的补测范围、停止条件、相关 spec（`.spec/<id>/spec.md` 路径列表，加上计划“spec 影响”中该包对应的改后验收句子；无则写无）和相关技能（本机实际存在、经用户选定的技能名及用途；无则写无）。依赖提供方先交接口，消费方继续独立部分；真实入口的接通属于原任务，不能留到泛称的最终适配。无法可靠带入基线时报告依赖，不制造生产 mock。计划、验收文档或参照资料只存在于未提交改动、不在派工基准里时，非默认分支上先按 `allowedPaths` 做一次本地基线 commit，默认分支或含用户无关改动时先向用户报告确认；不能让 Worker 靠读主目录绝对路径对齐基线。
-2. 根据独立性、关键路径、收益和工具上限建议并发，不默认人数。task-start 声明 route=delegated；在派发、消费结果、审查结论三个节点各用一次批量 `packages` 记账（`handle`=宿主委派 ID；`channel` 填实际通道，如 `codeg:claude_code`、`builtin:general-purpose`、`lead`），工作包里写明 packageId，并要求子会话先发 `role-claim`。用户指定了各角色用哪个智能体时，task-start 带 `channels`，整个任务沿用，每次派发前核对。要换通道或 Lead 自己接手 worker 包，先告诉用户原因并取得同意，再在该次 `packages` 附 `change` 列出这些包，否则插件以 `CHANNEL` 拒绝。宿主内置子代理与 Lead 共用会话、没有 workflow 身份：派给它的包不要求 role-claim，由 Lead 记账。沿用已有角色/后续审查授权；缺角色、新增、更换和范围扩大时只补相应决定。派工直接引用角色上下文返回的 documents 路径，不手写角色入口。可靠隔离 worktree，交接前原负责人停止修改并保留检查点；新负责人核对新基准和剩余事项，不重做已有调查。工具类型、模型和设置沿用指定，Codeg 操作见[适配](../adapters/codeg.md)。
+2. 根据独立性、关键路径、收益和工具上限建议并发，不默认人数。task-start 声明 route=delegated；在派发、消费结果、审查结论三个节点用 packages 记账：单个包用 `--package` 配 `--status`、`--ref` 等便捷参数，同批多个包或 `change` 用 `--input`（`handle`=宿主委派 ID；`channel` 填实际通道，如 `codeg:claude_code`、`builtin:general-purpose`、`lead`），工作包里写明 packageId，并要求子会话先发 `role-claim`。单个包的常用写法：
+
+   ```powershell
+   node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-w1 --package w1 --role worker --status dispatched --channel codeg:claude_code --handle <委派ID>
+   node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-w1-done --package w1 --status consumed --ref <交付提交>
+   node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-r1 --package r1 --role reviewer --status dispatched --channel codeg:codex --reviews w1
+   node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-r1-done --package r1 --status consumed --verdict PASS --ref <被审提交>
+   ```
+
+   `--ref` 对 worker 记 `deliveredRef`、对 reviewer 记 `reviewedRef`；一次消费并派下一阶段等同一信号里的多个包仍用 `--input` 附业务 JSON。用户指定了各角色用哪个智能体时，task-start 带 `channels`，整个任务沿用，每次派发前核对。要换通道或 Lead 自己接手 worker 包，先告诉用户原因并取得同意，再在该次 `packages` 附 `change` 列出这些包，否则插件以 `CHANNEL` 拒绝。宿主内置子代理与 Lead 共用会话、没有 workflow 身份：派给它的包不要求 role-claim，由 Lead 记账。沿用已有角色/后续审查授权；缺角色、新增、更换和范围扩大时只补相应决定。派工直接引用角色上下文返回的 documents 路径，不手写角色入口。可靠隔离 worktree，交接前原负责人停止修改并保留检查点；新负责人核对新基准和剩余事项，不重做已有调查。工具类型、模型和设置沿用指定，Codeg 操作见[适配](../adapters/codeg.md)。
 
 ## 等待与反馈
 

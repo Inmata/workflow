@@ -263,6 +263,7 @@ npm run demo
 
 - 规则与入口减负：`docs/roles/lead.md` 收敛为要点加场景导航表，协作、spec 与计划、UI 设计拆到 `docs/references/` 按需读取（简单任务首读减少 43%）；同一会话普通后续回合改为短入口，`SessionStart`（含压缩恢复）、角色变更与版本升级恢复完整入口。
 - 一次调用信号：新增 `signal <action> --session --turn --id [字段]` 子命令，CLI 只读补齐票据与 `expectedRevision`，`lead-direct` 任务只需 `task-start` 与 `task-end` 两条命令，不必先写身份临时文件；`packages` 等结构化字段通过 `--input` 附业务 JSON，旧完整 payload 保持兼容。
+- 高频载荷一次调用：`signal packages` 可用 `--package`、`--status`、`--role`、`--channel`、`--handle`、`--ref`、`--depends-on`、`--supersedes`、`--verdict`、`--reviews` 等便捷参数记录单个工作包的派发、消费与审查结论；`task-end` 用 `--validation-ref` 和可重复的 `--evidence` 提交验证，`knowledge capture` 也可用少量字段保存短材料。同批多个包、`change`、`waivers` 等继续用 `--input` 附业务 JSON，旧 `--input`/`--base64`、同请求重放与 revision 冲突语义不变。单 Worker + 单 Reviewer 无返修流程的载荷文件从 4 次降到 1 次，总工具调用从 9 次降到 6 次（同批多包仍用一次 `--input`）。
 - 计划交付分包与选人：Lead 交付计划时一次列明工作包划分（几包、每包范围与依赖，或说明免拆包理由）和各包所用通道；任务已声明的通道或用户已指定的安排直接沿用，Lead 直接执行的任务不问 Worker，只有真实新增的角色或通道才请你确认。仅本回合显式进入计划交付阶段才核对，普通讨论不因计划模式单独阻挡；进入计划交付但未提问就收尾时，Stop 挡一次提醒补齐。
 - 分支本地 commit 与阻塞等待：非默认分支上按 `allowedPaths` 创建本地交付/检查点 commit 默认允许，直接用 Git commit OID 对齐版本（向默认分支直提、`git push`、改版本、打 tag 与发 Release 仍须显式授权）；Codeg 委派改为 `wait_ms: 0` 批量阻塞等待，不再按 60s 轮询涨上下文。
 - hook 与 CLI 降耗：消除锁内外重复 `git rev-parse`、Stop 重复落盘与低频模块静态加载，实测子进程入口与 Stop 中位数耗时降低约 62%。

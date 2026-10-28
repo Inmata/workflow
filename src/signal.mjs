@@ -1,9 +1,12 @@
 import { fail, SCHEMA_VERSION } from './store.mjs';
-import { identifier, sessionKey } from './protocol.mjs';
+import { identifier, sessionKey, taskKey } from './protocol.mjs';
 
 export const SIGNAL_ACTIONS = ['task-start', 'task-update', 'phase', 'packages', 'role-claim', 'task-end', 'disposition'];
 const IDENTITY_FIELDS = ['schemaVersion', 'projectId', 'sessionId', 'turnId', 'ticket', 'interruptEpoch', 'expectedRevision', 'signalId', 'action'];
-const FIELD_OPTIONS = ['task', 'goal', 'route', 'mode', 'paths', 'paths-mode', 'plans', 'channels', 'parent', 'phase', 'delivery', 'role', 'package', 'final-ref'];
+const FIELD_OPTIONS = ['task', 'goal', 'route', 'mode', 'paths', 'paths-mode', 'plans', 'channels', 'parent', 'phase', 'delivery', 'role', 'package', 'final-ref', 'status', 'handle', 'channel', 'ref', 'depends-on', 'supersedes', 'verdict', 'reviews', 'base-ref', 'note', 'worktree', 'validation-ref', 'evidence'];
+// 单个工作包的便捷字段；同批多个包、change 等深层结构仍用 --input。
+const PACKAGE_OPTIONS = ['status', 'channel', 'handle', 'ref', 'depends-on', 'supersedes', 'verdict', 'reviews', 'base-ref', 'note', 'worktree'];
+const VALIDATION_OPTIONS = ['validation-ref', 'evidence'];
 // task-update 只接受这些便捷字段；其余字段属于其他动作，给出即报错，不能静默丢弃。
 const TASK_UPDATE_OPTIONS = ['task', 'goal', 'mode', 'paths', 'paths-mode'];
 // 命令行全局解析器还接受 --path、--ref 等与信号无关的选项；task-update 只放行实际会用到的公共选项。
@@ -36,6 +39,38 @@ function channels(value) {
     return [pair.slice(0, at), pair.slice(at + 1)];
   }));
 }
+// 重复 --evidence 在解析器里收集为数组，其余字段仍是单个字符串；不安全字符检查对两者一致。
+const values = value => Array.isArray(value) ? value : value === undefined ? [] : [value];
+// 命令行与 --input 可各给一半：同一字段两处值不同拒绝，相同值可合并。
+function mergeField(merged, cli, key, flag, label = key) {
+  if (cli[key] === undefined) return;
+  if (merged[key] !== undefined && JSON.stringify(merged[key]) !== JSON.stringify(cli[key])) {
+    fail('INPUT', `--${flag} 与 --input 的 ${label} 不一致；同一个值只在一处给出`);
+  }
+  merged[key] = cli[key];
+}
+// 单个工作包的便捷写法。--ref 按包角色落到 deliveredRef（worker）或 reviewedRef（reviewer）；
+// 角色取 --role 或已有包记录，两者都没有时要求显式给出，避免把交付引用写到错误字段。
+function packageFromCli(state, projectId, taskId, options) {
+  const item = {};
+  if (options.role !== undefined) item.role = options.role;
+  for (const [flag, key] of Object.entries({ status: 'status', channel: 'channel', handle: 'handle', note: 'note', worktree: 'worktree', 'base-ref': 'baseRef', supersedes: 'supersedes', verdict: 'verdict', reviews: 'reviews' })) {
+    if (options[flag] !== undefined) item[key] = options[flag];
+  }
+  if (options['depends-on'] !== undefined) item.dependsOn = list(options['depends-on']) || [];
+  if (options.ref !== undefined) {
+    const role = options.role || state.tasks?.[taskKey(projectId, taskId)]?.packages?.[options.package]?.role;
+    if (!['worker', 'reviewer'].includes(role)) fail('INPUT', 'packages 的 --ref 需要知道包角色：新建包时同时给 --role，或只对已有包使用；worker 记 deliveredRef，reviewer 记 reviewedRef');
+    item[role === 'reviewer' ? 'reviewedRef' : 'deliveredRef'] = options.ref;
+  }
+  return item;
+}
+function validationFromCli(options) {
+  const value = {};
+  if (options['validation-ref'] !== undefined) value.ref = options['validation-ref'];
+  if (options.evidence !== undefined) value.evidence = values(options.evidence);
+  return value;
+}
 // 便捷入口：身份字段只从本机状态取，不猜“最近会话”；会话、回合必须由调用方给出且与状态一致。
 // 只拼出与 --input 写法相同的规范 payload，仍由 PostToolUse 的 acceptSignal 校验和写入，两条入口共用一个状态机。
 export function buildSignal(state, resolved, action, options, extra = {}) {
@@ -51,8 +86,18 @@ export function buildSignal(state, resolved, action, options, extra = {}) {
   const fallbackTask = session.taskId || (action === 'role-claim' ? `claim-${options.package || options.role || 'role'}` : undefined);
   const taskId = identifier(options.task || fallbackTask, '--task');
   // hook 只认单条直接调用，命令里出现这些字符（引号内也算）整条信号不被接受；在这里先拒，免得白跑一轮。
-  const unsafe = FIELD_OPTIONS.filter(key => typeof options[key] === 'string' && /[;|&`$<>\r\n]/.test(options[key])).map(key => `--${key}`);
+  const unsafe = FIELD_OPTIONS.filter(key => values(options[key]).some(value => typeof value === 'string' && /[;|&`$<>\r\n]/.test(value))).map(key => `--${key}`);
   if (unsafe.length) fail('INPUT', `${unsafe.join('、')} 含 ; | & $ < > 或反引号、换行，hook 不会接受这条命令；改写文字，或把字段写进 JSON 文件用 --input 传`);
+  // 新便捷字段只在对应动作生效；给错动作直接报错，避免看起来成功却没有写入。
+  // task-update 自己会按公共选项清单报 UNSUPPORTED，这里不抢先改变它的错误码。
+  if (action !== 'packages' && action !== 'task-update') {
+    const stray = PACKAGE_OPTIONS.filter(key => options[key] !== undefined);
+    if (stray.length) fail('INPUT', `${stray.map(key => `--${key}`).join('、')} 只用于 packages 信号${action === 'task-end' ? '；验证证据用 --validation-ref 与 --evidence' : ''}`);
+  }
+  if (action !== 'task-end') {
+    const stray = VALIDATION_OPTIONS.filter(key => options[key] !== undefined);
+    if (stray.length) fail('INPUT', `${stray.map(key => `--${key}`).join('、')} 只用于 task-end 信号；packages 的 validation 随同批载荷放进 --input`);
+  }
   const misplaced = Object.keys(extra).filter(key => IDENTITY_FIELDS.includes(key) || key === 'taskId');
   if (misplaced.length) fail('INPUT', `--input 不要带身份字段（${misplaced.join('、')}），由命令行参数和本机状态补齐`);
   // 同一 signalId 重放时复原首次的 expectedRevision（接受后 revision 恰好 +1），正文一致才能命中回执而不是 SIGNAL_ID。
@@ -88,7 +133,38 @@ export function buildSignal(state, resolved, action, options, extra = {}) {
     });
   } else if (action === 'phase') Object.assign(fields, { phase: options.phase, deliveryId: options.delivery });
   else if (action === 'role-claim') Object.assign(fields, { role: options.role, packageId: options.package });
-  else if (action === 'task-end') Object.assign(fields, { finalRef: options['final-ref'] });
+  else if (action === 'packages') {
+    if (options.package !== undefined) {
+      // 便捷参数只表达一个包；同批多个包或 change 仍用 --input，两处都给 packages 时报冲突而不是覆盖。
+      if (extra.packages !== undefined) fail('INPUT', '--package 与 --input 的 packages 不能同时给出；同批多个包、change 等继续用 --input');
+      const item = packageFromCli(state, projectId, taskId, options);
+      if (!Object.keys(item).length) fail('INPUT', '--package 需要至少一个包字段（如 --status、--role、--ref、--verdict）');
+      fields.packages = [{ packageId: identifier(options.package, '--package'), ...item }];
+    }
+  } else if (action === 'task-end') {
+    Object.assign(fields, { finalRef: options['final-ref'] });
+    // 最常用形态：--final-ref <提交> --evidence "…" --evidence "…"；--final-ref 缺省充当 validation.ref。
+    // waivers、多项复杂 validation 仍放在 --input，两处同一子字段冲突时报 INPUT。
+    const cliValidation = validationFromCli(options);
+    if (Object.keys(cliValidation).length) {
+      if (options['validation-ref'] !== undefined && options['final-ref'] !== undefined && options['validation-ref'] !== options['final-ref']) {
+        fail('INPUT', '--validation-ref 与 --final-ref 不一致：validation.ref 必须等于最终交付版本');
+      }
+      if (cliValidation.ref === undefined && options['final-ref'] !== undefined) cliValidation.ref = options['final-ref'];
+      if (cliValidation.evidence !== undefined && cliValidation.ref === undefined && extra.validation?.ref === undefined) {
+        fail('INPUT', '--evidence 需要 --validation-ref 或 --final-ref；完整 validation 也可放进 --input');
+      }
+      if (extra.validation === undefined) fields.validation = cliValidation;
+      else {
+        if (!extra.validation || typeof extra.validation !== 'object' || Array.isArray(extra.validation)) fail('INPUT', '--input 的 validation 需为 {ref, evidence[]} 对象，才能与命令行字段合并');
+        const merged = { ...extra.validation };
+        mergeField(merged, cliValidation, 'ref', 'validation-ref', 'validation.ref');
+        mergeField(merged, cliValidation, 'evidence', 'evidence', 'validation.evidence');
+        delete extra.validation;
+        fields.validation = merged;
+      }
+    }
+  }
   for (const key of Object.keys(fields)) if (fields[key] === undefined) delete fields[key];
   const payload = { schemaVersion: SCHEMA_VERSION, projectId, sessionId, turnId, taskId, ticket: session.ticket, interruptEpoch: session.interruptEpoch, expectedRevision, signalId, action, ...extra, ...fields };
   if (action === 'packages' && !Array.isArray(payload.packages)) fail('INPUT', 'packages 信号需要 --input 提供 {packages:[...]}');

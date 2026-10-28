@@ -18,11 +18,11 @@ export function signalUsage(cli = cliPath()) {
     examples: [
       `${head} task-start ${who} --task <taskId> --route lead-direct --goal "<一句话目标>" --mode write --paths <相对路径,逗号分隔>`,
       `${head} task-update ${who} --task <taskId> [--goal "<新目标>"] [--mode write|read-only|plan] [--paths <相对路径,逗号分隔> --paths-mode replace|append]`,
-      `${head} task-end ${who} [--final-ref <commit>] [--input <只含 validation/waivers 的 JSON 文件>]`,
-      `${head} packages ${who} --input <只含 packages/change/validation 的 JSON 文件>`,
+      `${head} task-end ${who} [--final-ref <commit>] [--validation-ref <commit> --evidence "<证据>" --evidence "<证据>"]`,
+      `${head} packages ${who} --package <packageId> --status <dispatched|delivered|consumed|canceled|failed|waived> [--role worker|reviewer] [--channel <通道>] [--handle <委派ID>] [--ref <交付/审查提交>] [--depends-on a,b] [--supersedes <旧包>] [--verdict PASS|FIX|BLOCKED --reviews <worker包>]`,
     ],
-    fallback: `${head} --input <完整 payload 的 UTF-8 JSON 文件>（兼容：${head} --base64 <...>）`,
-    rule: '单独直接调用：不加 cd、&&、;、管道、重定向或变量赋值（如 $wf=...）。子命令写法的 --input 只放结构化字段，不带身份字段；同一 signalId 重试命令保持不变。',
+    fallback: `${head} packages ${who} --input <同批多个包或 change 的 JSON 文件>（只放业务字段）；完整 payload 兼容 ${head} --input <完整 payload 的 UTF-8 JSON 文件>（或 ${head} --base64 <...>）`,
+    rule: '单独直接调用：不加 cd、&&、;、管道、重定向或变量赋值（如 $wf=...）。便捷参数只表达单个工作包，同批多个包、change 与 waivers 继续用 --input；task-end 的 validation.ref 缺省取 --final-ref。同一 signalId 重试命令保持不变。',
   };
 }
 // 后台学习会真实调用模型，接入不自动授权；Lead 在对齐后补问一次，并把完整命令交给用户或在授权后直接执行。
@@ -100,7 +100,7 @@ export async function projectContext(state, resolved, role = 'lead', sessionId, 
   const pending = Object.values(state.pending).filter(p => p.projectId === project.projectId && p.kind === 'knowledge-pending' && p.status === 'open').slice(0, 1);
   const identity = session && !session.interrupted ? { schemaVersion: 1, projectId: project.projectId, sessionId, taskId: session.taskId, turnId: session.turnId, ticket: session.ticket, interruptEpoch: session.interruptEpoch, expectedRevision: session.revision } : null;
   const instructions = {
-    lead: '首次或范围变化时读公共方法和 Lead 指引。交付计划时一次给出建议分流、工作包划分（几包、每包范围与依赖）和所用通道；已有明确安排直接沿用，无 Worker 的任务不问 Worker，真实新增角色或通道时才按提问路径问用户。新业务用 signal task-start 声明 route（identity.taskId 为空时自拟 taskId，如 task-<简短英文>；续接沿用原 ID）；同一任务改目标或增/减权限范围用 signal task-update（仅该任务有效 Lead；只记录本机声明，宿主只读/计划权限仍优先），不必结束重开；简单任务 lead-direct 只需 task-start 和 task-end 两条信号。结构化提问工具会自动记 waiting-user，文本提问先发 phase waiting-user；派发/消费/审查结论用 packages 批量记录（handle 填委派 ID，channel 填实际通道；用户指定通道时 task-start 带 channels，换通道先告诉用户并附 change；换新 packageId 返修用 supersedes）。明确纠正、失败原因或已验证方法出现时按 learningGuide 用 knowledge capture 保存；任务开始或范围变化用 knowledge select 检索经验。当前用户要求优先于历史经验。受委派的工作包会话（给出 packageId 与 worker/reviewer 角色）不按 Lead 行事：先 signal role-claim --role <角色> --package <packageId>，再读对应角色指引。',
+    lead: '首次或范围变化时读公共方法和 Lead 指引。交付计划时一次给出建议分流、工作包划分（几包、每包范围与依赖）和所用通道；已有明确安排直接沿用，无 Worker 的任务不问 Worker，真实新增角色或通道时才按提问路径问用户。新业务用 signal task-start 声明 route（identity.taskId 为空时自拟 taskId，如 task-<简短英文>；续接沿用原 ID）；同一任务改目标或增/减权限范围用 signal task-update（仅该任务有效 Lead；只记录本机声明，宿主只读/计划权限仍优先），不必结束重开；简单任务 lead-direct 只需 task-start 和 task-end 两条信号。结构化提问工具会自动记 waiting-user，文本提问先发 phase waiting-user；派发/消费/审查结论用 packages 记录：单个包用 --package 加 --status、--ref 等便捷参数（reviewer 结果加 --verdict/--reviews），同批多个包或 change 用 --input（handle 填委派 ID，channel 填实际通道；用户指定通道时 task-start 带 channels，换通道先告诉用户并附 change；换新 packageId 返修用 supersedes）。明确纠正、失败原因或已验证方法出现时按 learningGuide 用 knowledge capture 保存；任务开始或范围变化用 knowledge select 检索经验。当前用户要求优先于历史经验。受委派的工作包会话（给出 packageId 与 worker/reviewer 角色）不按 Lead 行事：先 signal role-claim --role <角色> --package <packageId>，再读对应角色指引。',
     worker: '先读公共方法和 Worker 指引。只读工作包直接资料，必要的直接依赖可读；按阶段或范围变化说明【目标】和最小读取范围。不加载 Lead 调度，不递归创建代理，不发 task-start/packages。协作需要 workflow 身份而当前没有时，停止寻找并报告 Lead。复用有效证据；包内已授权的补测直接做，范围外补测先说明缺口交 Lead。发现随正常交付回报。',
     reviewer: '先读公共方法、Reviewer 指引和工作包指定范围。只读审查，不改源码、测试或配置，不递归创建代理，不发 task-start/packages。没有 workflow 身份时，停止寻找并报告 Lead。复用与待审版本匹配的证据；包内已授权的定向检查直接做，范围外补测先说明缺口交 Lead。完成即交回。',
   };

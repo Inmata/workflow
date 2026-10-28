@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { readdir, lstat } from 'node:fs/promises';
-import { digest, fail, mutate, readState, readText, writeJSON } from './store.mjs';
-import { currentIdentity, identifier, textField, taskKey } from './protocol.mjs';
+import { digest, fail, mutate, readState, readText, SCHEMA_VERSION, writeJSON } from './store.mjs';
+import { currentIdentity, identifier, sessionKey, textField, taskKey } from './protocol.mjs';
 import { document, safeDocument, SENSITIVE, writeDocuments } from './documents.mjs';
 import { projectFor, learningConfig } from './learning-config.mjs';
 
@@ -71,6 +71,41 @@ export async function capture(directory, input) {
     }
     return { id: item.id, saved: true, status: 'pending' };
   });
+}
+const CAPTURE_IDENTITY_FIELDS = ['schemaVersion', 'projectId', 'sessionId', 'turnId', 'taskId', 'ticket', 'interruptEpoch', 'expectedRevision', 'signalId', 'action'];
+const splitList = value => value.split(',').map(item => item.trim()).filter(Boolean);
+// 便捷 capture：身份从本机状态补齐（与 signal 相同），一条短材料不必先写 JSON 文件。
+// 与 --input 同时给出时只放补充材料字段；身份字段和同字段冲突都返回 INPUT，不静默覆盖。
+export function buildCapture(state, resolved, options, extra = {}) {
+  const sessionId = identifier(options.session, '--session');
+  const turnId = identifier(options.turn, '--turn');
+  const projectId = resolved.project.projectId;
+  const session = state.sessions[sessionKey(projectId, sessionId)];
+  if (!session) fail('IDENTITY', '当前项目没有这个会话；--session 取 context identity.sessionId');
+  if (session.turnId !== turnId || session.interrupted) fail('STALE', `回合已失效（当前 turnId=${session.interrupted ? '已中断' : session.turnId}）；按当前 identity 重发`);
+  const misplaced = Object.keys(extra).filter(key => CAPTURE_IDENTITY_FIELDS.includes(key));
+  if (misplaced.length) fail('INPUT', `--input 不要带身份字段（${misplaced.join('、')}），由命令行参数和本机状态补齐`);
+  const supplement = extra.observation && typeof extra.observation === 'object' && !Array.isArray(extra.observation) ? extra.observation : extra;
+  const taskId = identifier(options.task || session.taskId, '--task');
+  const cli = {};
+  for (const [flag, key] of Object.entries({ id: 'id', kind: 'kind', summary: 'summary', conditions: 'conditions', knowledge: 'knowledgeId' })) {
+    if (options[flag] !== undefined) cli[key] = options[flag];
+  }
+  if (options.evidence !== undefined) cli.evidence = Array.isArray(options.evidence) ? options.evidence : [options.evidence];
+  if (options.paths !== undefined) cli.paths = splitList(options.paths);
+  if (options.incident !== undefined) cli.incidentId = options.incident;
+  if (options.explicit) cli.explicit = true;
+  if (options.verified) cli.verified = true;
+  const merged = { ...supplement };
+  for (const key of Object.keys(cli)) {
+    if (merged[key] !== undefined && JSON.stringify(merged[key]) !== JSON.stringify(cli[key])) fail('INPUT', `便捷参数与 --input 的 ${key} 不一致；同一个值只在一处给出`);
+    merged[key] = cli[key];
+  }
+  if (merged.incidentId === undefined) merged.incidentId = taskId;
+  // 必填项先在 CLI 点名，免得多跑一轮才由 capture 报 INPUT；完整材料仍可走 --input。
+  const missing = ['id', 'kind', 'summary', 'conditions', 'evidence'].filter(key => merged[key] === undefined || (Array.isArray(merged[key]) && !merged[key].length));
+  if (missing.length) fail('INPUT', `便捷 capture 缺少 ${missing.map(key => `--${key}`).join('、')}；完整材料可改用 --input <JSON文件>`);
+  return { schemaVersion: SCHEMA_VERSION, projectId, sessionId, turnId, taskId, ticket: session.ticket, interruptEpoch: session.interruptEpoch, expectedRevision: session.revision, ...merged };
 }
 export async function migrateCandidates(directory, root) {
   return mutate(directory, async state => {

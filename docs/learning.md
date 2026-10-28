@@ -110,8 +110,11 @@ node bin/workflow.mjs learning config set --global --input learning-config.json
 ```powershell
 node "<hook 给出的入口>" knowledge select --root "D:/项目" --query "修复登录请求超时" --path "src/login.mjs"
 node "<hook 给出的入口>" knowledge explain --root "D:/项目" --query "修复登录请求超时" --path "src/login.mjs"
+node "<hook 给出的入口>" knowledge capture --session <sessionId> --turn <turnId> --id obs-1 --kind failure --summary "一句话材料" --conditions "适用条件" --evidence "test:可定位证据"
 node "<hook 给出的入口>" knowledge capture --input observation.json
 ```
+
+短材料可用便捷字段（身份由本机状态补齐，`--evidence` 可重复；`--incident` 缺省用当前 taskId）；多字段或复杂材料仍用完整 JSON 文件。
 
 采集输入示例，身份取本次 `context.identity`，不得猜测或复制历史票据：
 

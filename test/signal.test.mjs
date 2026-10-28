@@ -13,14 +13,17 @@ function build(f, action, args = [], session = f) {
   return cli(['signal', action, '--state-dir', f.directory, '--root', f.project, '--session', session.sessionId, '--turn', session.turnId, ...args]);
 }
 const quote = value => /\s/.test(value) ? `"${value}"` : value;
-async function accept(f, action, args, session = f) {
+async function acceptCommand(f, action, args, commandArgs, session = f) {
   const run = build(f, action, args, session);
   assert.equal(run.status, 0, run.stdout + run.stderr);
-  const command = `node "${entry}" signal ${action} --session ${session.sessionId} --turn ${session.turnId} ${args.map(quote).join(' ')}`;
+  const command = `node "${entry}" signal ${action} --session ${session.sessionId} --turn ${session.turnId} ${commandArgs}`;
   const output = await event({ ...f, sessionId: session.sessionId, turnId: session.turnId }, 'PostToolUse', { tool_name: 'Bash', tool_input: { command }, tool_response: { output: run.stdout } });
   const text = output.hookSpecificOutput?.additionalContext;
   assert.ok(text?.startsWith('workflow 回执：'), JSON.stringify(output));
   return { payload: JSON.parse(run.stdout).workflow_signal, receipt: JSON.parse(text.slice('workflow 回执：'.length)) };
+}
+async function accept(f, action, args, session = f) {
+  return acceptCommand(f, action, args, args.map(quote).join(' '), session);
 }
 const startArgs = (id, extra = []) => ['--id', id, '--task', 'task-1', '--route', 'lead-direct', '--goal', '便捷 信号', '--mode', 'write', '--paths', 'README.md', ...extra];
 
@@ -74,6 +77,108 @@ test('并发两个会话各自补齐自己的身份，互不串用', async () =>
   assert.equal(a.receipt.accepted && b.receipt.accepted, true);
   assert.notEqual(a.payload.ticket, b.payload.ticket);
   assert.equal(b.payload.sessionId, 'session-2');
+});
+test('packages 便捷参数完成单包派发/消费/审查，经真实 PostToolUse 写入账本', async () => {
+  const f = await fixture();
+  await start(f);
+  const dispatched = await accept(f, 'packages', ['--id', 'p1', '--package', 'w1', '--role', 'worker', '--status', 'dispatched', '--channel', 'codeg:claude_code', '--handle', 'task-9', '--depends-on', 'w0', '--base-ref', 'abc123']);
+  assert.equal(dispatched.receipt.accepted, true, JSON.stringify(dispatched));
+  const task = async () => Object.values((await readState(f.directory)).tasks)[0];
+  assert.deepEqual(
+    { role: (await task()).packages.w1.role, status: (await task()).packages.w1.status, channel: (await task()).packages.w1.channel, handle: (await task()).packages.w1.handle, dependsOn: (await task()).packages.w1.dependsOn, baseRef: (await task()).packages.w1.baseRef },
+    { role: 'worker', status: 'dispatched', channel: 'codeg:claude_code', handle: 'task-9', dependsOn: ['w0'], baseRef: 'abc123' },
+  );
+  // 消费时不重复 --role：--ref 按已有包角色落到 deliveredRef。
+  const consumed = await accept(f, 'packages', ['--id', 'p2', '--package', 'w1', '--status', 'consumed', '--ref', 'def456']);
+  assert.equal(consumed.receipt.accepted, true, JSON.stringify(consumed));
+  assert.equal((await task()).packages.w1.deliveredRef, 'def456');
+  const review = await accept(f, 'packages', ['--id', 'p3', '--package', 'r1', '--role', 'reviewer', '--status', 'dispatched', '--channel', 'codeg:codex', '--reviews', 'w1', '--handle', 'task-10']);
+  assert.equal(review.receipt.accepted, true, JSON.stringify(review));
+  const pass = await accept(f, 'packages', ['--id', 'p4', '--package', 'r1', '--status', 'consumed', '--verdict', 'PASS', '--ref', 'def456']);
+  assert.equal(pass.receipt.accepted, true, JSON.stringify(pass));
+  assert.deepEqual(
+    { reviews: (await task()).packages.r1.reviews, reviewedRef: (await task()).packages.r1.reviewedRef, verdict: (await task()).packages.r1.verdict },
+    { reviews: 'w1', reviewedRef: 'def456', verdict: 'PASS' },
+  );
+});
+test('task-end 便捷 validation 用 --final-ref 补 ref，证据可重复给出', async () => {
+  const f = await fixture();
+  await start(f);
+  const ended = await accept(f, 'task-end', ['--id', 'e1', '--final-ref', 'abc123', '--evidence', 'npm test 250/250 通过', '--evidence', 'npm run check 0 错误']);
+  assert.equal(ended.receipt.accepted, true, JSON.stringify(ended));
+  const task = Object.values((await readState(f.directory)).tasks)[0];
+  assert.equal(task.lifecycle, 'complete');
+  assert.equal(task.finalRef, 'abc123');
+  assert.deepEqual(task.validation, { ref: 'abc123', evidence: ['npm test 250/250 通过', 'npm run check 0 错误'] });
+  // 与 --input 同字段冲突、缺 ref、两个 ref 不一致都返回 INPUT，不静默覆盖。
+  const file = path.join(f.area, 'validation.json');
+  await writeFile(file, JSON.stringify({ validation: { ref: 'other', evidence: ['旧证据'] } }));
+  assert.equal(JSON.parse(build(f, 'task-end', ['--id', 'e2', '--validation-ref', 'abc123', '--input', file]).stdout).error, 'INPUT');
+  assert.equal(JSON.parse(build(f, 'task-end', ['--id', 'e3', '--evidence', '仅有证据']).stdout).error, 'INPUT');
+  assert.equal(JSON.parse(build(f, 'task-end', ['--id', 'e4', '--validation-ref', 'abc123', '--final-ref', 'def456']).stdout).error, 'INPUT');
+});
+test('便捷字段用错动作或含 shell 元字符时由 CLI 先返回 INPUT', async () => {
+  const f = await fixture();
+  await start(f);
+  const cases = [
+    [['--id', 'x1', '--package', 'w1', '--status', 'dispatched', '--validation-ref', 'abc123'], '--validation-ref'],
+    [['--id', 'x2', '--final-ref', 'abc123', '--evidence', 'x', '--status', 'dispatched'], '--status'],
+    [['--id', 'x3', '--package', 'w1', '--role', 'worker', '--status', 'dispatched', '--note', 'a|b'], '--note'],
+    [['--id', 'x4', '--package', 'w1', '--role', 'worker', '--status', 'dispatched', '--handle', 'a&b'], '--handle'],
+    [['--id', 'x5', '--final-ref', 'abc123', '--evidence', 'a;b'], '--evidence'],
+    // 计划第 4 条的引号内 `->` 放宽本包不做：>` 仍按现有规则拒绝。
+    [['--id', 'x6', '--package', 'w1', '--role', 'worker', '--status', 'dispatched', '--note', 'a -> b'], '--note'],
+  ];
+  for (const [args, field] of cases) {
+    const action = args.includes('--final-ref') ? 'task-end' : 'packages';
+    const result = JSON.parse(build(f, action, args).stdout);
+    assert.equal(result.error, 'INPUT', `${field}: ${result.message}`);
+    assert.match(result.message, new RegExp(field));
+  }
+  // 没有 --package 就只给包字段、或没有任何包字段，都直接报错。
+  assert.equal(JSON.parse(build(f, 'packages', ['--id', 'x7', '--status', 'dispatched']).stdout).error, 'INPUT');
+  assert.equal(JSON.parse(build(f, 'packages', ['--id', 'x8', '--package', 'w1']).stdout).error, 'INPUT');
+  // 新包用 --ref 但没给角色，无法判断写 deliveredRef 还是 reviewedRef。
+  assert.equal(JSON.parse(build(f, 'packages', ['--id', 'x9', '--package', 'new1', '--status', 'dispatched', '--ref', 'abc123']).stdout).error, 'INPUT');
+});
+test('中文、引号和旧接口命令文本经 PostToolUse 正常接受', async () => {
+  const f = await fixture();
+  await start(f);
+  // 双引号在单引号参数内是普通字符；全角标点不触发 shell 元字符拒绝。
+  const note = '中文说明，"引号" 与逗号，不是组合命令';
+  const sent = await acceptCommand(f, 'packages', ['--id', 'q1', '--package', 'wq', '--role', 'worker', '--status', 'dispatched', '--note', note], `--id q1 --package wq --role worker --status dispatched --note '${note}'`);
+  assert.equal(sent.receipt.accepted, true, JSON.stringify(sent));
+  assert.equal(Object.values((await readState(f.directory)).tasks)[0].packages.wq.note, note);
+  // 旧接口：同批多个包与中文说明继续用 --input；--base64 仍可用。
+  const file = path.join(f.area, 'legacy.json');
+  await writeFile(file, JSON.stringify({ packages: [
+    { packageId: 'w1', role: 'worker', status: 'dispatched', handle: 'h1', channel: 'codeg:claude_code', note: '旧接口："引号" 与中文' },
+    { packageId: 'w2', role: 'worker', status: 'dispatched', handle: 'h2' },
+  ] }));
+  const batch = await accept(f, 'packages', ['--id', 'q2', '--input', file]);
+  assert.equal(batch.receipt.accepted, true, JSON.stringify(batch));
+  const encoded = Buffer.from(JSON.stringify({ packages: [{ packageId: 'w1', status: 'consumed', deliveredRef: 'abc123' }] })).toString('base64');
+  const consumed = await accept(f, 'packages', ['--id', 'q3', '--base64', encoded]);
+  assert.equal(consumed.receipt.accepted, true, JSON.stringify(consumed));
+  const state = await readState(f.directory);
+  assert.equal(Object.values(state.tasks)[0].packages.w2.status, 'dispatched');
+  assert.equal(Object.values(state.tasks)[0].packages.w1.deliveredRef, 'abc123');
+});
+test('便捷命令跨会话、组合命令和非本插件入口的伪造输出仍拒绝', async () => {
+  const f = await fixture();
+  await start(f);
+  const other = { sessionId: 'session-2', turnId: 'turn-9' };
+  await event({ ...f, ...other }, 'UserPromptSubmit');
+  const run = build(f, 'packages', ['--id', 'x1', '--package', 'w1', '--role', 'worker', '--status', 'dispatched']);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const output = await event({ ...f, ...other }, 'PostToolUse', { tool_name: 'Bash', tool_input: { command: `node "${entry}" signal packages --session ${f.sessionId} --turn ${f.turnId} --id x1 --package w1 --role worker --status dispatched` }, tool_response: { output: run.stdout } });
+  assert.match(output.hookSpecificOutput.additionalContext, /不属于当前宿主会话/);
+  const fake = run.stdout;
+  const composed = await event(f, 'PostToolUse', { tool_name: 'Bash', tool_input: { command: `node "${entry}" signal packages --id x2 --package w1 --role worker --status dispatched && echo ok` }, tool_response: { output: JSON.stringify({ workflow_signal: JSON.parse(fake).workflow_signal }) } });
+  assert.match(composed.hookSpecificOutput.additionalContext, /未接受/);
+  const foreign = await event(f, 'PostToolUse', { tool_name: 'Bash', tool_input: { command: 'node "/tmp/not-plugin/bin/workflow.mjs" signal packages --id x3 --package w1 --role worker --status dispatched' }, tool_response: { output: JSON.stringify({ workflow_signal: JSON.parse(fake).workflow_signal }) } });
+  assert.match(foreign.hookSpecificOutput.additionalContext, /未接受/);
+  assert.equal(Object.values((await readState(f.directory)).tasks)[0].packages.w1, undefined);
 });
 test('packages 用 --input 只放结构化字段；带身份字段或缺 packages 被拒；未知动作被拒', async () => {
   const f = await fixture();

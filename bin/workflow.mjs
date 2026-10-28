@@ -9,16 +9,19 @@ import { gateReport, taskKey, unchangedPlans } from '../src/protocol.mjs';
 import { cliPath } from '../src/entry.mjs';
 
 const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'max-files', 'skip-learning', 'enable-learning', 'help']);
+// 重复给出的证据字段收集为数组；其他参数重复仍视为错误。
+const repeatable = new Set(['evidence']);
 function argumentsFor(argv) {
   const options = {}, commands = [];
   for (let index = 0; index < argv.length; index++) {
     const value = argv[index];
     if (!value.startsWith('--')) { commands.push(value); continue; }
     const key = value.slice(2);
-    if (!allowed.has(key) || Object.hasOwn(options, key)) fail('ARGUMENT', `未知或重复参数 --${key}`);
-    if (['help', 'global', 'now', 'skip-learning', 'enable-learning', 'keep', 'discard'].includes(key)) { options[key] = true; continue; }
+    if (!allowed.has(key) || (Object.hasOwn(options, key) && !repeatable.has(key))) fail('ARGUMENT', `未知或重复参数 --${key}`);
+    if (['help', 'global', 'now', 'skip-learning', 'enable-learning', 'keep', 'discard', 'explicit', 'verified'].includes(key)) { options[key] = true; continue; }
     if (!argv[index + 1] || argv[index + 1].startsWith('--')) fail('ARGUMENT', `参数 --${key} 缺少值`);
-    options[key] = argv[++index];
+    if (repeatable.has(key)) (options[key] ||= []).push(argv[++index]);
+    else options[key] = argv[++index];
   }
   return { options, commands };
 }
@@ -43,10 +46,13 @@ const help = {
     'task show --task <taskId> [--project <目录>]（只读查看分流、工作包账本、变更条数与门禁缺项）',
     'spec check [--project <目录>] [--ref <提交>]（只读检查 .spec 管辖文件是否漂移；指定 ref 时 spec 与代码均取自该提交，HEAD 仍按当前 worktree；有发现或失败时退出码 1）',
     'signal <task-start|task-update|phase|role-claim|task-end|packages> --session <id> --turn <id> --id <signalId> [--task <id>] [--goal --route --mode --paths a,b --paths-mode replace|append --plans a,b --channels worker=x,reviewer=y --parent | --phase --delivery | --role --package | --final-ref] [--input <补充字段 JSON>]（推荐：身份由本机状态补齐；task-update 仅该任务有效 Lead 可用，只改本机任务声明）',
+    'signal packages ... --package <id> [--role --status --channel --handle --ref --depends-on a,b --supersedes --verdict --reviews --base-ref --note --worktree]（单个包；同批多个包或 change 仍用 --input）',
+    'signal task-end ... [--final-ref <提交>] [--validation-ref <提交> --evidence "<证据>" ...]（validation.ref 缺省取 --final-ref；waivers 等仍用 --input）',
     'signal --input <JSON文件> | --base64 <UTF-8 JSON>（完整 payload，兼容写法）',
     'knowledge inspect --path <资料路径> [--project <目录>]',
     'knowledge apply --input <JSON文件>', 'knowledge recover --transaction <id> [--project <目录>]',
-    'knowledge capture|feedback|revise --input <JSON文件> [--root <项目>]',
+    'knowledge capture --session <id> --turn <id> --id <材料ID> --kind correction|failure|success|method|preference --summary "<摘要>" --conditions "<条件>" --evidence "<证据>" [--evidence ...] [--paths a,b] [--knowledge <ID>] [--incident <ID>] [--explicit|--verified]（单条简短材料）',
+    'knowledge capture|feedback|revise --input <JSON文件> [--root <项目>]（完整材料/兼容写法）',
     'knowledge select|explain --query <任务描述> [--path <当前路径>] [--root <项目>]',
     'learning config get|set [--global] [--input <JSON文件>] [--root <项目>]',
     'learning enable|disable|status|migrate|acknowledge [--root <项目>]', 'learning doctor [--global] [--root <项目>]（不调用模型）',
@@ -64,6 +70,10 @@ allowed.add('path');
 for (const key of ['global', 'now', 'query', 'run', 'version', 'task', 'ref', 'keep', 'discard']) allowed.add(key);
 // signal 便捷子命令的字段参数；身份字段（ticket、epoch、revision）不接受命令行传入，只从状态补齐。
 for (const key of ['turn', 'id', 'goal', 'route', 'mode', 'paths', 'paths-mode', 'plans', 'channels', 'parent', 'phase', 'delivery', 'package', 'final-ref']) allowed.add(key);
+// 单个工作包与 task-end validation 的便捷字段；同批多包/深层结构仍走 --input。
+for (const key of ['status', 'channel', 'handle', 'depends-on', 'supersedes', 'verdict', 'reviews', 'base-ref', 'note', 'worktree', 'validation-ref', 'evidence']) allowed.add(key);
+// knowledge capture 的单条材料字段；--explicit、--verified 在解析器里按开关处理。
+for (const key of ['kind', 'summary', 'conditions', 'knowledge', 'incident', 'explicit', 'verified']) allowed.add(key);
 async function structuredSignal(directory, root, action, options) {
   const { buildSignal } = await import('../src/signal.mjs');
   const state = await readState(directory);
@@ -72,6 +82,17 @@ async function structuredSignal(directory, root, action, options) {
   // 便捷写法不读 stdin：没有 --input/--base64 就只用命令行字段。
   const extra = options.input || options.base64 ? await inputJSON(options) : {};
   return { workflow_signal: buildSignal(state, resolved, action, options, extra) };
+}
+const CAPTURE_FIELDS = ['id', 'kind', 'summary', 'conditions', 'evidence', 'paths', 'knowledge', 'incident', 'explicit', 'verified'];
+// 简短材料用命令行字段，身份由本机状态补齐；没给便捷字段时保持旧的完整 JSON 入口。
+async function structuredCapture(directory, root, options) {
+  const { capture, buildCapture } = await import('../src/learning.mjs');
+  if (!CAPTURE_FIELDS.some(key => options[key] !== undefined) && !options.session && !options.turn) return capture(directory, await inputJSON(options));
+  const state = await readState(directory);
+  const resolved = await resolveProject(state, root);
+  if (!resolved) fail('PROJECT', '当前目录没有有效项目绑定');
+  const extra = options.input || options.base64 ? await inputJSON(options) : {};
+  return capture(directory, buildCapture(state, resolved, options, extra));
 }
 // 只读：返回任务账本与当前门禁缺项，不改变状态。
 async function showTask(state, root, taskId) {
@@ -153,7 +174,7 @@ async function main() {
   }
   if (command === 'knowledge') {
     const { capture, feedback, reviseKnowledge, selectKnowledge } = await import('../src/learning.mjs');
-    if (action === 'capture') return capture(directory, await inputJSON(options));
+    if (action === 'capture') return structuredCapture(directory, root, options);
     if (action === 'feedback') return feedback(directory, await inputJSON(options));
     if (action === 'revise') return reviseKnowledge(directory, root, await inputJSON(options));
     if (['select', 'explain'].includes(action)) return selectKnowledge(directory, root, { text: options.query || '', paths: options.path ? [options.path] : [], version: options.version, full: true });
