@@ -323,3 +323,39 @@ test('V14 Codex 与 Claude 安装记录互不覆盖，可分别撤销', async ()
   assert.equal((await uninstall(directory)).status, 'uninstalled');
   assert.equal((await readState(directory)).installs.claude.status, 'uninstalled');
 });
+
+test('V14 双宿主跨版本重复安装不改指另一个宿主的有效入口', async () => {
+  const area = await temporary('install-cross-host-');
+  const directory = path.join(area, 'state');
+  const codexDir = path.join(area, '.codex');
+  const claudeDir = path.join(area, '.claude');
+  const sourceA = path.join(area, 'source-a');
+  const sourceB = path.join(area, 'source-b');
+  const copy = target => fs.cp(root, target, { recursive: true, filter: item => !item.includes('.git') && !item.includes('node_modules') });
+  await copy(sourceA);
+  await copy(sourceB);
+  await fs.appendFile(path.join(sourceB, 'README.md'), '\n新版本标记\n');
+  const codexOld = await install(directory, { userDir: codexDir, sourceRoot: sourceA });
+  const claudeOld = await install(directory, { userDir: claudeDir, agent: 'claude', sourceRoot: sourceA });
+  assert.equal(codexOld.releaseRoot, claudeOld.releaseRoot);
+  // Codex 升级到新快照，共用入口 current 改指新版本；Claude 仍登记旧版本。
+  const codexNew = await install(directory, { userDir: codexDir, sourceRoot: sourceB });
+  assert.equal(codexNew.status, 'installed');
+  const link = path.join(directory, 'current');
+  assert.equal(await fs.realpath(link), await fs.realpath(codexNew.releaseRoot));
+  const claudeConfig = path.join(claudeDir, 'settings.json');
+  const once = await readFile(claudeConfig, 'utf8');
+  const mtime = (await fs.stat(claudeConfig)).mtimeMs;
+  // 用旧版本源码重复安装 Claude：入口属于另一个已安装宿主的有效快照，不自动改指。
+  const claudeAgain = await install(directory, { userDir: claudeDir, agent: 'claude', sourceRoot: sourceA });
+  assert.equal(claudeAgain.status, 'conflict', JSON.stringify(claudeAgain));
+  assert.equal(claudeAgain.path, link);
+  assert.equal(claudeAgain.registeredBy.agent, 'codex');
+  assert.equal(claudeAgain.registeredBy.version, codexNew.version);
+  assert.ok(claudeAgain.conflict.includes('统一升级'), claudeAgain.conflict);
+  assert.equal(await fs.realpath(link), await fs.realpath(codexNew.releaseRoot));
+  assert.equal((await doctor(directory)).integrity, 'verified');
+  assert.equal(await readFile(claudeConfig, 'utf8'), once);
+  assert.equal((await fs.stat(claudeConfig)).mtimeMs, mtime);
+  assert.equal((await readState(directory)).installs.claude.status, 'installed');
+});

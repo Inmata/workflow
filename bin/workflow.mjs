@@ -33,7 +33,7 @@ const help = {
   usage: 'node bin/workflow.mjs <命令> [--state-dir <本机状态目录>]',
   commands: [
     'install --agent codex|claude [--user-dir <宿主配置目录>]', 'uninstall --agent codex|claude', 'doctor [--agent codex|claude] [--project <目录>]',
-    'project onboard --root <目录> [--enable-learning|--skip-learning]（推荐：核心预检通过才接入并扫描；--enable-learning 同时启用后台复盘并注册计划任务，会真实调用模型，需用户同意）',
+    'project onboard --root <目录> [--enable-learning|--skip-learning]（推荐：核心预检通过才接入并扫描；--enable-learning 同时启用后台复盘并注册计划任务，会真实调用模型，需用户同意；显式请求未完整生效时返回 status:partial 且退出码 1）',
     'project remove --root <目录>（清除本机绑定、计划任务、管理区和本机数据；项目内资料只列出不删）',
     'project enable --root <目录> [--coexistence-mode bounded|pending-only]',
     'project disable --root <目录>', 'project attach-worktree --project <projectId> --root <目录>',
@@ -128,7 +128,14 @@ async function main() {
     return result;
   }
   if (command === 'project') {
-    if (action === 'onboard') { if (!options.root) fail('ARGUMENT', 'onboard 需要明确 --root'); if (options['enable-learning'] && options['skip-learning']) fail('ARGUMENT', '--enable-learning 与 --skip-learning 不能同时使用'); return (await import('../src/onboard.mjs')).onboardProject(directory, options.root, { coexistenceMode: options['coexistence-mode'], skipLearning: options['skip-learning'], enableLearning: options['enable-learning'] }); }
+    if (action === 'onboard') {
+      if (!options.root) fail('ARGUMENT', 'onboard 需要明确 --root');
+      if (options['enable-learning'] && options['skip-learning']) fail('ARGUMENT', '--enable-learning 与 --skip-learning 不能同时使用');
+      const result = await (await import('../src/onboard.mjs')).onboardProject(directory, options.root, { coexistenceMode: options['coexistence-mode'], skipLearning: options['skip-learning'], enableLearning: options['enable-learning'] });
+      // 核心已接入但显式请求的学习未完整生效：保留结果字段，同时让只看退出码的调用方看到失败。
+      if (result.status === 'partial') process.exitCode = 1;
+      return result;
+    }
     if (action === 'remove') { if (!options.root) fail('ARGUMENT', 'remove 需要明确 --root'); return (await import('../src/onboard.mjs')).removeProject(directory, options.root); }
     const { enableProject, disableProject, attachWorktree, setOwner } = await import('../src/projects.mjs');
     if (action === 'enable') { if (!options.root) fail('ARGUMENT', 'enable 需要明确 --root'); return enableProject(directory, options.root, { coexistenceMode: options['coexistence-mode'] }); }

@@ -120,6 +120,17 @@ export const HOSTS = {
   },
 };
 export const AGENTS = HOST_NAMES;
+// 两个宿主共用同一个 current。重复安装只允许修复自己的入口：若 current 指向另一个已安装宿主
+// 登记且完整的发布快照，改指会让那个宿主的完整性检查失败，必须由用户先统一升级。
+async function otherHostSnapshot(directory, state, agent, target) {
+  for (const name of AGENTS) {
+    if (name === agent) continue;
+    const record = installRecord(state, name);
+    if (record?.status !== 'installed' || !record.releaseRoot || !samePath(record.releaseRoot, target)) continue;
+    if (await releaseIntegrity(directory, record) === 'verified') return { agent: name, version: record.version, releaseRoot: record.releaseRoot };
+  }
+  return null;
+}
 const hostFor = agent => {
   const host = HOSTS[agent];
   if (!host) fail('AGENT', `未知宿主 ${agent}；支持 ${AGENTS.join('/')}`);
@@ -193,6 +204,15 @@ export async function install(directory, { userDir, sourceRoot = PRODUCT_ROOT, a
     if (entry.state === 'conflict') return currentConflict(entry);
     if (sameSnapshot) {
       if (entry.state === 'verified') return { status: 'already-installed', agent, version: active.version, releaseRoot: active.releaseRoot, currentRoot: active.currentRoot, requiresTrust: 'unknown' };
+      if (entry.state === 'own-other') {
+        // 入口仍属于本状态根，但指向另一个宿主登记的有效快照：不改指，避免破坏对方已通过校验的安装。
+        const owner = await otherHostSnapshot(directory, state, agent, entry.target);
+        if (owner) return {
+          status: 'conflict', agent, version: active.version, path: entry.link, kind: 'link', target: entry.target, registeredBy: owner,
+          conflict: `current 已指向 ${owner.agent} 登记的 ${owner.version} 发布快照；两个宿主共用入口，本次 ${active.version} 安装不改指。先统一升级两个宿主后再重试`,
+          reason: '另一个已安装宿主正在使用 current；保留现场待统一升级',
+        };
+      }
       await pointCurrent(directory, active.releaseRoot);
       return { status: 'repaired', agent, version: active.version, releaseRoot: active.releaseRoot, currentRoot: currentRoot(directory), configFile, previousTarget: entry.target ?? null, requiresTrust: 'unknown' };
     }
