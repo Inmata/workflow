@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { chmod, mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { archiveLifecycleEvents, digest, mutate, pendingLifecycleEvents, readState, recordLifecycleEvent, withLock } from '../src/store.mjs';
 import { consumeLifecycleEvents, taskKey } from '../src/protocol.mjs';
 import { handleHook } from '../src/hooks.mjs';
 import { createPending } from '../src/knowledge.mjs';
-import { assertRoundCheck, deadPid, deliver, emit, entry, event, fixture, identity, start } from './helpers.mjs';
+import { assertRoundCheck, deadPid, deliver, emit, entry, event, fixture, identity, start, temporary } from './helpers.mjs';
 
 test('交付不要求复盘：Stop 每回合最多挡一次提醒 task-end，重启、跨 turn 与压缩不补偿经验', async () => {
   const f = await fixture();
@@ -327,4 +327,104 @@ test('P01 deferred 记录有界重试：超限后停止自动重试，留下可�
   const notes = (await readdir(deferredFolder)).filter(name => name.endsWith('.reason.txt'));
   assert.equal(notes.length, 1);
   assert.match(await readFile(path.join(deferredFolder, notes[0]), 'utf8'), /不再自动重试/);
+});
+test('P01 升级诊断提交后崩溃：状态记下待写，下一次入口补写且不重复', async () => {
+  const f = await fixture();
+  await start(f);
+  await recordLifecycleEvent(f.directory, { kind: 'lifecycle', event: 'SessionEnd', projectId: f.projectId, sessionId: 'session-ghost', taskId: f.taskId, turnId: 'turn-ghost', at: new Date().toISOString() });
+  const deferredFolder = path.join(f.directory, 'lifecycle-events', 'deferred');
+  const consume = async () => {
+    let consumed;
+    await mutate(f.directory, async state => { consumed = await consumeLifecycleEvents(f.directory, state, { retryIntervalMs: 0, maxAttempts: 2 }); });
+    return consumed;
+  };
+  // 第一遍移入 deferred 并写初始原因；第二遍升级后只提交状态，模拟写完状态就崩溃。
+  await archiveLifecycleEvents(f.directory, (await consume()).archive);
+  const escalated = await consume();
+  assert.equal(escalated.deferred[0].escalated, true);
+  assert.equal(escalated.deferred[0].notePending, true);
+  assert.match(escalated.deferred[0].note, /不再自动重试/);
+  assert.doesNotMatch(await readFile(path.join(deferredFolder, (await readdir(deferredFolder)).find(name => name.endsWith('.reason.txt'))), 'utf8'), /不再自动重试/);
+  let state = await readState(f.directory);
+  const meta = Object.values(state.lifecycleDeferred).find(item => item.escalated);
+  assert.equal(meta.notePending, true);
+  assert.match(meta.note, /不再自动重试/);
+  // 下一次入口重新发现原因文件与状态不一致，补写。
+  const retried = await consume();
+  assert.equal(retried.deferred[0].notePending, true);
+  const archived = await archiveLifecycleEvents(f.directory, retried.archive);
+  assert.deepEqual(archived.failed, []);
+  const notes = (await readdir(deferredFolder)).filter(name => name.endsWith('.reason.txt'));
+  assert.equal(notes.length, 1);
+  assert.match(await readFile(path.join(deferredFolder, notes[0]), 'utf8'), /不再自动重试/);
+  // 再入一次确认一致后清除待写标记，不重复写。
+  const settled = await consume();
+  await archiveLifecycleEvents(f.directory, settled.archive);
+  state = await readState(f.directory);
+  assert.equal(Object.values(state.lifecycleDeferred).find(item => item.escalated).notePending, false);
+  assert.equal((await readdir(deferredFolder)).filter(name => name.endsWith('.reason.txt')).length, 1);
+});
+test('P01 原因文件写入失败如实上报、状态保留待写并在下一次入口重试', async () => {
+  const f = await fixture();
+  await start(f);
+  await recordLifecycleEvent(f.directory, { kind: 'lifecycle', event: 'SessionEnd', projectId: f.projectId, sessionId: 'session-ghost', taskId: f.taskId, turnId: 'turn-ghost', at: new Date().toISOString() });
+  const deferredFolder = path.join(f.directory, 'lifecycle-events', 'deferred');
+  const pass = async () => {
+    let consumed;
+    await mutate(f.directory, async state => { consumed = await consumeLifecycleEvents(f.directory, state, { retryIntervalMs: 0, maxAttempts: 2 }); });
+    const archived = await archiveLifecycleEvents(f.directory, consumed.archive);
+    return { consumed, archived };
+  };
+  await pass();
+  const [eventName] = (await readdir(deferredFolder)).filter(name => name.endsWith('.json'));
+  const notePath = path.join(deferredFolder, `${eventName}.reason.txt`);
+  // 让原因路径无法写入：把已有原因文件移开，用同名目录占住（归档移动，不删除）。
+  await rename(notePath, `${notePath}.moved`);
+  await mkdir(notePath);
+  const escalated = await pass();
+  assert.equal(escalated.consumed.deferred[0].escalated, true);
+  assert.equal(escalated.consumed.deferred[0].notePending, true);
+  assert.equal(escalated.archived.failed.length, 1);
+  assert.equal(escalated.archived.failed[0].to, 'deferred-note');
+  const state = await readState(f.directory);
+  assert.equal(Object.values(state.lifecycleDeferred).find(item => item.escalated).notePending, true);
+  // 下一次入口仍会重试；移除障碍（改名移开目录）后写入成功。
+  await rename(notePath, `${notePath}.blocked`);
+  const retried = await pass();
+  assert.deepEqual(retried.archived.failed, []);
+  assert.match(await readFile(notePath, 'utf8'), /不再自动重试/);
+});
+test('P01 原因文件写入失败时入口提示不指向不存在的文件，并带出诊断正文', async () => {
+  const f = await fixture();
+  await start(f);
+  await recordLifecycleEvent(f.directory, { kind: 'lifecycle', event: 'SessionEnd', projectId: f.projectId, sessionId: 'session-ghost', taskId: f.taskId, turnId: 'turn-ghost', at: new Date().toISOString() });
+  const deferredFolder = path.join(f.directory, 'lifecycle-events', 'deferred');
+  const pass = async () => {
+    let consumed;
+    await mutate(f.directory, async state => { consumed = await consumeLifecycleEvents(f.directory, state, { retryIntervalMs: 0, maxAttempts: 1 }); });
+    return archiveLifecycleEvents(f.directory, consumed.archive);
+  };
+  await pass();
+  await pass();
+  const [eventName] = (await readdir(deferredFolder)).filter(name => name.endsWith('.json'));
+  const notePath = path.join(deferredFolder, `${eventName}.reason.txt`);
+  await rename(notePath, `${notePath}.moved`);
+  await mkdir(notePath);
+  // 下一次入口消费时原因文件仍不可写：提示带出状态里的诊断正文，并如实说明写入失败。
+  const output = await event(f, 'SessionEnd');
+  assert.match(output.systemMessage, /原因文件尚未确认写入/);
+  assert.match(output.systemMessage, /不再自动重试/);
+  assert.match(output.systemMessage, /原因文件写入失败/);
+});
+test('P01 deferred 目录损坏时保留诊断元数据，不当作已清空', async () => {
+  const directory = await temporary('lifecycle-meta-');
+  const folder = path.join(directory, 'lifecycle-events');
+  await mkdir(folder, { recursive: true });
+  // 目录被同名文件占住：不能读成"没有 deferred 记录"，否则状态里的待写诊断会被剪掉。
+  await writeFile(path.join(folder, 'deferred'), 'occupied');
+  const meta = { attempts: 5, reason: '关联不足', escalated: true, note: '诊断正文', notePending: true };
+  const state = { lifecycleDeferred: { 'ghost.json': { ...meta } } };
+  const consumed = await consumeLifecycleEvents(directory, state);
+  assert.ok(consumed.deferred.some(item => item.reason === 'unreadable-deferred'));
+  assert.deepEqual(state.lifecycleDeferred['ghost.json'], meta);
 });

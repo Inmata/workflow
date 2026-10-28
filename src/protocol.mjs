@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
-import { deferredLifecycleEvents, digest, fail, id, lifecycleEvents, SCHEMA_VERSION, WorkflowError } from './store.mjs';
+import { deferredLifecycleEvents, digest, fail, id, lifecycleEvents, readDeferredLifecycleNote, SCHEMA_VERSION, WorkflowError } from './store.mjs';
 import { checkSpecs, describeFindings } from './spec.mjs';
 
 export const PHASES = ['unknown', 'operation-only', 'executing', 'waiting-user', 'delivering'];
@@ -425,6 +425,8 @@ function otherLeadSession(state, task, current) {
 // - 会话/项目/回合无法核验：移入 deferred/ 并给原因，后续入口按有界重试重新关联，超限后留待办或诊断。
 // 消费只改内存状态；文件归档由调用方在 mutate 成功保存后执行（archiveLifecycleEvents），
 // 避免状态写入失败或保存后崩溃时事件已离开扫描范围。
+// 升级诊断先写进状态（note + notePending），原因文件在锁外可重试写入；写成功前提示直接带出诊断内容，
+// 不要求用户去读可能尚不存在的文件。
 export const LIFECYCLE_EVENTS = ['Interrupt', 'StopFailure', 'SessionEnd'];
 // deferred 记录按次数和时限有界重试：首次重入立即试一次，之后按间隔，超限后不再自动重试。
 const DEFER_RETRY_INTERVAL_MS = 30_000;
@@ -443,13 +445,20 @@ export async function consumeLifecycleEvents(directory, state, options = {}) {
     return { applied, deferred: [{ reason: 'unreadable', message: error.message }], late, archive };
   }
   let deferredEvents;
+  let deferredReadable = true;
   try { deferredEvents = await deferredLifecycleEvents(directory); }
-  catch (error) { deferredEvents = []; deferred.push({ reason: 'unreadable-deferred', message: error.message }); }
+  catch (error) { deferredEvents = []; deferredReadable = false; deferred.push({ reason: 'unreadable-deferred', message: error.message }); }
   state.lifecycleDeferred ||= {};
   const entries = [
     ...events.map(item => ({ ...item, from: 'queue' })),
     ...deferredEvents.map(item => ({ ...item, from: 'deferred' })),
   ];
+  // 元数据以仍存在的队列/deferred 文件为界：消费、去重归档或人工移走后不再残留，保持有界。
+  // deferred/ 本次不可读时不做剪枝：否则会把仍在重试的诊断元数据（含待写正文）误删。
+  if (deferredReadable) {
+    const present = new Set(entries.map(item => item.name));
+    for (const key of Object.keys(state.lifecycleDeferred)) if (!present.has(key)) delete state.lifecycleDeferred[key];
+  }
   for (const { name, record, from } of entries) {
     if (!record || typeof record !== 'object' || record.kind !== 'lifecycle' || !LIFECYCLE_EVENTS.includes(record.event)) {
       // 无法辨认的记录保留现场，由 doctor/人工核对，不猜测删除。
@@ -458,7 +467,12 @@ export async function consumeLifecycleEvents(directory, state, options = {}) {
     }
     const meta = state.lifecycleDeferred[name];
     if (from === 'deferred' && meta?.escalated) {
-      deferred.push({ name, from, reason: meta.reason || 'escalated', attempts: meta.attempts, escalated: true });
+      // 诊断内容以状态为准；原因文件只是可重建的副本。读不到或内容不符时重新排队写入，写成功前提示带出正文。
+      const note = typeof meta.note === 'string' && meta.note ? meta.note : escalationNote(meta.reason || '关联不足', meta.attempts || 1);
+      const notePending = await readDeferredLifecycleNote(directory, name) !== `${note}\n`;
+      if (notePending) archive.push({ name, from: 'deferred', to: 'deferred-note', reason: note });
+      if (meta.note !== note || meta.notePending !== notePending) state.lifecycleDeferred[name] = { ...meta, note, notePending };
+      deferred.push({ name, from, reason: meta.reason || 'escalated', attempts: meta.attempts, escalated: true, notePending, note });
       continue;
     }
     const project = state.projects[record.projectId];
@@ -485,12 +499,13 @@ export async function consumeLifecycleEvents(directory, state, options = {}) {
       }
       const nextAttempts = attempts + 1;
       const escalated = nextAttempts >= maxAttempts || now - firstSeen >= maxAgeMs;
-      state.lifecycleDeferred[name] = { ...meta, attempts: nextAttempts, lastAttemptAt: new Date(now).toISOString(), reason, ...(escalated ? { escalated: true, escalatedAt: new Date(now).toISOString() } : {}) };
+      const note = escalated ? escalationNote(reason, nextAttempts) : null;
+      state.lifecycleDeferred[name] = { ...meta, attempts: nextAttempts, lastAttemptAt: new Date(now).toISOString(), reason, ...(escalated ? { escalated: true, escalatedAt: new Date(now).toISOString(), note, notePending: true } : {}) };
       if (escalated) {
         lifecycleTaskPending(state, record, reason);
-        archive.push({ name, from: 'deferred', to: 'deferred-note', reason: `${reason}；已重试 ${nextAttempts} 次仍无法恢复关联，不再自动重试。核对 deferred/ 中的事件，必要时人工处理` });
+        archive.push({ name, from: 'deferred', to: 'deferred-note', reason: note });
       }
-      deferred.push({ name, from, reason, attempts: nextAttempts, ...(escalated ? { escalated: true } : {}) });
+      deferred.push({ name, from, reason, attempts: nextAttempts, ...(escalated ? { escalated: true, notePending: true, note } : {}) });
       continue;
     }
     // 重放只生效一次：同一宿主事件 ID 或同一 event+turn 已消费过时直接归档。
@@ -521,6 +536,7 @@ export async function consumeLifecycleEvents(directory, state, options = {}) {
   return { applied, deferred, late, archive };
 }
 // 关联不足时给出可操作待办（仅任务仍 active），让人显式核对，而不是静默滞留或猜测中断。
+const escalationNote = (reason, attempts) => `${reason}；已重试 ${attempts} 次仍无法恢复关联，不再自动重试。核对 deferred/ 中的事件，必要时人工处理`;
 function lifecycleTaskPending(state, record, reason) {
   const task = record.taskId ? state.tasks[taskKey(record.projectId, record.taskId)] : null;
   if (task?.lifecycle !== 'active') return null;

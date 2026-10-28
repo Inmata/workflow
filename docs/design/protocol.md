@@ -4,7 +4,7 @@
 
 ## 存储和身份
 
-状态根为 `--state-dir`，默认 `%LOCALAPPDATA%/workflow`（非 Windows 回退到用户数据目录）。状态文件升级为 `schemaVersion=2`，信号仍为 v1。首次持久化前把 v1 原始字节备份到 `migrations/`，中断任务迁为 suspended，裁剪无效会话归属。未知 schema 或损坏状态拒绝修改，hook 保守放行。锁通过独占创建获得，短暂争用按总预算等待重试（hook 内结束事件 700ms，其余 1500ms，低于宿主超时），预算耗尽保守放行；不按年龄抢活锁，只在操作系统确认持有进程已退出（ESRCH）时经 guard 串行回收。锁释放保留诊断文件。后台学习的数据与配置见[学习协议](../learning.md)。
+状态根为 `--state-dir`，默认 `%LOCALAPPDATA%/workflow`（非 Windows 回退到用户数据目录）。状态文件升级为 `schemaVersion=2`，信号仍为 v1。首次持久化前把 v1 原始字节备份到 `migrations/`，中断任务迁为 suspended，裁剪无效会话归属。未知 schema 或损坏状态拒绝修改，hook 保守放行。锁通过独占创建唯一票据获得，短暂争用按总预算等待重试（hook 内结束事件 700ms，其余 1500ms，低于宿主超时），预算耗尽保守放行；不按年龄抢活锁，只在操作系统确认持有进程已退出（ESRCH）时按该票据自己的唯一名归档。锁释放保留诊断文件。后台学习的数据与配置见[学习协议](../learning.md)。
 
 项目保存 `projectId`、`root`（realpath）、`identity`（目录 dev/ino/birthtime 和 Git 公共目录）、`worktrees`、`knowledgeRoot`、`managedBlockHash`、`enabled`、`coexistenceMode`；可选 `alignment` 见下文“项目对齐”。同名、remote 相同、拷贝入口均不建立绑定。子目录识别遇到独立 `.git` 即停止继承；worktree 必须显式关联且核对公共目录。项目重绑需要显式 enable。0.4.1 起取消知识负责人：同一项目的任何 Lead 会话都可共享写入，并发冲突由 baseline 指纹、写锁和事务恢复处理；旧状态里的 `ownerSessionId`、`leadSessions` 字段保留但不再使用。
 
@@ -88,9 +88,9 @@ packages 的 `handle` 填宿主委派 ID（Codeg task_id）时，委派状态查
 | SessionEnd | 同中断保存；不把业务标为完成，不续跑业务 |
 | PreCompact/PostCompact/compact SessionStart | 保存/恢复既有身份；预算不变 |
 
-Interrupt、StopFailure、SessionEnd 先写一条独立的本机待处理记录（状态根 `lifecycle-events/`，按时间命名，同目录原子替换），再尝试拿状态锁幂等消费。消费只改内存状态，状态提交成功后才归档：已消费移入 `consumed/`；状态写入失败或保存后、归档前进程退出时，事件仍留在扫描范围，下一次入口靠已持久化的 `event_id`/event+回合回执幂等跳过，不重复中断。记录只绑定宿主给出的可信回合（`turn_id` 或 `prompt_id`）；缺失时不推断当前会话回合，按关联不足移入 `deferred/` 并说明，不中断新回合，任务仍 active 时补一条 business-incomplete 待办。`deferred/` 记录会在后续入口重读并按有界重试恢复关联：首次重入立即重试，之后按间隔，超过次数或时限后停止自动重试并写入原因文件。记录绑定写入时的 project/session/task/turn，消费时会话已进入新回合则视为迟到事件：不撤销新票据、不自动继续，只在任务仍 active 时补一条 business-incomplete 待办。事件记录落盘与状态锁同时失败时，两件事都如实说明，不宣称已持久化或已应用。
+Interrupt、StopFailure、SessionEnd 先写一条独立的本机待处理记录（状态根 `lifecycle-events/`，按时间命名，同目录原子替换），再尝试拿状态锁幂等消费。消费只改内存状态，状态提交成功后才归档：已消费移入 `consumed/`；状态写入失败或保存后、归档前进程退出时，事件仍留在扫描范围，下一次入口靠已持久化的 `event_id`/event+回合回执幂等跳过，不重复中断。记录只绑定宿主给出的可信回合（`turn_id` 或 `prompt_id`）；缺失时不推断当前会话回合，按关联不足移入 `deferred/` 并说明，不中断新回合，任务仍 active 时补一条 business-incomplete 待办。`deferred/` 记录会在后续入口重读并按有界重试恢复关联：首次重入立即重试，之后按间隔，超过次数或时限后停止自动重试并升级为诊断；诊断正文先写入状态（`note` 与待写标记），原因文件只是可重建的副本，写入失败或提交后崩溃会在下一次入口重试，写成功前提示直接带出诊断正文，不要求用户去读可能尚不存在的文件。记录绑定写入时的 project/session/task/turn，消费时会话已进入新回合则视为迟到事件：不撤销新票据、不自动继续，只在任务仍 active 时补一条 business-incomplete 待办。同一事件按 event+project+session+turn+宿主事件 ID 去重，不同项目或宿主事件不会被合并。事件记录落盘与状态锁同时失败时，两件事都如实说明，不宣称已持久化或已应用。
 
-“仍有其他有效 Lead 会话”指同一 project/task、非子角色、未中断、票据未撤销且回合标识存在的其他会话；旧状态缺 `interrupted`/`ticket` 字段时保守按未中断处理，不按 `lastSeenAt` 年龄判定会话死亡。空或损坏的恢复 guard 不猜成死锁：宽限期后返回 `LOCKED` 诊断并保留原文件。guard 记录 pid/token/targetPid/targetToken；回收死 guard 或目标锁时先原子改名到唯一待复核名，再核对内容仍是刚才辨认的身份，不符则放回（不覆盖）并留诊断；释放 guard 前也校验自己的 token，避免移走后来者的新 guard。
+“仍有其他有效 Lead 会话”指同一 project/task、非子角色、未中断、票据未撤销且回合标识存在的其他会话；旧状态缺 `interrupted`/`ticket` 字段时保守按未中断处理，不按 `lastSeenAt` 年龄判定会话死亡。状态锁不使用单独的恢复 guard，也不按固定路径摘锁：每个入口先原子创建 `<prefix>.lock.<pid>.<token>.wait`（pid+随机 token 保证唯一），扫描到其他活跃 `.hold` 或旧格式活锁就等待；无阻塞时把自己的票据原子改名为 `.hold`，改名后再次扫描，看到其他持有者即退回 `.wait`，因此同一时刻至多一个持有者。死者只按它自己的唯一票据名归档到 `retired-locks/`，后来者新建的活跃票据必然是不同的文件名，结构上不存在“读到死锁后按固定路径摘走、误移新持有者”的窗口；归档是单次原子改名，没有中间待复核状态，崩在改名前后都只会留下可再次归档的死票据或已归档文件。旧版固定路径 `<prefix>.lock` 与 `<prefix>.lock.recovery` 只读不移动：新版本遇到活进程会按持有者等待（兼容旧版本），已退出进程忽略并留一份 `.legacy-note.txt` 诊断，绝不按固定路径摘走；旧实现留下的 `.recheck-*` 唯一名文件可安全归档。反向兼容不成立：仍在运行的旧版本进程不认识新票据，升级瞬间无法与新版本互斥，只能等旧进程退出后收敛。pid 只在 `kill(pid,0)` 返回 `ESRCH` 时判死；`EPERM` 或无法判断一律当活，PID 复用只会造成保守等待或 `LOCKED`，不会并发持有。
 
 回合结束核对只读：不改任务状态，不替 Lead 发 task-end，不生成经验待办；缺项计算与 task-end 门禁相同，已记录的 waivers 照常抵扣，`spec-check:<原因>` 不计入。核对出错（状态损坏、锁超时等）时放行。宿主把 reason 作为续轮提示注入：Codex 以 `<hook_prompt>` 用户消息、Claude Code 以 Stop hook 反馈续一轮，续轮不触发 UserPromptSubmit，第二次 Stop 带 `stop_hook_active:true`。插件只认已记录的内容：没发 task-start 或未记进工作包的工作查不到，hook 未执行时也不生效。
 
@@ -108,7 +108,7 @@ PostCompact 不输出 additionalContext；压缩恢复上下文由支持该输�
 
 恢复对照 prepared 的前/后指纹：等于后指纹则记已写；等于前指纹则保留未完成；第三种内容记 conflict；不自动重写用户改动。状态或快照持久化失败时不继续文件写入。`knowledge recover --transaction <id>` 只辨认结果并保存待办，续写由 Lead 基于新指纹显式申请，只处理尚未完成的候选。
 
-锁文件在成功释放时移到状态根内的 retired-locks，临时失败产物保留。用户文件和安装副本不自动永久删除；uninstall 撤销自有注册并保留发布副本与记录。
+等待/持有票据在成功释放或放弃等待时按唯一名移到状态根内的 `retired-locks/`；死票据和旧 `.recheck-*` 待复核文件也归档到那里，旧格式固定路径锁保留原文件不自动移动。临时失败产物保留。用户文件和安装副本不自动永久删除；uninstall 撤销自有注册并保留发布副本与记录。
 
 ## 项目对齐
 

@@ -193,9 +193,14 @@ export async function handleHook(directory, event, options = {}) {
       // 拿到状态锁后再幂等消费待处理结束事件；迟到的旧事件不打断新回合，只保留待办。
       const consumed = await consumeLifecycleEvents(directory, state);
       lifecycleArchive = consumed.archive;
-      const escalated = consumed.deferred.filter(item => item.escalated).length;
+      const escalatedItems = consumed.deferred.filter(item => item.escalated);
+      const pendingNotes = escalatedItems.filter(item => item.notePending);
+      // 诊断内容存在状态里；原因文件还没确认写入时直接把正文给用户，不指向可能不存在的文件。
+      const escalationHint = !escalatedItems.length ? ''
+        : pendingNotes.length ? `其中 ${escalatedItems.length} 个已多次重试仍无法恢复关联；原因文件尚未确认写入（会在本次或下一次入口重试），诊断内容：${pendingNotes.map(item => item.note).join('；')}`
+          : `其中 ${escalatedItems.length} 个已多次重试仍无法恢复关联，见 deferred/ 中的原因文件。`;
       const lifecycleOutput = lifecycleNote ? { systemMessage: lifecycleNote }
-        : consumed.deferred.length && LIFECYCLE_EVENTS.includes(name) ? { systemMessage: `workflow 有 ${consumed.deferred.length} 个结束事件缺少可信项目/会话关联，已保留本机待办（${consumed.deferred.map(item => item.name).join('、')}）；不撤销任何新回合票据。${escalated ? `其中 ${escalated} 个已多次重试仍无法恢复关联，见 deferred/ 中的原因文件。` : ''}` } : {};
+        : consumed.deferred.length && LIFECYCLE_EVENTS.includes(name) ? { systemMessage: `workflow 有 ${consumed.deferred.length} 个结束事件缺少可信项目/会话关联，已保留本机待办（${consumed.deferred.map(item => item.name).join('、')}）；不撤销任何新回合票据。${escalationHint}` } : {};
       if (session && event.event_id && session.observed[event.event_id]) return lifecycleOutput;
       if (name === 'SessionStart' || name === 'UserPromptSubmit') {
         // 会话开始后插件被重装：hook 已是新版本，但会话里已读的指引和命令仍是旧的，提示开新会话。
@@ -267,7 +272,17 @@ export async function handleHook(directory, event, options = {}) {
       return {};
     }, { budgetMs: lockBudget(name) });
     // 状态已提交：此时再归档事件；归档失败不影响已保存的回执，下次消费幂等跳过。
-    await archiveLifecycleEvents(directory, lifecycleArchive);
+    const archived = await archiveLifecycleEvents(directory, lifecycleArchive);
+    // 失败分类如实说明：原因文件写入与事件归档是两种不同后果，不能混为一谈。
+    // 即使本次入口原本没有提示，失败也要让用户看见；否则诊断可能长期静默重试。
+    const notice = text => {
+      if (!output || typeof output !== 'object') return;
+      output.systemMessage = output.systemMessage ? `${output.systemMessage}；${text}` : `workflow ${text}`;
+    };
+    const failedNotes = archived.failed.filter(item => item.to === 'deferred-note');
+    const failedMoves = archived.failed.filter(item => item.to !== 'deferred-note');
+    if (failedNotes.length) notice(`原因文件写入失败（${failedNotes.map(item => item.code || 'IO').join('、')}），诊断内容已保存在状态中，下一次入口会重试。`);
+    if (failedMoves.length) notice(`事件归档失败（${failedMoves.map(item => item.code || 'IO').join('、')}），事件仍在原处，下一次入口会按回执幂等跳过。`);
     return output;
   } catch (error) {
     // Never return a continuation when identity, persistence, schema or locking failed.
