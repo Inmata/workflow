@@ -1,6 +1,6 @@
 import path from 'node:path';
-import { canonical, digest, id, mutate, observeHost, readState, samePath, within } from './store.mjs';
-import { acceptSignal, interrupt, openTurn, pendingFor, sessionKey, stop, taskKey, TERMINAL_PACKAGE } from './protocol.mjs';
+import { canonical, digest, id, mutate, observeHost, readState, recordLifecycleEvent, samePath, within } from './store.mjs';
+import { acceptSignal, consumeLifecycleEvents, interrupt, LIFECYCLE_EVENTS, openTurn, pendingFor, sessionKey, stop, taskKey, TERMINAL_PACKAGE } from './protocol.mjs';
 import { resolveProject } from './projects.mjs';
 import { projectContext, signalUsage } from './context.mjs';
 import { PRODUCT_ROOT, PRODUCT_VERSION } from './entry.mjs';
@@ -119,7 +119,15 @@ function isComposedSignal(event) {
   // 入口可能藏在变量里（$wf=...; node $wf signal），命令里同时出现本插件入口和 signal 的输入参数或子命令就回执。
   return typeof raw === 'string' && /workflow\.mjs/.test(raw) && /\bsignal\s+(?:--(?:base64|input)\b|(?:task-start|task-end|phase|packages|role-claim|disposition)\s+--)/.test(raw);
 }
+// 宿主 hook 超时：Codex 的 Interrupt/SessionEnd 只有 3 秒，其余 10 秒。锁等待预算必须留出
+// 启动、解析和落盘余量，预算耗尽时保守放行，不越过宿主上限。
+const LOCK_BUDGET = { lifecycle: 700, normal: 1500 };
+const lockBudget = name => LIFECYCLE_EVENTS.includes(name) ? LOCK_BUDGET.lifecycle : LOCK_BUDGET.normal;
+// 入口拿不到身份时的唯一提示：不冒充入口成功，也不创建猜测身份。
+const identityHint = 'workflow 本回合未建立入口身份（缺少宿主回合标识或会话未登记）：已保守放行；下一次 SessionStart/UserPromptSubmit 会重新建立，业务任务和票据不在此处猜测。';
 export async function handleHook(directory, event, options = {}) {
+  // 结束事件独立落盘后，即使后续拿不到状态锁也要如实说明它已保存。
+  let recordedLifecycle = null;
   try {
     const agent = HOSTS.includes(options.agent) ? options.agent : 'codex';
     if (!event || typeof event !== 'object' || !HOST_EVENTS[agent].includes(event.hook_event_name)) return {};
@@ -152,6 +160,26 @@ export async function handleHook(directory, event, options = {}) {
     if (!initial) return {};
     // 委派状态查询只读核对账本，不写状态：每次等待都落盘会放大锁竞争。
     if (name === 'PostToolUse' && delegationStatus) return delegationHint(existing, initial.project, event, turnId);
+    let lifecycleNote = '';
+    if (LIFECYCLE_EVENTS.includes(name)) {
+      // 结束事件先独立原子落盘：状态锁被短暂占用或进程随后退出时，事件仍能在下一次入口被消费。
+      // 回合身份取宿主给出的回合，缺失时用记录时已知的会话回合，不猜新回合。
+      const known = existing.sessions[sessionKey(initial.project.projectId, event.session_id)];
+      try {
+        const recordName = await recordLifecycleEvent(directory, {
+          kind: 'lifecycle', event: name, projectId: initial.project.projectId, sessionId: event.session_id,
+          // 绑定记录时的任务与回合：迟到事件据此只保存待办，不去改写之后打开的新回合。
+          taskId: known?.taskId || null,
+          turnId: hostTurn || known?.turnId || null, ticket: known?.ticket || null,
+          hostEventId: typeof event.event_id === 'string' ? event.event_id : null,
+          at: new Date().toISOString(), source: options.synthetic ? 'synthetic' : 'callback',
+        });
+        recordedLifecycle = { event: name, name: recordName };
+      } catch (error) {
+        // 落盘失败如实报告：只尝试写状态，不宣称事件已持久化。
+        lifecycleNote = `workflow 未能保存 ${name} 事件记录（${error.code || 'IO'}）：仅尝试写入当前状态；磁盘恢复后请重试。`;
+      }
+    }
     return await mutate(directory, async (state, save) => {
       const resolved = await resolveProject(state, event.cwd, probe);
       if (!resolved) return {};
@@ -159,7 +187,11 @@ export async function handleHook(directory, event, options = {}) {
       let session = state.sessions[sessionKey(project.projectId, event.session_id)];
       // Observed callbacks prove execution of these hooks, not global discovery or trust policy.
       observeHost(state, agent, name, { at: new Date().toISOString(), sessionId: event.session_id, source: options.synthetic ? 'synthetic' : 'callback' });
-      if (session && event.event_id && session.observed[event.event_id]) return {};
+      // 拿到状态锁后再幂等消费待处理结束事件；迟到的旧事件不打断新回合，只保留待办。
+      const consumed = await consumeLifecycleEvents(directory, state);
+      const lifecycleOutput = lifecycleNote ? { systemMessage: lifecycleNote }
+        : consumed.deferred.length && LIFECYCLE_EVENTS.includes(name) ? { systemMessage: `workflow 有 ${consumed.deferred.length} 个结束事件缺少可信项目/会话关联，已保留本机待办（${consumed.deferred.map(item => item.name).join('、')}）；不撤销任何新回合票据。` } : {};
+      if (session && event.event_id && session.observed[event.event_id]) return lifecycleOutput;
       if (name === 'SessionStart' || name === 'UserPromptSubmit') {
         // 会话开始后插件被重装：hook 已是新版本，但会话里已读的指引和命令仍是旧的，提示开新会话。
         const seenVersion = session?.productVersion;
@@ -169,15 +201,17 @@ export async function handleHook(directory, event, options = {}) {
         } else if (hostTurn) {
           session = openTurn(state, project, event.session_id, hostTurn, { compact: event.source === 'compact', eventId: event.event_id, mode: event.permission_mode });
         }
-        if (session) session.productVersion = seenVersion || PRODUCT_VERSION;
+        // 拿不到身份时只给恢复提示，不输出入口成功；身份由宿主下一次入口重建。
+        if (!session?.ticket || !session?.turnId) return { ...lifecycleOutput, ...(lifecycleNote ? {} : contextOutput(name, identityHint)) };
+        session.productVersion = seenVersion || PRODUCT_VERSION;
         const upgraded = seenVersion && PRODUCT_VERSION && seenVersion !== PRODUCT_VERSION ? `workflow 插件已从 ${seenVersion} 升级到 ${PRODUCT_VERSION}：本会话早先读取的指引和命令可能已过时，请提醒用户开新会话；继续工作时以下面的入口为准。
 ` : '';
         // 已 role-claim 的委派会话注入对应角色的最小上下文，不再给 Lead 指引。
         return contextOutput(name, `${upgraded}workflow 入口：${JSON.stringify(await projectContext(state, resolved, session?.role || 'lead', event.session_id, { directory, incremental: true, full: name === 'SessionStart' || Boolean(upgraded) }))}`);
       }
-      if (!session) return {};
+      if (!session) return lifecycleOutput;
       // Codex 严格核对 turn_id；Claude 的 prompt_id 只在入口事件保证存在，后续事件按当前回合关联。
-      if (turnId && session.turnId !== turnId) return {};
+      if (turnId && session.turnId !== turnId) return lifecycleOutput;
       if (event.event_id) session.observed[event.event_id] = digest(JSON.stringify({ name, turn: event.turn_id }));
       if (name === 'PostToolUse') {
         if (question) {
@@ -214,17 +248,22 @@ export async function handleHook(directory, event, options = {}) {
         await save();
         return output;
       }
-      if (name === 'Interrupt' || name === 'StopFailure') { interrupt(state, project, session); return {}; }
-      if (name === 'SessionEnd') {
+      if (name === 'Interrupt' || name === 'StopFailure' || name === 'SessionEnd') {
+        // 正常情况下结束事件已在上面由待办记录幂等消费；只有事件记录落盘失败时才在这里按当前回合保守保存，
+        // 避免把同一事件既写入待办又在新回合上重复中断。两种情况都把事件状态说明原样带回。
+        if (!lifecycleNote) return lifecycleOutput;
+        if (hostTurn && session.turnId !== hostTurn) return lifecycleOutput;
         interrupt(state, project, session);
-        return {};
+        return lifecycleOutput;
       }
       // PostCompact cannot emit additional context; compact SessionStart restores the existing identity.
       if (name === 'PostCompact') return {};
       return {};
-    });
+    }, { budgetMs: lockBudget(name) });
   } catch (error) {
     // Never return a continuation when identity, persistence, schema or locking failed.
-    return { systemMessage: `workflow 已保守放行，维护暂不可用：${error.code || 'IO'}；保留状态和待办。` };
+    const saved = recordedLifecycle ? `本次 ${recordedLifecycle.event} 事件已另存为本机待办（${recordedLifecycle.name}），下一次入口会幂等消费；` : '';
+    const detail = error.code === 'LOCKED' ? `原因：${error.message}；先核对持有进程已结束，再按提示处理残留锁或 guard，不直接删除活动锁。` : '';
+    return { systemMessage: `workflow 已保守放行，维护暂不可用：${error.code || 'IO'}；保留状态和待办。${detail}${saved}` };
   }
 }

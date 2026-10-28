@@ -4,7 +4,7 @@
 
 ## 存储和身份
 
-状态根为 `--state-dir`，默认 `%LOCALAPPDATA%/workflow`（非 Windows 回退到用户数据目录）。状态文件升级为 `schemaVersion=2`，信号仍为 v1。首次持久化前把 v1 原始字节备份到 `migrations/`，中断任务迁为 suspended，裁剪无效会话归属。未知 schema 或损坏状态拒绝修改，hook 保守放行。锁通过独占创建获得，不按年龄抢活锁；锁释放保留诊断文件。后台学习的数据与配置见[学习协议](../learning.md)。
+状态根为 `--state-dir`，默认 `%LOCALAPPDATA%/workflow`（非 Windows 回退到用户数据目录）。状态文件升级为 `schemaVersion=2`，信号仍为 v1。首次持久化前把 v1 原始字节备份到 `migrations/`，中断任务迁为 suspended，裁剪无效会话归属。未知 schema 或损坏状态拒绝修改，hook 保守放行。锁通过独占创建获得，短暂争用按总预算等待重试（hook 内结束事件 700ms，其余 1500ms，低于宿主超时），预算耗尽保守放行；不按年龄抢活锁，只在操作系统确认持有进程已退出（ESRCH）时经 guard 串行回收。锁释放保留诊断文件。后台学习的数据与配置见[学习协议](../learning.md)。
 
 项目保存 `projectId`、`root`（realpath）、`identity`（目录 dev/ino/birthtime 和 Git 公共目录）、`worktrees`、`knowledgeRoot`、`managedBlockHash`、`enabled`、`coexistenceMode`；可选 `alignment` 见下文“项目对齐”。同名、remote 相同、拷贝入口均不建立绑定。子目录识别遇到独立 `.git` 即停止继承；worktree 必须显式关联且核对公共目录。项目重绑需要显式 enable。0.4.1 起取消知识负责人：同一项目的任何 Lead 会话都可共享写入，并发冲突由 baseline 指纹、写锁和事务恢复处理；旧状态里的 `ownerSessionId`、`leadSessions` 字段保留但不再使用。
 
@@ -84,9 +84,13 @@ packages 的 `handle` 填宿主委派 ID（Codeg task_id）时，委派状态查
 | 绑定任务不是 active，或 route=operation-only | 放行 |
 | 有 dispatched 工作包 | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：列出在途包与 handle。在途包全部是 `builtin:` 通道时，说明宿主会在子代理结束时通知本会话，只需向用户说明在等什么；否则要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明暂停原因与接续方式（Codeg 不会在委派结束时唤醒 Lead） |
 | 其余（Lead 的活动任务尚未 task-end） | 记录 `stopBlockedTurn`，返回 `{decision:'block', reason}`：有门禁缺项时列出缺项，要求补齐后 task-end 或向用户说明未完成项；无缺项时提醒发 task-end；任务关联的计划未改动时，同一 reason 附回写提醒 |
-| Interrupt | 增 interruptEpoch、撤销票据、挂起任务、保存 business-incomplete、释放会话归属 |
+| Interrupt / StopFailure | 增 interruptEpoch、撤销票据、挂起任务、保存 business-incomplete、释放会话归属；同一任务仍被其他有效 Lead 会话持有时只保存本会话，不挂起任务 |
 | SessionEnd | 同中断保存；不把业务标为完成，不续跑业务 |
 | PreCompact/PostCompact/compact SessionStart | 保存/恢复既有身份；预算不变 |
+
+Interrupt、StopFailure、SessionEnd 先写一条独立的本机待处理记录（状态根 `lifecycle-events/`，按时间命名，同目录原子替换），再尝试拿状态锁幂等消费：已消费移入 `consumed/`；同一 `event_id` 或同一 event+会话+回合重放只生效一次；缺可信项目/会话/回合关联的移入 `deferred/` 并附原因，不猜身份。记录绑定写入时的 project/session/task/turn，消费时会话已进入新回合则视为迟到事件：不撤销新票据、不自动继续，只在任务仍 active 时补一条 business-incomplete 待办。事件记录落盘失败时如实说明，只尝试写当前状态，不宣称已持久化。
+
+“仍有其他有效 Lead 会话”指同一 project/task、非子角色、未中断、票据未撤销且回合标识存在的其他会话；旧状态缺 `interrupted`/`ticket` 字段时保守按未中断处理，不按 `lastSeenAt` 年龄判定会话死亡。空或损坏的恢复 guard 不猜成死锁：宽限期后返回 `LOCKED` 诊断并保留原文件；guard 记录 pid/targetPid/targetToken，回收前重读目标锁，持有者变化即停止。
 
 回合结束核对只读：不改任务状态，不替 Lead 发 task-end，不生成经验待办；缺项计算与 task-end 门禁相同，已记录的 waivers 照常抵扣，`spec-check:<原因>` 不计入。核对出错（状态损坏、锁超时等）时放行。宿主把 reason 作为续轮提示注入：Codex 以 `<hook_prompt>` 用户消息、Claude Code 以 Stop hook 反馈续一轮，续轮不触发 UserPromptSubmit，第二次 Stop 带 `stop_hook_active:true`。插件只认已记录的内容：没发 task-start 或未记进工作包的工作查不到，hook 未执行时也不生效。
 

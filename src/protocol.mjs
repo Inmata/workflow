@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
-import { digest, fail, id, SCHEMA_VERSION, WorkflowError } from './store.mjs';
+import { deferLifecycleEvent, digest, fail, id, lifecycleEvents, retireLifecycleEvent, SCHEMA_VERSION, WorkflowError } from './store.mjs';
 import { checkSpecs, describeFindings } from './spec.mjs';
 
 export const PHASES = ['unknown', 'operation-only', 'executing', 'waiting-user', 'delivering'];
@@ -34,6 +34,8 @@ export function openTurn(state, project, sessionId, turnId, { compact = false, e
     revision: (session?.revision || 0) + 1, phase: 'unknown', interrupted: false,
     permissionMode: mode || 'unknown', eventId: eventId || null, lastSeenAt: new Date().toISOString(),
     receipts: session?.receipts || {}, observed: session?.observed || {}, contextKey: session?.contextKey, briefed: session?.briefed,
+    // 结束事件回执跨回合保留：新回合开启后旧事件重放仍然只生效一次。
+    ...(session?.lifecycleReceipts ? { lifecycleReceipts: session.lifecycleReceipts } : {}),
     // role-claim 声明的子角色跨回合保留；未声明的会话按 Lead 处理。
     ...(session?.role ? { role: session.role, packageId: session.packageId || null } : {}),
   };
@@ -401,9 +403,69 @@ export function interrupt(state, project, session) {
   session.ticket = null;
   session.interrupted = true;
   session.phase = 'unknown';
-  const task = state.tasks[taskKey(project.projectId, session.taskId)];
-  if (task?.lifecycle === 'active') {
+  const task = session.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
+  // 同一任务可能被多个 Lead 会话共用（跨会话接续）；只有没有其他仍绑定的有效 Lead 会话时才挂起。
+  if (task?.lifecycle === 'active' && !otherLeadSession(state, task, session)) {
     task.lifecycle = 'suspended';
     pendingFor(state, project.projectId, session.taskId, '业务被中断或会话结束；仅保存，不自动继续', 'business-incomplete');
   }
+}
+// 旧状态缺字段时保守兼容：没有 interrupted 视为未中断，完全没有 ticket 字段的旧会话不因此判为无效。
+function otherLeadSession(state, task, current) {
+  return Object.values(state.sessions).some(item => item !== current
+    && item.projectId === task.projectId && item.taskId === task.taskId
+    && !item.role && !item.interrupted
+    && (item.ticket !== null || !Object.hasOwn(item, 'ticket'))
+    && typeof item.turnId === 'string' && item.turnId);
+}
+// 生命周期结束事件先落本机待处理记录，拿到状态锁后幂等消费。只认已识别的三个结束事件，
+// 不把 signal 重放成新授权。事件按 project/session/回合绑定：
+// - 当前回合的事件：执行中断保存；
+// - 旧回合的事件迟到：不打断新回合，也不丢——任务仍 active 时保留为待办，由用户显式接续；
+// - 会话/项目/回合无法核验：保留待办并给出原因，不猜测归属。
+export const LIFECYCLE_EVENTS = ['Interrupt', 'StopFailure', 'SessionEnd'];
+export async function consumeLifecycleEvents(directory, state) {
+  const applied = [], deferred = [], late = [];
+  let events;
+  try { events = await lifecycleEvents(directory); }
+  catch (error) {
+    // 待办目录本身不可读（如被同名文件占住）：保留状态维护，但如实说明待办无法消费。
+    return { applied, deferred: [{ reason: 'unreadable', message: error.message }], late };
+  }
+  for (const { name, record } of events) {
+    if (!record || typeof record !== 'object' || record.kind !== 'lifecycle' || !LIFECYCLE_EVENTS.includes(record.event)) {
+      // 无法辨认的记录保留现场，由 doctor/人工核对，不猜测删除。
+      deferred.push({ name, reason: 'unknown-event' });
+      continue;
+    }
+    const project = state.projects[record.projectId];
+    const session = state.sessions[sessionKey(record.projectId, record.sessionId)];
+    if (!project?.enabled || !session || !record.turnId) {
+      await deferLifecycleEvent(directory, name, !project?.enabled ? '项目未启用或已移除' : !session ? '会话未登记' : '事件缺少回合标识').catch(() => {});
+      deferred.push({ name, reason: 'unbound', event: record.event });
+      continue;
+    }
+    // 重放只生效一次：同一宿主事件 ID 或同一 event+turn 已消费过时直接归档。
+    const key = lifecycleReceiptKey(record);
+    if (session.lifecycleReceipts?.[key]) { await retireLifecycleEvent(directory, name).catch(() => {}); continue; }
+    if (session.turnId !== record.turnId) {
+      // 旧回合迟到：不撤销新回合票据；事件记录的 taskId 仍 active 时只保存待办，不自动继续。
+      session.lifecycleReceipts ||= {};
+      session.lifecycleReceipts[key] = { event: record.event, turnId: record.turnId, at: new Date().toISOString(), outcome: 'late' };
+      const task = record.taskId ? state.tasks[taskKey(record.projectId, record.taskId)] : null;
+      if (task?.lifecycle === 'active') pendingFor(state, record.projectId, task.taskId, `${record.event} 属于回合 ${record.turnId}，晚于新回合到达；已保存，不自动继续`, 'business-incomplete', { turnId: record.turnId, event: record.event });
+      late.push({ event: record.event, turnId: record.turnId, currentTurnId: session.turnId });
+      await retireLifecycleEvent(directory, name).catch(() => {});
+      continue;
+    }
+    interrupt(state, project, session);
+    session.lifecycleReceipts ||= {};
+    session.lifecycleReceipts[key] = { event: record.event, turnId: record.turnId, at: new Date().toISOString(), outcome: 'applied' };
+    applied.push({ event: record.event, sessionId: record.sessionId, turnId: record.turnId });
+    await retireLifecycleEvent(directory, name).catch(() => {});
+  }
+  return { applied, deferred, late };
+}
+function lifecycleReceiptKey(record) {
+  return typeof record.hostEventId === 'string' && record.hostEventId ? `event:${record.hostEventId}` : `turn:${record.event}\0${record.turnId}`;
 }

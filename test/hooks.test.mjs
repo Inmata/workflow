@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { handleHook } from '../src/hooks.mjs';
-import { readState } from '../src/store.mjs';
+import { readState, withLock } from '../src/store.mjs';
 import { cli, deliver, entry, event, fixture, identity, start } from './helpers.mjs';
 
 test('V10 显式 null transcript 后台过滤，缺字段仍接受正常入口', async () => {
@@ -42,6 +42,39 @@ test('真实 CLI signal 输出经过模型可见 output 包装后接收；命令
   assert.equal(await readFile(path.join(f.directory, 'state.json'), 'utf8'), before);
   const output = await event(f, 'PostToolUse', { tool_name: 'Bash', tool_input: { command: `node "${entry}" signal --base64 ${encoded}` }, tool_response: { output: result.stdout } });
   assert.equal(JSON.parse(output.hookSpecificOutput.additionalContext.slice('workflow 回执：'.length)).accepted, true);
+});
+test('P01 入口短暂争用后有总预算等待，新会话最终持久化；预算耗尽只给恢复提示不冒充成功', async () => {
+  const f = await fixture();
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const holder = withLock(f.directory, 'state', async () => { await gate; });
+  await new Promise(resolve => setTimeout(resolve, 30));
+  const entered = event({ ...f, sessionId: 'session-contended', turnId: 'turn-contended' }, 'UserPromptSubmit');
+  setTimeout(release, 200);
+  const output = await entered;
+  await holder;
+  assert.ok(output.hookSpecificOutput?.additionalContext.startsWith('workflow 入口：'), JSON.stringify(output));
+  const persisted = Object.values((await readState(f.directory)).sessions).find(item => item.sessionId === 'session-contended');
+  assert.equal(persisted.turnId, 'turn-contended');
+  assert.ok(persisted.ticket);
+});
+test('P01 入口拿不到身份时只给恢复提示，不输出入口成功也不建立猜测身份', async () => {
+  const f = await fixture();
+  const before = Object.keys((await readState(f.directory)).sessions).length;
+  // SessionStart 没有宿主回合标识，也没有既有会话：本机不知道这是哪一回合。
+  const output = await handleHook(f.directory, { hook_event_name: 'SessionStart', cwd: f.project, session_id: 'session-cold-start' }, { synthetic: true, entry });
+  assert.equal(output.hookSpecificOutput.additionalContext.includes('workflow 入口：'), false);
+  assert.match(output.hookSpecificOutput.additionalContext, /未建立入口身份/);
+  assert.equal(Object.keys((await readState(f.directory)).sessions).length, before);
+});
+test('P01 结束事件落盘失败如实报告，不把内存写入当作已持久化', async () => {
+  const f = await fixture();
+  await start(f);
+  // 用同名文件占住 lifecycle-events 目录，令事件记录无法落盘。
+  await writeFile(path.join(f.directory, 'lifecycle-events'), '故意占用目录名称');
+  const output = await event(f, 'Interrupt');
+  assert.match(output.systemMessage, /未能保存 Interrupt 事件记录/);
+  assert.match(output.systemMessage, /仅尝试写入当前状态/);
 });
 test('未知会话与未知事件保守放行，不建立业务任务', async () => {
   const f = await fixture();

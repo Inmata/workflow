@@ -90,3 +90,10 @@ export function assertRoundCheck(output) {
 export function cli(args, options = {}) {
   return spawnSync(process.execPath, [entry, ...args], { encoding: 'utf8', windowsHide: true, timeout: 30000, cwd: root, ...options });
 }
+// 已退出子进程的 pid：用来模拟崩溃进程遗留的锁，不依赖当前进程存活判断。
+export function deadPid() {
+  const child = spawnSync(process.execPath, ['-e', 'console.log(process.pid)'], { encoding: 'utf8', windowsHide: true });
+  const pid = Number(String(child.stdout || '').replace(/\u001b\[\d+m/g, '').trim());
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, `无法取得子进程 pid：${child.stdout}`);
+  return pid;
+}
