@@ -257,14 +257,29 @@ npm run demo
 
 ## 当前状态与限制
 
-当前版本 0.6.3，包含协作规则、CLI、两种宿主的 hooks 适配、持久材料、分级知识、配置与可选后台复盘，以及分流、工作包账本、完成门禁、角色声明和 spec 漂移检查；真实宿主验收记录见 [0.3.0 验收](docs/acceptance.md#6-030-真实宿主验收)。安装器用内容摘要区分副本。
+当前版本 0.7.0，包含协作规则、CLI、两种宿主的 hooks 适配、持久材料、分级知识、配置与可选后台复盘，以及分流、工作包账本、完成门禁、角色声明和 spec 漂移检查；真实宿主验收记录见 [0.3.0 验收](docs/acceptance.md#6-030-真实宿主验收)。安装器用内容摘要区分副本。
+
+0.7.0 的变化：
+
+- 锁争用与生命周期：短暂锁争用时在有界预算内排队重试（普通 hook 1.5 秒，Interrupt/SessionEnd 等生命周期事件 0.7 秒，均低于宿主 hook 超时），不再直接失败；预算耗尽按 `LOCKED` 保守放行并给一次恢复提示。Interrupt、StopFailure、SessionEnd 先独立落盘，拿到锁后幂等消费，迟到的旧事件不打断新回合；两个 Lead 会话共用任务时结束其中一个不再挂起另一方。锁改为每个持有者一份票据文件，已退出进程遗留的锁自动归档。实测 400 ms 持锁下入口成功率 0/5→5/5，代价是等待时中位数约 210→457 ms。
+- 坏知识不再拖垮入口：入口先保存身份与回合，再在锁外读取对齐与知识；知识逐条解析，损坏条目跳过并给一句降级提示，有效条目照常召回。自动入口只附命中与遗漏总数，完整诊断用 `knowledge select|explain`。
+- 后台复盘延期与冲突出口：BUSY 或只读暂缓时保存已有提案，后续 tick 只重试提交、不再调用模型，不必再手动 `learning recover`；内容冲突时用 `learning resolve --run <ID> --keep|--discard` 保留或作废提案；锁争用不再推迟整个检查周期。
+- 增量对齐：`apply`/`decide`/`suggest` 可带 `sources` 只确认本次重读的来源，按 `size`/`mtimeMs` 快照复核后只刷新这些来源的基线，增量确认从 2 条命令减为 1 条，不再重复提问。
+- spec 检查对象：显式非 HEAD 的 `--ref` 从该提交树读取 spec 与代码；门禁、`task show`、Stop 改用 hook 解析出的 worktree 根。代码改动不影响 spec 时推荐在内容提交上附 `Spec-OK`，空提交只用于追认既有历史。
+- 安装与接入：重复 `install` 会修复自有 `current` 入口的断链或错链（不重写宿主配置），用户自己的目录或另一宿主登记的有效快照保留并报告 `conflict`；`onboard` 把核心接入与后台复盘预检分开，未加 `--enable-learning` 时预检问题只提示，显式启用失败返回 `status: partial`、退出码 1。
+- 同任务改目标或权限：新增 `signal task-update`，绑定该任务的 Lead 可改 goal 与 `permissions.mode/allowedPaths`（`--paths-mode replace|append`），宿主处于只读或计划模式时只允许收窄。
+- 返修计数：一轮返修对应一个交付轮次，`supersedes` 链继承计数；从未产出的启动失败重派不再虚增返修。
+- 结构化提问与计划交付：宿主原生与 Codeg 的结构化提问工具自动记 waiting-user，文本提问仍需先声明。Lead 交付计划时一次列明工作包划分和各包所用通道；已声明的通道或你已指定的安排直接沿用，Lead 直接执行的任务不问 Worker，只有真实新增的角色或通道才请你确认。仅本回合显式进入计划交付阶段才核对，计划模式下的普通讨论不再单独被挡；计划交付与在途包同时成立时合并为一次提醒。
+- 高频载荷一次调用：`signal packages` 可用 `--package`、`--status`、`--role`、`--channel`、`--handle`、`--ref`、`--depends-on`、`--supersedes`、`--verdict`、`--reviews` 等便捷参数记录单个工作包的派发、消费与审查结论；`task-end` 用 `--validation-ref` 和可重复的 `--evidence` 提交验证；`knowledge capture` 可用少量字段保存短材料（`--incident` 必填）。同批多个包、`change`、`waivers` 等继续用 `--input` 附业务 JSON，旧语义不变。单 Worker + 单 Reviewer 无返修流程的总工具调用从 9 次降到 6 次。
+- 每轮入口降耗：未接入目录不再读取和哈希发布副本，入口约 15–23 ms→0.6 ms；知识召回的目录链校验改为每目录一次，300 条知识无变化回合入口约 573→104 ms，直接召回约 519→72 ms。
+
+升级后两个宿主都重装（锁文件格式已变，两个宿主共用 `current`，避免新旧版本混跑）；AGENTS 管理区未变，不需要重新接入。
 
 0.6.3 的变化：
 
 - 规则与入口减负：`docs/roles/lead.md` 收敛为要点加场景导航表，协作、spec 与计划、UI 设计拆到 `docs/references/` 按需读取（简单任务首读减少 43%）；同一会话普通后续回合改为短入口，`SessionStart`（含压缩恢复）、角色变更与版本升级恢复完整入口。
 - 一次调用信号：新增 `signal <action> --session --turn --id [字段]` 子命令，CLI 只读补齐票据与 `expectedRevision`，`lead-direct` 任务只需 `task-start` 与 `task-end` 两条命令，不必先写身份临时文件；`packages` 等结构化字段通过 `--input` 附业务 JSON，旧完整 payload 保持兼容。
-- 高频载荷一次调用：`signal packages` 可用 `--package`、`--status`、`--role`、`--channel`、`--handle`、`--ref`、`--depends-on`、`--supersedes`、`--verdict`、`--reviews` 等便捷参数记录单个工作包的派发、消费与审查结论；`task-end` 用 `--validation-ref` 和可重复的 `--evidence` 提交验证，`knowledge capture` 也可用少量字段保存短材料。同批多个包、`change`、`waivers` 等继续用 `--input` 附业务 JSON，旧 `--input`/`--base64`、同请求重放与 revision 冲突语义不变。单 Worker + 单 Reviewer 无返修流程的载荷文件从 4 次降到 1 次，总工具调用从 9 次降到 6 次（同批多包仍用一次 `--input`）。
-- 计划交付分包与选人：Lead 交付计划时一次列明工作包划分（几包、每包范围与依赖，或说明免拆包理由）和各包所用通道；任务已声明的通道或用户已指定的安排直接沿用，Lead 直接执行的任务不问 Worker，只有真实新增的角色或通道才请你确认。仅本回合显式进入计划交付阶段才核对，普通讨论不因计划模式单独阻挡；进入计划交付但未提问就收尾时，Stop 挡一次提醒补齐。
+- 计划交付分包与选人：Lead 交付计划时列出工作包划分（几包、每包范围与依赖，或说明免拆包理由），并按提问路径请你指定 Worker 与 Reviewer 通道；处于计划阶段但未提问就收尾时，Stop 挡一次提醒补齐。
 - 分支本地 commit 与阻塞等待：非默认分支上按 `allowedPaths` 创建本地交付/检查点 commit 默认允许，直接用 Git commit OID 对齐版本（向默认分支直提、`git push`、改版本、打 tag 与发 Release 仍须显式授权）；Codeg 委派改为 `wait_ms: 0` 批量阻塞等待，不再按 60s 轮询涨上下文。
 - hook 与 CLI 降耗：消除锁内外重复 `git rev-parse`、Stop 重复落盘与低频模块静态加载，实测子进程入口与 Stop 中位数耗时降低约 62%。
 
@@ -273,7 +288,7 @@ npm run demo
 0.6.2 的变化：
 
 - 派工通道：你指定了各角色用哪个智能体时，Lead 在 task-start 用 `channels` 记下，每个工作包填实际 `channel`。中途改用宿主内置子代理，或分工任务的 worker 包改由 Lead 自己实施，必须先告诉你并在账本附 `change`，否则信号被拒；不再能静默换路。
-- 返修换新包号时用 `supersedes` 接上旧包：已交付或被审查要求修订的轮次照样累计（两轮上限数得到），从未产出的启动失败重派不再虚增返修；旧包自动收尾，审查只看链上最新的包。
+- 返修换新包号时用 `supersedes` 接上旧包：轮次照样累计（两轮上限数得到），旧包自动收尾，审查只看链上最新的包。
 - 已经有审查结论的 worker 包（包括它用 supersedes 接替过的旧包），审查对不上最终版本时不能再用豁免或改标 waived 通过，只能重新送审最终版本。从没审过的小包仍可豁免。
 - 在途包全由宿主内置子代理执行时，Stop 不再要求 Codeg 式等待，只要求说明在等什么；内置子代理误发 signal 时会收到“没有 workflow 身份、不记录”的说明。
 
@@ -299,7 +314,7 @@ npm run demo
 
 0.5.1 的变化：只改规则文档，代码行为不变。计划末尾加“spec 影响”一节，你说“执行”即同时批准其中的 spec 改动，流程仍是“计划 → 执行”两步（见[计划和 spec 怎么配合](#计划和-spec-怎么配合)）。升级后重装宿主即可，不需要重新接入。
 
-0.5.0 的变化：重要功能可以在 `.spec/<id>/spec.md` 写长期说明并用 `code:` 列出管辖文件；`task-end` 时插件从 git 历史检查“管辖文件改了、spec 没跟着更新”，未处理不能结束（更新 spec，或在内容提交上附 `Spec-OK`；需要追认既有历史时才用空提交，见[使用说明](docs/usage.md#spec-检查)），`spec check` 的 git 失败附带原因。Lead 没发 `task-end` 就结束回合时，Stop 会挡一次并列出缺项。Worker 交付多一行“文档影响”，Reviewer 对照 spec 核对。说“重新对齐”即触发完整对齐，含补 spec 清单，跑完 scan 不算完成。README 写明 `disable`/`remove`/`uninstall` 删什么、留什么。项目没有 `.spec` 时行为与 0.4.2 相同，只多了 Stop 的提醒；AGENTS 管理区未变，不需要重新接入。
+0.5.0 的变化：重要功能可以在 `.spec/<id>/spec.md` 写长期说明并用 `code:` 列出管辖文件；`task-end` 时插件从 git 历史检查“管辖文件改了、spec 没跟着更新”，未处理不能结束（更新 spec，或做 `Spec-OK` 空提交放行，见[使用说明](docs/usage.md#spec-检查)），`spec check` 的 git 失败附带原因。Lead 没发 `task-end` 就结束回合时，Stop 会挡一次并列出缺项。Worker 交付多一行“文档影响”，Reviewer 对照 spec 核对。说“重新对齐”即触发完整对齐，含补 spec 清单，跑完 scan 不算完成。README 写明 `disable`/`remove`/`uninstall` 删什么、留什么。项目没有 `.spec` 时行为与 0.4.2 相同，只多了 Stop 的提醒；AGENTS 管理区未变，不需要重新接入。
 
 宿主是否实际执行 hook、压缩后的上下文行为以及外部编码代理的具体接续能力，会随 Codex / Codeg / Claude Code 版本变化。`doctor --agent <宿主>` 能核对对应注册与副本完整性；以 `/hooks` 和真实会话回调确认宿主侧状态。
 
