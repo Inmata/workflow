@@ -194,6 +194,23 @@ test('CLI 接入 align scan/status，state 只保存 ID 与状态', async () => 
   assert.equal(alignment.docFingerprint, null);
 });
 
+test('已扫描过的空索引不在 apply/decide 时补扫，新增资料需显式 scan', async () => {
+  const f = await fixture();
+  await rm(path.join(f.project, 'README.md'));
+  await rm(path.join(f.project, 'AGENTS.md'));
+  const first = await scanAlignment(f.directory, f.project);
+  assert.equal(first.files.length, 0);
+  const scannedAt = (await readState(f.directory)).projects[f.projectId].alignment.generatedAt;
+  await documents(f.project, { 'docs/new.md': '# 新资料\n' });
+  await apply(f, { content: '# 项目对齐\n' });
+  await decide(f, { decisions: [{ id: 'D1', status: 'pending' }] });
+  const alignment = (await readState(f.directory)).projects[f.projectId].alignment;
+  assert.equal(alignment.files.length, 0, '已扫描的空索引不应被写入路径自动补扫');
+  assert.equal(alignment.generatedAt, scannedAt);
+  const rescanned = await scanAlignment(f.directory, f.project);
+  assert.ok(rescanned.files.some(item => item.path === 'docs/new.md'));
+});
+
 test('sources 确认单个来源后不再提示，未确认来源仍过期', async () => {
   const f = await fixture();
   await documents(f.project, { 'docs/a.md': '原始\n' });

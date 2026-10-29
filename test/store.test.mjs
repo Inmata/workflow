@@ -148,6 +148,25 @@ test('P01 持有票据身份以文件名为准：正文 pid 指向死进程时�
   assert.ok(await readFile(liveTicket, 'utf8'));
   assert.equal((await readdir(retired)).filter(name => name.endsWith('dead-holder.lock')).length, 0);
 });
+test('P01 文件名 PID 已退出时正文缺失或损坏也按死票据归档', async () => {
+  const directory = await temporary('lock-dead-corrupt-');
+  const locks = path.join(directory, 'locks');
+  const retired = path.join(directory, 'retired-locks');
+  await mkdir(locks, { recursive: true });
+  const prefix = digest('state');
+  const dead = deadPid();
+  const missingBody = path.join(locks, `${prefix}.lock.${dead}.${randomUUID()}.wait`);
+  const corruptBody = path.join(locks, `${prefix}.lock.${dead}.${randomUUID()}.hold`);
+  await writeFile(missingBody, '');
+  await writeFile(corruptBody, '{正文损坏');
+  assert.equal(await withLock(directory, 'state', async () => 'recovered', { budgetMs: 800 }), 'recovered');
+  const names = await readdir(locks);
+  assert.ok(!names.includes(path.basename(missingBody)));
+  assert.ok(!names.includes(path.basename(corruptBody)));
+  const archived = await readdir(retired);
+  assert.equal(archived.filter(name => name.endsWith('dead-waiter.lock')).length, 1);
+  assert.equal(archived.filter(name => name.endsWith('dead-holder.lock')).length, 1);
+});
 test('P01 多竞争者并发：同一时刻只有一个持有者，全部最终完成', async () => {
   const dead = deadPid();
   for (let round = 0; round < 8; round++) {
