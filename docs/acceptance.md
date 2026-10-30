@@ -180,7 +180,7 @@ Worker 与 Reviewer（drift-sim）：Codex Worker 包 w-mul 增加 `mul` 和测�
 | 接入流程、执行器预检 | `node --test test/onboard.test.mjs test/runner.test.mjs` | 任一用例失败或退出码非 0；核心接入失败时执行器调用数必须为零 | 使用假执行器，不调用模型；涉及 junction/目录联接的删除路径未验证 |
 | 命令生成与参数转义 | `node --test test/entry.test.mjs test/install.test.mjs test/runner.test.mjs test/hooks.test.mjs`，受影响时加 `test/signal.test.mjs` | 任一用例失败或退出码非 0；特殊参数未按原值往返即失败 | 无 PowerShell 的机器跳过真实 shell 用例；POSIX 用例在 Windows 跳过，不能互相替代 |
 | 任务分流、门禁与信号 | `node --test test/protocol.test.mjs test/gate.test.mjs test/signal.test.mjs` | 任一用例失败；新任务缺 route 未被拒绝、历史任务无法续接都算失败 | 历史无 route 兼容只由合成样本验证；不覆盖真实宿主回合 |
-| 知识缓存与学习事务 | `node --test test/learning.test.mjs` | 命中、失效或事务断言失败 | 等长且保留时间戳的编辑不保证实时可见，这是已接受边界；不调用真实模型 |
+| 知识缓存与学习事务 | `node --test test/learning.test.mjs`；F16–F18 的提取与漏斗场景见[第 9 节场景表](#9-会话学习与协议收紧f11f18验收)（`test/capture.test.mjs`） | 命中、失效或事务断言失败 | 等长且保留时间戳的编辑不保证实时可见，这是已接受边界；不调用真实模型 |
 | 锁、对齐、spec 与 Hook 生命周期 | `node --test test/hooks.test.mjs test/spec.test.mjs test/alignment.test.mjs test/integration.test.mjs` | 任一用例失败；故障样本没复现时只能标“未复现”，不能写通过 | 慢 Git 为注入延迟；宿主 10 秒终止由计时器模拟；读取故障只测了 EACCES；junction 等价性未验证 |
 | Hook spec 预检与 Git 预算 | `node --test test/hooks.test.mjs test/gate.test.mjs test/spec.test.mjs test/protocol.test.mjs test/integration.test.mjs` | 任一用例失败；慢 Git 预检期间竞争调用未取得锁、卡住 Git 超过宿主窗口、多次慢调用累计超窗、干净预检后受管文件/提交/ref/会话/索引变化仍被当成通过、`spec-check:stale` 被豁免，或 Stop 在无法确认时报“门禁无缺项”都算失败 | 4 秒 Git 调用总预算为代码常量并按绝对截止时间计算：同步文件快照读取不能中断且会消耗剩余预算、缩短后续 Git 可用时间，锁内复核另有 1 秒独立预算，故 4 秒不保证预检或 Hook 总时长；未在真实超大仓库验证；宿主 10 秒上限由子进程计时观察，不是真实宿主终止；索引快照按大小与 mtime，不承诺还原 mtime 的极端写入；大文件仍退回大小与 mtime；慢 Git 仍为注入延迟 |
 | 交付前全量行为测试 | `npm test` | 任一测试失败或退出码非 0；跳过项要在结论中列出，不能当通过 | 测试中的删除改道未在 junction/目录联接上验证；用例数量和耗时随代码与环境变化 |
@@ -248,7 +248,7 @@ Worker 与 Reviewer（drift-sim）：Codex Worker 包 w-mul 增加 `mul` 和测�
 | F16 任务结束候选提取 | `node --test test/capture.test.mjs` | accepted task-end 幂等登记；禁用或无 transcript 零模型调用；身份/路径/格式失败不阻塞；候选只进 `inbox`；工具输出不进入提示词 |
 | F17 按决定隔离失败 | `node --test test/learning.test.mjs` | 合法决定与材料事务提交；被拒材料保持 `pending` 并记录原因；全部无效不写知识；冲突、跨批与重放不重复消费 |
 | F18 学习吸收漏斗 | `node --test test/capture.test.mjs` | 材料、运行、知识、反馈、提取作业分开计数；`scope` 与 `unattributed` 不混算；无反馈写“无记录” |
-| 交付前全量 | `npm test` | 任一用例失败或退出码非 0；跳过项必须在结论中列出，不能当通过 |
+| 交付前全量 | `npm test` | 0 失败且退出码 0 才算通过；跳过项单独列出，不能当通过 |
 | 仓库一致性与 spec | `npm run check`；`node bin/workflow.mjs spec check --project <仓库根>`；`git diff --check` | `ok:true` 且无错误；spec 无 findings；差异检查无输出 |
 
 ### 9.2 结果

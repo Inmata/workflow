@@ -303,6 +303,8 @@ npm run verify
 - 当前账本仍有审查结论的 worker 包（PASS/FIX/BLOCKED；包括它用 supersedes 接替过的旧包），审查对不上最终版本时不能再用豁免或改标 waived 通过，只能重新送审最终版本。waived 预校验同时看批前当前结论与本批合并后的最终结论，同一批改指审查对象不会立即洗掉旧 FIX/BLOCKED；重指须在单独信号成功落盘后，后续信号才不再保留旧结论。历史只有 PASS 会保留，并跨信号沿 supersedes 链单调保留。从没审过的小包仍可豁免。取消只按 PASS 判断：曾有 PASS 的包不能改 canceled（即使审查后来改成 FIX/BLOCKED）；只有 FIX/BLOCKED 而没有 PASS 的包仍可取消。同一批新建 worker 包并直接标 canceled 时，若同批 PASS 指向它或 supersedes 链上有 PASS，整批拒绝。判定细节见[协议](docs/design/protocol.md#信号)。
 - 在途包全由宿主内置子代理执行时，Stop 不再要求 Codeg 式等待，只要求说明在等什么；内置子代理误发 signal 时会收到“没有 workflow 身份、不记录”的说明。
 
+> 当前行为提示（截至 2026-10-30 的源码）：上面第 3 条关于审查豁免、waived 预校验和取消的句子混入了 0.6.2 之后的源码收紧，不是 0.6.2 发布时的行为。现行源码要求曾有 PASS 的 worker 包不能改 canceled；waived 预校验取批前当前结论、本批合并后的最终结论与单调 PASS 历史的并集，判定与数组顺序无关。以[现行协议](docs/design/protocol.md#信号)为准，上面的历史发布说明保留原样。
+
 升级后重装宿主即可，不需要重新接入；不用这些新字段的任务行为与 0.6.1 相同。
 
 0.6.1 的变化：
