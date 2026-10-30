@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { link, mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { applyKnowledge, createPending, inspectKnowledge, recoverTransaction, safeDocument } from '../src/knowledge.mjs';
+import { renderEntry } from '../src/learning.mjs';
 import { readState } from '../src/store.mjs';
 import { assertRoundCheck, cli, deliver, event, fixture, identity, start } from './helpers.mjs';
 
@@ -150,7 +151,17 @@ test('P10 knowledge capture 便捷字段一条命令保存短材料，冲突与�
   assert.equal(missingIncident.error, 'INPUT');
   assert.match(missingIncident.message, /--incident/);
   assert.match(missingIncident.message, /同一个/);
-  // 可选字段：knowledgeId 与 explicit 落到材料记录。
+  // knowledgeId 必须指向本项目已有知识；可选字段与 explicit 落到材料记录。
+  const folder = path.join(f.project, '.workflow', 'knowledge');
+  await mkdir(folder, { recursive: true });
+  await writeFile(path.join(folder, 'kb-1.md'), renderEntry({
+    schemaVersion: 1, id: 'kb-1', generation: 1, title: '旧登录经验', summary: '直接重试', conditions: '登录接口',
+    type: 'method', importance: 'normal', status: 'active', scope: { paths: [], version: null }, tags: [],
+    evidence: [{ id: 'e1', incidentId: 'i1', kind: 'success', verified: true, createdAt: '2026-10-21T10:00:00Z', generation: 1 }],
+    history: [], supersedes: null, maturity: 'verified',
+  }));
+  const missingKnowledge = JSON.parse(captureCli(['--id', 'obs-unknown', '--incident', 'incident-unknown', '--kind', 'success', '--summary', '引用不存在的知识', '--conditions', '登录接口', '--evidence', 'test:x', '--knowledge', 'kb-missing']).stdout);
+  assert.equal(missingKnowledge.error, 'KNOWLEDGE');
   const explicit = captureCli(['--id', 'obs-explicit', '--incident', 'incident-explicit', '--kind', 'correction', '--summary', '纠正旧经验', '--conditions', '登录接口', '--evidence', 'test:correction', '--knowledge', 'kb-1', '--explicit']);
   assert.equal(JSON.parse(explicit.stdout).saved, true);
   const correction = JSON.parse(await readFile(path.join(f.directory, 'projects', f.projectId, 'inbox', 'obs-explicit.json'), 'utf8'));

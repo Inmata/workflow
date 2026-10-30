@@ -52,13 +52,33 @@ export async function learningStatus(directory, root, now = new Date(), options 
   const day = dayKey(now, config.timeZone);
   const scope = { taskId: options.taskId || null, sessionId: options.sessionId || null };
   const filtered = Boolean(scope.taskId || scope.sessionId);
-  // 反馈事件只记录 taskId；缺少 sessionId 时按任务归因，不因会话维度缺失而漏计。
-  const inScope = item => (!scope.taskId || item.taskId === scope.taskId) && (!scope.sessionId || !item.sessionId || item.sessionId === scope.sessionId);
-  const items = (await readItems(directory, project, 'inbox')).filter(inScope);
+  // 指定会话时只统计带同一 sessionId 的记录；缺 sessionId 的旧记录单列为任务级或未知归属，
+  // 不再用“没有别的会话 ID”冒充本会话。同任务其他会话也不会混入。
+  const taskMatches = item => !scope.taskId || item.taskId === scope.taskId;
+  const inScope = item => taskMatches(item) && (!scope.sessionId || item.sessionId === scope.sessionId);
+  // 会话过滤下缺少 sessionId、但仍属于本次任务范围（或根本没有任务归属）的记录。
+  const isUnattributed = item => Boolean(scope.sessionId) && !item.sessionId && (!item.taskId || taskMatches(item));
+  const allItems = await readItems(directory, project, 'inbox');
+  const items = allItems.filter(inScope);
   const runs = await readItems(directory, project, 'runs');
-  const feedbackEvents = (await readItems(directory, project, 'feedback')).filter(inScope);
+  const allFeedback = await readItems(directory, project, 'feedback');
+  const feedbackEvents = allFeedback.filter(inScope);
   const { jobs, skipped: skippedJobFiles } = await readExtractionJobs(directory, project);
   const scopedJobs = jobs.filter(inScope);
+  // 会话过滤下无法精确归属的记录单独计数；未指定会话时不存在这种歧义。
+  const unattributed = scope.sessionId ? {
+    scope: 'task-level-or-unknown',
+    taskLevel: {
+      materials: allItems.filter(item => isUnattributed(item) && item.taskId).length,
+      capture: jobs.filter(job => isUnattributed(job) && job.taskId).length,
+      feedback: allFeedback.filter(item => isUnattributed(item) && item.taskId).length,
+    },
+    unknown: {
+      materials: allItems.filter(item => isUnattributed(item) && !item.taskId).length,
+      capture: jobs.filter(job => isUnattributed(job) && !job.taskId).length,
+      feedback: allFeedback.filter(item => isUnattributed(item) && !item.taskId).length,
+    },
+  } : null;
   let entries = [], knowledgeError = null;
   try { entries = await readEntries(project); } catch (error) { knowledgeError = error.code || 'KNOWLEDGE'; }
   const count = (list, status) => list.filter(item => item.status === status).length;
@@ -71,7 +91,10 @@ export async function learningStatus(directory, root, now = new Date(), options 
     total: feedbackEvents.length,
   };
   // 没有反馈只说明没有可核对记录，不能据此推断知识没有效果。
-  if (!feedback.total) feedback.note = '无记录';
+  if (!feedback.total) {
+    const leftover = unattributed ? unattributed.taskLevel.feedback + unattributed.unknown.feedback : 0;
+    feedback.note = leftover ? '本会话无记录；另有任务级或未知归属记录见 unattributed' : '无记录';
+  }
   const history = entries.flatMap(entry => (entry.history || []).map(item => ({ ...item, knowledgeId: entry.id })));
   const runList = runs.map(run => ({
     id: run.id, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt, usage: run.usage ?? null, reason: run.reason,
@@ -87,7 +110,9 @@ export async function learningStatus(directory, root, now = new Date(), options 
   const capture = {
     total: scopedJobs.length, pending: count(scopedJobs, 'pending'), running: count(scopedJobs, 'running'),
     completed: count(scopedJobs, 'completed'), skipped: count(scopedJobs, 'skipped'), failed: count(scopedJobs, 'failed'), timeout: count(scopedJobs, 'timeout'),
-    todayStarted: scopedJobs.filter(job => job.startedAt && job.day === day).length,
+    // 额度按项目实际累计，与 runExtractionJobs 的当日判定一致，不随查询过滤缩小。
+    todayStarted: jobs.filter(job => job.startedAt && job.day === day).length,
+    todayStartedScope: 'project',
     usage: sumUsage(scopedJobs),
     rejected: scopedJobs.reduce((total, job) => total + (Array.isArray(job.rejected) ? job.rejected.length : 0), 0),
     skippedFiles: skippedJobFiles,
@@ -102,11 +127,14 @@ export async function learningStatus(directory, root, now = new Date(), options 
   const todayStarted = runs.filter(run => run.startedAt && run.day === day).length;
   return {
     at: now.toISOString(), projectId: project.projectId, enabled: project.learning?.enabled === true,
-    scope: { ...scope, materials: filtered ? 'filtered' : 'project', runs: 'project', knowledge: 'project', capture: filtered ? 'filtered' : 'project', feedback: filtered ? 'filtered' : 'project' },
+    scope: { ...scope, materials: filtered ? 'filtered' : 'project', runs: 'project', knowledge: 'project', capture: filtered ? 'filtered' : 'project', feedback: filtered ? 'filtered' : 'project', unattributed: unattributed ? 'task-level-or-unknown' : null },
     pending: materials.pending, waiting: materials.waiting, processed: materials.processed,
     due: dueReason(items, config, now), todayStarted,
-    limits: { review: { todayStarted, maxRunsPerDay: config.maxRunsPerDay }, capture: { todayStarted: capture.todayStarted, maxRunsPerDay: config.maxCaptureRunsPerDay } },
-    config, sources, materials, evidence, feedback, runSummary, capture,
+    limits: {
+      review: { todayStarted, maxRunsPerDay: config.maxRunsPerDay, scope: 'project' },
+      capture: { todayStarted: capture.todayStarted, maxRunsPerDay: config.maxCaptureRunsPerDay, scope: 'project' },
+    },
+    config, sources, materials, evidence, feedback, runSummary, capture, unattributed,
     runs: runList.slice(-10),
     knowledge: {
       available: !knowledgeError, total: entries.length, active: entries.filter(entry => entry.status === 'active').length,
@@ -287,10 +315,12 @@ async function commitRun(directory, root, run, options = {}) {
 // 被拒材料的诊断只写到仍待处理的材料上；已消费材料不被回写。
 async function markRejected(directory, project, run) {
   const rejected = run.proposal?.rejected || [];
+  // 只有本批材料才可能属于这些决定；批外真实存在的材料必须原样保留。
+  const batch = new Set((run.batch || []).map(item => item.id));
   const seen = new Set();
   let marked = 0;
   for (const rejection of rejected) for (const key of rejection.observationIds || []) {
-    if (seen.has(key)) continue;
+    if (seen.has(key) || !batch.has(key)) continue;
     seen.add(key);
     const raw = await readText(path.join(projectData(directory, project), 'inbox', key + '.json'));
     if (raw === null) continue;

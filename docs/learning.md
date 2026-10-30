@@ -150,13 +150,15 @@ node "<hook 给出的入口>" knowledge capture --input observation.json
 
 项目已启用后台学习且宿主事件带 `transcript_path` 时，被接受的 `task-end` 会登记一份幂等的候选提取作业；同一 `task-end` 重放、Stop 或普通 Hook 不会重复登记，业务任务也不等待模型、不因提取失败回滚。学习未启用、任务 `permissions.learning=false` 或宿主没有 transcript 时不建作业，模型调用为零，仍可手动 `knowledge capture`。
 
-提取输入只取该会话 transcript 中用户与助手的短文本：工具结果、工具调用和超长输出在进入预算前剔除，超出 `maxInputChars` 时保留最早与最近部分。程序核对路径、文件类型、大小、逐行 JSON、会话身份和可用文本；读取失败、格式错误、身份不符会记为该作业的 `skipped` 并保留原因，不阻塞任务结束。模型只能返回候选观察，且证据必须指向本次 transcript 中的用户消息；偏好与纠正要求用户明确表达，成功与失败要求验证依据。候选经既有材料校验和敏感信息检查后只写入 `inbox`（`origin:auto-extract`），摘要、条件、证据与相对路径都可定位，不会直接创建或修订正式知识，也不能指定其他项目、任务或会话。
+提取输入只取该会话 transcript 中用户与助手的短文本：工具结果、工具调用和超长输出在进入预算前剔除，超出 `maxInputChars` 时保留最早与最近部分。程序只接受宿主给出的绝对路径普通文件，限制扩展名与大小；相对路径、符号链接、真实路径与给定路径不一致（Windows 大小写不敏感）或不可读的文件在登记或执行时记为 `skipped`。身份必须正面成立：Claude 每条被采用的 user/assistant 记录都要带当前 `sessionId`，Codex 必须有与当前会话一致的 `session_meta`；缺失或他人会话整份按 `TRANSCRIPT_IDENTITY` 跳过，不调用模型。逐行 JSON 损坏、读取失败等同样只影响该作业并保留原因，不阻塞任务结束。
+
+模型只能返回候选观察，且证据必须指向本次 transcript 中的用户消息；偏好与纠正要求用户明确表达，成功与失败要求验证依据。候选经既有材料校验和敏感信息检查后只写入 `inbox`（`origin:auto-extract`），摘要、条件、证据与相对路径都可定位，不会直接创建或修订正式知识，也不能指定其他项目、任务或会话。候选引用 `knowledgeId` 时与人工 `knowledge capture` 使用同一校验：必须指向本项目已有知识，否则该候选被拒；带 `knowledgeId` 的明确纠正或已验证失败同样登记即时反例、停止该知识的默认召回，并唤醒同知识或同条件的 `waiting` 材料。
 
 提取与复盘共用隔离执行器和项目外工作目录，但额度、状态和输入独立：`maxCaptureRunsPerDay` 只限制新作业，超时或进程中断的作业最多尝试两次；完成、跳过、失败与 `usage` 可在 `learning status` 的 `capture` 中查询，与复盘额度分开显示。相同候选 ID 与正文重放不会重复计数，正文不同则保留原记录。
 
 ## 学习漏斗报告
 
-`learning status` 是只读报告，按项目给出统计时点 `at` 和范围 `scope`。材料、提取作业与反馈可按 `--session`、`--task` 过滤；复盘运行和知识文件没有会话归属，仍按项目统计并显式标注为 `project`，不与过滤后的材料数混算。报告分开展示：
+`learning status` 是只读报告，按项目给出统计时点 `at` 和范围 `scope`。材料、提取作业与反馈可按 `--session`、`--task` 过滤：指定会话时只计入带同一 `sessionId` 的记录，同任务其他会话不会混入；缺少 `sessionId` 的旧记录（例如只带 `taskId` 的 `shown/adopted` 反馈）不计入会话结果，单列在 `unattributed` 的 `taskLevel` 或 `unknown` 中。复盘运行和知识文件没有会话归属，仍按项目统计并显式标注为 `project`，不与过滤后的材料数混算。额度字段（`todayStarted` 等）按项目实际累计，与实际执行时的判断一致，并标注 `project`。报告分开展示：
 
 - `materials`：材料总数与 `pending/waiting/processed`，另有顶层 `pending/waiting/processed` 兼容旧输出。
 - `evidence`：按 `success/failure/correction` 统计材料条数，不把展示次数当成功。

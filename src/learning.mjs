@@ -40,6 +40,37 @@ export function normalizeObservation(input) {
   if (SENSITIVE.test(JSON.stringify(result))) fail('SENSITIVE', '材料疑似包含凭据');
   return result;
 }
+// 人工采集与自动候选共用：明确纠正或已验证失败指向旧知识时，先让该知识停止默认召回。
+export function isCounterEvidence(material) {
+  return Boolean(material.knowledgeId) && ((material.kind === 'correction' && material.explicit) || (material.kind === 'failure' && material.verified));
+}
+export async function markCounterEvidence(project, material, save, at = material.createdAt || new Date().toISOString()) {
+  if (!isCounterEvidence(material)) return false;
+  project.learning ||= {};
+  project.learning.disputes ||= {};
+  project.learning.disputes[material.knowledgeId] = { observationId: material.id, reason: material.summary, at };
+  await save();
+  return true;
+}
+// 新材料的同知识或同条件等待项回到 pending，供下次复盘重新评估。
+export async function wakeWaiting(directory, project, material) {
+  let woken = 0;
+  for (const waiting of await readItems(directory, project, 'inbox')) {
+    if (waiting.id === material.id) continue;
+    if (waiting.status === 'waiting' && ((material.knowledgeId && waiting.knowledgeId === material.knowledgeId) || waiting.conditions === material.conditions)) {
+      waiting.status = 'pending'; waiting.wokenBy = material.id;
+      await putItem(directory, project, 'inbox', waiting);
+      woken++;
+    }
+  }
+  return woken;
+}
+// 材料引用的旧知识必须真实存在；否则反例、唤醒和复盘目标都可能指向不存在的条目。
+export async function requireKnowledge(project, knowledgeId) {
+  const entries = await readEntries(project);
+  if (!entries.some(entry => entry.id === knowledgeId)) fail('KNOWLEDGE', '知识不存在');
+  return entries;
+}
 export async function capture(directory, input) {
   const material = normalizeObservation(input.observation || input);
   return mutate(directory, async (state, save) => {
@@ -53,22 +84,12 @@ export async function capture(directory, input) {
       if (JSON.parse(old).hash !== hash) fail('CONFLICT', '同一材料 ID 正文不同');
       return { id: material.id, saved: true, replayed: true };
     }
+    if (material.knowledgeId) await requireKnowledge(project, material.knowledgeId);
     const now = new Date().toISOString();
     const item = { ...material, hash, projectId: project.projectId, taskId: task.taskId, sessionId: session.sessionId, turnId: session.turnId, createdAt: now, status: 'pending' };
-    // 明确反例先使旧经验停止默认召回，复盘完成后才决定修订。
-    if (material.knowledgeId && ((material.kind === 'correction' && material.explicit) || (material.kind === 'failure' && material.verified))) {
-      project.learning ||= {};
-      project.learning.disputes ||= {};
-      project.learning.disputes[material.knowledgeId] = { observationId: item.id, reason: material.summary, at: now };
-      await save();
-    }
+    await markCounterEvidence(project, item, save, now);
     await putItem(directory, project, 'inbox', item);
-    for (const waiting of await readItems(directory, project, 'inbox')) {
-      if (waiting.status === 'waiting' && ((item.knowledgeId && waiting.knowledgeId === item.knowledgeId) || waiting.conditions === item.conditions)) {
-        waiting.status = 'pending'; waiting.wokenBy = item.id;
-        await putItem(directory, project, 'inbox', waiting);
-      }
-    }
+    await wakeWaiting(directory, project, item);
     return { id: item.id, saved: true, status: 'pending' };
   });
 }
@@ -349,7 +370,7 @@ export async function feedback(directory, input) {
   if (['success', 'failure', 'correction'].includes(input.outcome)) return capture(directory, { ...input, observation: { ...input.observation, knowledgeId: key, kind: input.outcome } });
   return mutate(directory, async current => {
     const identity = currentIdentity(current, input);
-    const event = { id: identifier(input.id, 'feedback.id'), knowledgeId: key, outcome: input.outcome, taskId: identity.task.taskId, at: new Date().toISOString() };
+    const event = { id: identifier(input.id, 'feedback.id'), knowledgeId: key, outcome: input.outcome, taskId: identity.task.taskId, sessionId: identity.session.sessionId, at: new Date().toISOString() };
     await putItem(directory, identity.project, 'feedback', event);
     return { recorded: true, affectsMaturity: false };
   });

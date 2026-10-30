@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { readExtractionJobs, runExtractionJobs } from '../src/capture.mjs';
-import { capture, readEntries, readItems, renderEntry, selectKnowledge } from '../src/learning.mjs';
+import { capture, feedback, putItem, readEntries, readItems, renderEntry, selectKnowledge } from '../src/learning.mjs';
 import { setLearningConfig, setLearningEnabled, projectFor } from '../src/learning-config.mjs';
 import { learningStatus, reviewOnce } from '../src/review.mjs';
+import { readState } from '../src/store.mjs';
 import { event, fixture, identity, start, entry } from './helpers.mjs';
 
 // F16/F18 只使用人工重写的最小脱敏 transcript，不读取任何真实聊天记录。
@@ -274,7 +275,8 @@ test('F18 学习漏斗分开统计材料、运行、知识、反馈与提取作�
   // select 查询不算 adopted。
   await selectKnowledge(f.directory, f.project, { text: '等待', paths: ['src/login.mjs'] });
   const status = await learningStatus(f.directory, f.project, new Date(), { sessionId: f.sessionId, taskId: f.taskId });
-  assert.deepEqual(status.scope, { taskId: f.taskId, sessionId: f.sessionId, materials: 'filtered', runs: 'project', knowledge: 'project', capture: 'filtered', feedback: 'filtered' });
+  assert.deepEqual(status.scope, { taskId: f.taskId, sessionId: f.sessionId, materials: 'filtered', runs: 'project', knowledge: 'project', capture: 'filtered', feedback: 'filtered', unattributed: 'task-level-or-unknown' });
+  assert.deepEqual(status.unattributed, { scope: 'task-level-or-unknown', taskLevel: { materials: 0, capture: 0, feedback: 0 }, unknown: { materials: 0, capture: 0, feedback: 0 } });
   assert.equal(status.materials.total, 4);
   assert.equal(status.materials.pending, 1);
   assert.equal(status.materials.processed, 3);
@@ -291,7 +293,7 @@ test('F18 学习漏斗分开统计材料、运行、知识、反馈与提取作�
   assert.equal(status.capture.completed, 1);
   assert.equal(status.capture.todayStarted, 1);
   assert.deepEqual(status.capture.usage, { input_tokens: 20, output_tokens: 5 });
-  assert.deepEqual(status.limits.capture, { todayStarted: 1, maxRunsPerDay: 1 });
+  assert.deepEqual(status.limits.capture, { todayStarted: 1, maxRunsPerDay: 1, scope: 'project' });
   assert.ok(status.at);
 
   const quiet = await fixture();
@@ -299,4 +301,196 @@ test('F18 学习漏斗分开统计材料、运行、知识、反馈与提取作�
   assert.equal(empty.feedback.note, '无记录');
   assert.equal(empty.feedback.shown, 0);
   assert.equal(empty.feedback.adopted, 0);
+});
+
+test('F16 transcript 缺少会话身份时整份跳过，Codex 必须有匹配的 session_meta', async () => {
+  // Claude 记录逐条带 sessionId；缺失或他人的记录不能凭“没有识别到别的会话”被采用。
+  const anonymous = await fixture(); await start(anonymous); await setLearningEnabled(anonymous.directory, anonymous.project, true);
+  const anonymousPath = await writeTranscript(anonymous, [JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '先检查日志' }] } })], 'anonymous.jsonl');
+  await taskEnd(anonymous, anonymousPath);
+  let calls = 0;
+  const unknown = async () => { calls++; return { status: 'completed', answer: { candidates: [] } }; };
+  const anonymousRun = await extract(anonymous, unknown);
+  assert.equal(anonymousRun.status, 'skipped');
+  assert.equal(anonymousRun.reason, 'TRANSCRIPT_IDENTITY');
+  assert.equal(calls, 0);
+
+  // Codex 没有 session_meta 时无法建立正面身份，整份跳过。
+  const noMeta = await fixture(); await start(noMeta); await setLearningEnabled(noMeta.directory, noMeta.project, true);
+  const noMetaPath = await writeTranscript(noMeta, [JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '先检查日志' }] } })], 'codex-no-meta.jsonl');
+  await taskEnd(noMeta, noMetaPath);
+  const noMetaRun = await extract(noMeta, unknown);
+  assert.equal(noMetaRun.status, 'skipped');
+  assert.equal(noMetaRun.reason, 'TRANSCRIPT_IDENTITY');
+  assert.equal(calls, 0);
+
+  const foreign = await fixture(); await start(foreign); await setLearningEnabled(foreign.directory, foreign.project, true);
+  const foreignPath = await writeTranscript(foreign, [
+    JSON.stringify({ type: 'session_meta', payload: { id: 'other-session' } }),
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '先检查日志' }] } }),
+  ], 'codex-foreign.jsonl');
+  await taskEnd(foreign, foreignPath);
+  const foreignRun = await extract(foreign, unknown);
+  assert.equal(foreignRun.status, 'skipped');
+  assert.equal(foreignRun.reason, 'TRANSCRIPT_IDENTITY');
+  assert.equal(calls, 0);
+
+  // 匹配的 session_meta 才建立身份，候选仍只进 inbox。
+  const matched = await fixture(); await start(matched); await setLearningEnabled(matched.directory, matched.project, true);
+  const matchedPath = await writeTranscript(matched, [
+    JSON.stringify({ type: 'session_meta', payload: { id: matched.sessionId } }),
+    JSON.stringify({ type: 'response_item', payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: '不要一直等五分钟，先检查日志' }] } }),
+  ], 'codex-matched.jsonl');
+  await taskEnd(matched, matchedPath);
+  const matchedRun = await extract(matched, async () => ({ status: 'completed', answer: { candidates: [candidateFor(1)] } }));
+  assert.equal(matchedRun.status, 'completed');
+  assert.equal(matchedRun.candidates, 1);
+  assert.equal((await inboxOf(matched)).length, 1);
+});
+
+test('F16 transcript 路径必须是绝对路径的普通文件', async () => {
+  const f = await fixture(); await start(f); await setLearningEnabled(f.directory, f.project, true);
+  const ended = await taskEnd(f, 'transcript.jsonl');
+  assert.equal(ended.result.accepted, true);
+  assert.equal(ended.result.extraction.status, 'skipped');
+  assert.equal(ended.result.extraction.reason, 'TRANSCRIPT_PATH');
+  const jobs = await jobsOf(f);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].status, 'skipped');
+  assert.equal(jobs[0].reason, 'TRANSCRIPT_PATH');
+  let calls = 0;
+  assert.equal((await extract(f, async () => { calls++; })).status, 'idle');
+  assert.equal(calls, 0);
+});
+
+test('F16 transcript 真实路径与给定路径不一致时拒绝（目录链接）', async t => {
+  const f = await fixture(); await start(f); await setLearningEnabled(f.directory, f.project, true);
+  const real = path.join(f.area, 'real');
+  await mkdir(real);
+  await writeFile(path.join(real, 'transcript.jsonl'), transcriptLine(f.sessionId, 'user', '先检查日志') + '\n');
+  const linked = path.join(f.area, 'linked');
+  try { await symlink(real, linked, process.platform === 'win32' ? 'junction' : 'dir'); }
+  catch { t.skip('当前平台/账户无法创建目录链接'); return; }
+  const ended = await taskEnd(f, path.join(linked, 'transcript.jsonl'));
+  assert.equal(ended.result.accepted, true);
+  assert.equal(ended.result.extraction.status, 'skipped');
+  assert.equal(ended.result.extraction.reason, 'TRANSCRIPT_LINK');
+  let calls = 0;
+  assert.equal((await extract(f, async () => { calls++; })).status, 'idle');
+  assert.equal(calls, 0);
+});
+
+test('F16 transcript 文件符号链接被拒绝', async t => {
+  const f = await fixture(); await start(f); await setLearningEnabled(f.directory, f.project, true);
+  const real = path.join(f.area, 'real-transcript.jsonl');
+  await writeFile(real, transcriptLine(f.sessionId, 'user', '先检查日志') + '\n');
+  const link = path.join(f.area, 'link-transcript.jsonl');
+  try { await symlink(real, link, 'file'); }
+  catch { t.skip('当前 Windows 账户不能创建文件符号链接'); return; }
+  const ended = await taskEnd(f, link);
+  assert.equal(ended.result.accepted, true);
+  assert.equal(ended.result.extraction.status, 'skipped');
+  assert.equal(ended.result.extraction.reason, 'TRANSCRIPT_LINK');
+  let calls = 0;
+  assert.equal((await extract(f, async () => { calls++; })).status, 'idle');
+  assert.equal(calls, 0);
+});
+
+test('F16 自动反例与人工采集共享反例与唤醒处理，knowledgeId 必须存在', async () => {
+  const f = await fixture(); await start(f); await setLearningEnabled(f.directory, f.project, true);
+  await putKnowledge(f, 'K-old', '旧等待经验', '等五分钟再继续', ['src/login.mjs']);
+  const project = await projectFor(f.directory, f.project);
+  await putItem(f.directory, project, 'inbox', {
+    id: 'wait-1', incidentId: 'incident-wait', kind: 'success', summary: '待唤醒材料', conditions: '子智能体等待',
+    evidence: ['test:wait'], paths: [], knowledgeId: 'K-old', explicit: false, verified: true,
+    createdAt: '2026-10-29T00:00:00.000Z', projectId: f.projectId, taskId: 'task-old', sessionId: 'session-old', status: 'waiting',
+  });
+  const transcript = await writeTranscript(f, [transcriptLine(f.sessionId, 'user', '不要一直等五分钟，先检查日志')]);
+  await taskEnd(f, transcript);
+  const result = await extract(f, async () => ({ status: 'completed', answer: { candidates: [
+    candidateFor(1, { knowledgeId: 'K-old' }),
+    candidateFor(1, { knowledgeId: 'K-missing', summary: '引用不存在的旧知识' }),
+  ] } }));
+  assert.equal(result.status, 'completed');
+  assert.equal(result.candidates, 1);
+  assert.equal(result.rejected, 1);
+  const items = await inboxOf(f);
+  const auto = items.find(item => item.origin === 'auto-extract');
+  assert.ok(auto);
+  assert.equal(auto.status, 'pending');
+  assert.equal(items.some(item => item.knowledgeId === 'K-missing'), false);
+  // 同知识或同条件的 waiting 材料被唤醒回 pending。
+  const woken = items.find(item => item.id === 'wait-1');
+  assert.equal(woken.status, 'pending');
+  assert.equal(woken.wokenBy, auto.id);
+  // 明确反例立即停止该旧知识的默认召回。
+  const selected = await selectKnowledge(f.directory, f.project, { text: '等待', paths: ['src/login.mjs'] });
+  assert.equal(selected.selected.length, 0);
+  assert.ok(selected.excluded.some(item => item.id === 'K-old' && item.reason === '即时反例待处理'));
+  const state = await readState(f.directory);
+  assert.equal(state.projects[f.projectId].learning.disputes['K-old'].observationId, auto.id);
+});
+
+test('F18 会话过滤只计精确归属，任务级/未知归属单列，额度按项目累计', async () => {
+  const f = await fixture(); await start(f); await setLearningEnabled(f.directory, f.project, true);
+  await setLearningConfig(f.directory, f.project, { maxCaptureRunsPerDay: 5, maxRunsPerDay: 5 });
+  await putKnowledge(f, 'K-old', '旧等待经验', '等五分钟再继续', ['src/login.mjs']);
+  await observe(f, 1);
+  await feedback(f.directory, { ...await identity(f), knowledgeId: 'K-old', outcome: 'shown', id: 'shown-1' });
+  const project = await projectFor(f.directory, f.project);
+  // 旧记录只有 taskId：会话过滤时不能算成本会话反馈，单列为任务级。
+  await putItem(f.directory, project, 'feedback', { id: 'shown-task', knowledgeId: 'K-old', outcome: 'shown', taskId: f.taskId, at: '2026-10-29T00:00:00.000Z' });
+  // 同一任务的其他会话材料不得混入。
+  await putItem(f.directory, project, 'inbox', {
+    id: 'other-session', incidentId: 'incident-other', kind: 'success', summary: '其他会话材料', conditions: '其他',
+    evidence: ['test:other'], paths: [], knowledgeId: null, explicit: false, verified: true,
+    createdAt: '2026-10-29T00:00:00.000Z', projectId: f.projectId, taskId: f.taskId, sessionId: 'session-other', status: 'pending',
+  });
+  // 只有 taskId 的迁移材料归入任务级。
+  await putItem(f.directory, project, 'inbox', {
+    id: 'task-only', incidentId: 'incident-task-only', kind: 'success', summary: '任务级材料', conditions: '迁移',
+    evidence: ['test:task'], paths: [], knowledgeId: null, explicit: false, verified: true,
+    createdAt: '2026-10-29T00:00:00.000Z', projectId: f.projectId, taskId: f.taskId, status: 'pending',
+  });
+  const first = await taskEnd(f, await writeTranscript(f, [transcriptLine(f.sessionId, 'user', '先检查日志')], 'first.jsonl'));
+  assert.equal(first.result.extraction.status, 'registered');
+  assert.equal((await extract(f, async () => ({ status: 'completed', answer: { candidates: [] } }))).status, 'completed');
+
+  f.sessionId = 'session-2'; f.turnId = 'turn-2'; f.taskId = 'task-2';
+  await event(f, 'UserPromptSubmit'); await start(f);
+  await observe(f, 2);
+  const second = await taskEnd(f, await writeTranscript(f, [transcriptLine(f.sessionId, 'user', '第二会话')], 'second.jsonl'));
+  assert.equal(second.result.extraction.status, 'registered');
+  assert.equal((await extract(f, async () => ({ status: 'completed', answer: { candidates: [] } }))).status, 'completed');
+
+  // 新反馈事件带 sessionId，旧事件缺 sessionId 时不得冒充本会话。
+  const stored = await readItems(f.directory, project, 'feedback');
+  assert.equal(stored.find(item => item.id === 'shown-1').sessionId, 'session-1');
+  assert.equal(stored.find(item => item.id === 'shown-task').sessionId, undefined);
+
+  const scoped = await learningStatus(f.directory, f.project, new Date(), { sessionId: 'session-1', taskId: 'task-1' });
+  assert.equal(scoped.materials.total, 1);
+  assert.deepEqual({ shown: scoped.feedback.shown, adopted: scoped.feedback.adopted, total: scoped.feedback.total }, { shown: 1, adopted: 0, total: 1 });
+  assert.equal(scoped.capture.total, 1);
+  // 额度字段与实际执行判定一致，按项目累计并标注范围。
+  assert.equal(scoped.capture.todayStarted, 2);
+  assert.equal(scoped.capture.todayStartedScope, 'project');
+  assert.deepEqual(scoped.limits.capture, { todayStarted: 2, maxRunsPerDay: 5, scope: 'project' });
+  assert.deepEqual(scoped.limits.review, { todayStarted: 0, maxRunsPerDay: 5, scope: 'project' });
+  assert.deepEqual(scoped.unattributed, {
+    scope: 'task-level-or-unknown',
+    taskLevel: { materials: 1, capture: 0, feedback: 1 },
+    unknown: { materials: 0, capture: 0, feedback: 0 },
+  });
+
+  // 只按任务过滤时，任务级记录仍计入，但不会混入其他任务的会话。
+  const byTask = await learningStatus(f.directory, f.project, new Date(), { taskId: 'task-1' });
+  assert.equal(byTask.materials.total, 3);
+  assert.equal(byTask.feedback.total, 2);
+  assert.equal(byTask.unattributed, null);
+
+  // 同时指定任务和会话时，同任务其他会话不参与统计。
+  const both = await learningStatus(f.directory, f.project, new Date(), { taskId: 'task-1', sessionId: 'session-1' });
+  assert.equal(both.materials.total, 1);
+  assert.equal(both.capture.total, 1);
 });

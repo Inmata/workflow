@@ -938,6 +938,28 @@ test('F17 多材料决定整体拒绝；跨批引用只拒绝该项决定', asyn
   assert.deepEqual(entries.map(e => e.id).sort(), ['K-o4', 'K-old']);
 });
 
+test('F17 跨批引用真实存在的批外材料时，该材料内容与状态完全不变', async () => {
+  const f = await fixture(); await start(f);
+  await observe(f, 1); await observe(f, 2);
+  const project = await projectFor(f.directory, f.project);
+  // 固定顺序，确保单批限额下 o1 在批内、o2 是真实存在但批外的材料。
+  for (const [id, at] of [['o1', '2026-10-27T00:00:00.000Z'], ['o2', '2026-10-28T00:00:00.000Z']]) {
+    const item = (await readItems(f.directory, project, 'inbox')).find(entry => entry.id === id);
+    await putItem(f.directory, project, 'inbox', { ...item, createdAt: at });
+  }
+  await finish(f); await setLearningEnabled(f.directory, f.project, true);
+  await setLearningConfig(f.directory, f.project, { maxBatchItems: 1 });
+  const inboxFile = id => path.join(f.directory, 'projects', f.projectId, 'inbox', id + '.json');
+  const before = await readFile(inboxFile('o2'), 'utf8');
+  const result = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true, runner: async () => ({ status: 'completed', answer: { decisions: [createDecision('o2', { paths: [] })] } }) }));
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'RESULT');
+  assert.deepEqual(result.rejected[0].observationIds, ['o2']);
+  // 批外材料既不是本次决定可消费的材料，也不能被写入 lastRejected。
+  assert.equal(await readFile(inboxFile('o2'), 'utf8'), before);
+  assert.equal(JSON.parse(await readFile(inboxFile('o1'), 'utf8')).lastRejected, undefined);
+});
+
 test('F17 同一材料重复引用与同一知识重复修改都保守拒绝相关决定', async () => {
   const duplicate = await fixture(); await start(duplicate); await fourMaterials(duplicate);
   const dup = await reviewOnce(duplicate.directory, duplicate.project, fakeOptions({ nowRequested: true, runner: async () => ({ status: 'completed', answer: { decisions: [createDecision('o1'), { ...createDecision('o1'), action: 'wait', title: '', summary: '' }] } }) }));
