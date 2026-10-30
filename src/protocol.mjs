@@ -214,7 +214,7 @@ function batchReviewerFixes(items, task) {
   for (const reviewer of Object.values(task.packages || {})) {
     if (reviewer.role === 'reviewer' && reviewer.reviews && reviewer.verdict === 'FIX') add(reviewer.reviews, reviewer.packageId);
   }
-  // 同一批里同一 reviewer 重复出现时，后项覆盖前项，只按最终状态计入。
+  // 同一批已拒绝重复 packageId；这里用本批给出的 reviewer 最终状态覆盖旧账本。
   const merged = new Map();
   for (const item of items) {
     const previous = merged.get(item.packageId) || task.packages[item.packageId];
@@ -247,8 +247,32 @@ function chainHasPass(task, item, passTargets) {
   }
   return false;
 }
+// 曾 PASS 是单调事实：一旦审查给过 PASS，之后把 verdict 改成 FIX、换审查对象或取消 worker 都不能把它抹掉。
+// 旧账本没有 reviewPasses 字段时按当前 reviewer 的 PASS 动态推导；下一次写账本前落成历史，
+// 这样后续单独信号先改 verdict 再取消也仍能核对。历史事实只用于取消门禁，不放宽 reviewedRef 必须匹配最终交付的要求。
 function passTargetsOf(task) {
-  return new Set(Object.values(task.packages || {}).filter(p => p.role === 'reviewer' && p.reviews && p.verdict === 'PASS').map(p => p.reviews));
+  const targets = new Set(task.reviewPasses || []);
+  for (const item of Object.values(task.packages || {})) {
+    if (item.role === 'reviewer' && item.reviews && item.verdict === 'PASS') targets.add(item.reviews);
+  }
+  return targets;
+}
+function rememberPassTargets(task, items = []) {
+  const targets = new Set(task.reviewPasses || []);
+  const add = reviews => { if (reviews) targets.add(reviews); };
+  for (const item of Object.values(task.packages || {})) {
+    if (item.role === 'reviewer' && item.verdict === 'PASS') add(item.reviews);
+  }
+  // 本批声明过的 PASS 也算事实：同一批后续把它改成 FIX 不能反向抹掉。
+  for (const item of items) {
+    const previous = task.packages?.[item.packageId];
+    const role = item.role ?? previous?.role;
+    const verdict = item.verdict !== undefined ? item.verdict : previous?.verdict;
+    const reviews = item.reviews !== undefined ? item.reviews : previous?.reviews;
+    if (role === 'reviewer' && verdict === 'PASS') add(reviews);
+  }
+  if (targets.size) task.reviewPasses = [...targets];
+  return targets;
 }
 // 只读诊断免审：只能在首次创建 worker 包时声明；用途、只读范围与非空理由缺一不可。
 // 结论在交付时写在 note 里，门禁只核对它非空，不证明进程真的没有写入（信任边界）。
@@ -271,20 +295,18 @@ function diagnosticInput(value) {
 }
 // 整批预校验：取消/审查/诊断声明都在写入前判定，拒绝时本批不留下半成品记录。
 function validateBatch(task, items) {
+  // 同一批重复 packageId 会让预校验只看批前状态：例如先消费、再改 dispatched 补 diagnostic、最后再消费。
+  // 拒绝重复是最窄修复：一次信号里每个包只能有一项，批内顺序不再具有隐藏语义。
+  const seen = new Set();
+  for (const item of items) {
+    if (seen.has(item.packageId)) fail('PACKAGE', `同一批 packages 不能重复 packageId：${item.packageId}；请合并为一项或拆成独立信号`);
+    seen.add(item.packageId);
+  }
   const roles = new Map();
   for (const [packageId, item] of Object.entries(task.packages || {})) roles.set(packageId, item.role);
   for (const item of items) roles.set(item.packageId, item.role ?? roles.get(item.packageId));
-  const reviewerState = new Map();
-  for (const [packageId, item] of Object.entries(task.packages || {})) if (item.role === 'reviewer') reviewerState.set(packageId, { reviews: item.reviews, verdict: item.verdict });
-  for (const item of items) {
-    if (roles.get(item.packageId) !== 'reviewer') continue;
-    const previous = reviewerState.get(item.packageId) || {};
-    reviewerState.set(item.packageId, {
-      reviews: item.reviews !== undefined ? item.reviews : previous.reviews,
-      verdict: item.verdict !== undefined ? item.verdict : previous.verdict,
-    });
-  }
-  const passTargets = new Set([...reviewerState.values()].filter(state => state.verdict === 'PASS' && state.reviews).map(state => state.reviews));
+  // 取消检查用单调的曾 PASS 事实，而不是本批合并后的当前 verdict：同批或跨信号把审查改 FIX 都不能洗白。
+  const passTargets = passTargetsOf(task);
   const diagnostics = new Map();
   for (const item of items) {
     const previous = task.packages?.[item.packageId];
@@ -323,6 +345,8 @@ export function upsertPackages(task, items, change = null) {
   task.packages ||= {};
   const repairLimit = [];
   const parsed = items.map(packageInput);
+  // 先落单调的曾 PASS 事实，再预校验：同一批或后续信号把审查改 FIX 也不能让已审包取消。
+  rememberPassTargets(task, parsed);
   const { diagnostics } = validateBatch(task, parsed);
   const reviewerFixes = batchReviewerFixes(parsed, task);
   const fixRequested = packageId => (reviewerFixes.get(packageId)?.size || 0) > 0;
@@ -472,7 +496,7 @@ export function gateReport(state, task, finalRef, root, spec) {
   for (const item of packages) if (!TERMINAL_PACKAGE.includes(item.status)) missing.push(`terminal:${item.packageId}`);
   const passTargets = passTargetsOf(task);
   const diagnostic = [];
-  // 已 PASS 的 worker 包即使历史记录里被标成 canceled，也不能因此退出审查；未审取消照旧放行。
+  // 曾有 PASS 的 worker 包即使历史记录里被标成 canceled、或当前 verdict 后来改成 FIX，也不能因此退出审查；未审取消照旧放行。
   for (const worker of packages.filter(item => item.role === 'worker' && item.status !== 'waived' && !item.supersededBy)) {
     if (worker.status === 'canceled' && !chainHasPass(task, worker, passTargets)) continue;
     if (worker.diagnostic) {

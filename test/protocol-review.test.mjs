@@ -1,7 +1,7 @@
 // 合成 fixture（synthetic）：F11 route/通道声明契约、F12 已审包取消与返修 ref、F14 首次声明只读诊断免审。
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readState } from '../src/store.mjs';
+import { mutate, readState } from '../src/store.mjs';
 import { gateReport, taskKey } from '../src/protocol.mjs';
 import { emit, fixture, gitFixture } from './helpers.mjs';
 
@@ -59,6 +59,48 @@ test('F12 未审包仍可取消；最终 ref 仍含被取消改动时门禁只�
   const ended = await emit(f, { action: 'task-end', finalRef: 'm1', validation: { ref: 'm1', evidence: ['合成边界样例：最终 ref 仍可能包含被取消改动'] } });
   assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
   assert.match(ended.result.gate, /declared-records-consistent/);
+});
+
+test('F12 曾 PASS 是单调事实：同批改写审查或先改 FIX 再取消都不能退出门禁', async () => {
+  const f = await gitFixture(['m1']);
+  await delegated(f);
+  await packages(f, [
+    { packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v1' },
+    { packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', reviewedRef: 'v1', verdict: 'PASS' },
+  ], { validation });
+  // 旧账本没有 reviewPasses 字段：删除后仍应按当前 PASS 动态推导，并在下一次写入前落成历史。
+  await mutate(f.directory, async state => { delete state.tasks[taskKey(f.projectId, f.taskId)].reviewPasses; });
+  const before = structuredClone((await taskOf(f)).packages);
+
+  // 同批把审查改 FIX 并取消：不能只看合并后的当前 reviewer 状态。
+  const sameBatch = await packages(f, [
+    { packageId: 'r1', status: 'consumed', reviews: 'w1', reviewedRef: 'v1', verdict: 'FIX' },
+    { packageId: 'w1', status: 'canceled' },
+  ]);
+  assert.equal(sameBatch.result.accepted, false, JSON.stringify(sameBatch.result));
+  assert.equal(sameBatch.result.reason, 'PACKAGE');
+  assert.match(sameBatch.result.message, /PASS/);
+  assert.match(sameBatch.result.message, /canceled/);
+  assert.deepEqual((await taskOf(f)).packages, before, '同批攻击被拒后账本完全不变');
+  assert.equal((await taskOf(f)).reviewPasses, undefined, '拒绝的批次不能留下历史事实');
+
+  // 分开信号：先改审查为 FIX，仍要保留曾 PASS 事实，随后取消继续被拒。
+  assert.equal((await packages(f, [{ packageId: 'r1', verdict: 'FIX' }])).result.accepted, true);
+  assert.deepEqual((await taskOf(f)).reviewPasses, ['w1']);
+  const denied = await packages(f, [{ packageId: 'w1', status: 'canceled' }]);
+  assert.equal(denied.result.accepted, false, JSON.stringify(denied.result));
+  assert.match(denied.result.message, /PASS/);
+  const unchanged = (await taskOf(f)).packages.w1;
+  assert.equal(unchanged.status, 'consumed');
+  assert.equal(unchanged.deliveredRef, 'v1');
+  const gated = await emit(f, { action: 'task-end', finalRef: 'm1' });
+  assert.deepEqual(gated.result.missing, ['review:w1']);
+
+  // 合法返修新 ref 再审不被历史事实阻塞。
+  await packages(f, [{ packageId: 'w1', status: 'consumed', deliveredRef: 'v2' }]);
+  await packages(f, [{ packageId: 'r1', status: 'consumed', reviews: 'w1', reviewedRef: 'v2', verdict: 'PASS' }]);
+  const ended = await emit(f, { action: 'task-end', finalRef: 'm1' });
+  assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
 });
 
 test('F12 同包返修后旧 PASS 不再匹配，新 reviewedRef 对上最终交付才通过', async () => {

@@ -515,6 +515,11 @@ test('F13 真实 PostToolUse 回执逐类定位拒绝内容，修正后接受；
   const wrongObject = await accept(f, 'packages', ['--id', 'r3-wrong', '--package', 'r3', '--role', 'reviewer', '--status', 'consumed', '--reviews', 'r1', '--verdict', 'PASS', '--ref', 'v1']);
   assert.equal(wrongObject.receipt.reason, 'PACKAGE');
   assert.match(wrongObject.receipt.message, /worker/);
+  // 逐类恢复：未登记对象和错误对象修正后都能被同一回执路径接受。
+  const ghostFixed = await accept(f, 'packages', ['--id', 'r2-fixed', '--package', 'r2', '--role', 'reviewer', '--status', 'consumed', '--reviews', 'w1', '--verdict', 'PASS', '--ref', 'v1']);
+  assert.equal(ghostFixed.receipt.accepted, true, JSON.stringify(ghostFixed.receipt));
+  const wrongFixed = await accept(f, 'packages', ['--id', 'r3-fixed', '--package', 'r3', '--role', 'reviewer', '--status', 'consumed', '--reviews', 'w1', '--verdict', 'PASS', '--ref', 'v1']);
+  assert.equal(wrongFixed.receipt.accepted, true, JSON.stringify(wrongFixed.receipt));
 
   // 同 signalId、同正文重试命中回执；同 ID 改正文继续拒绝。
   const first = await accept(f, 'packages', ['--id', 'idem-note', '--package', 'w1', '--note', '交付说明']);
@@ -541,8 +546,31 @@ test('F13 真实 PostToolUse 回执逐类定位拒绝内容，修正后接受；
   assert.equal(mismatch.receipt.accepted, false, JSON.stringify(mismatch.receipt));
   assert.deepEqual(mismatch.receipt.missing, ['review:w1']);
   await accept(f, 'packages', ['--id', 'r1-v2', '--package', 'r1', '--status', 'consumed', '--reviews', 'w1', '--ref', 'v2']);
+  // 缺 deliveredRef：worker 没有交付版本时 PASS 无法绑定，task-end 仍拒绝并点出包；补 ref 后恢复。
+  await accept(f, 'packages', ['--id', 'w2-new', '--package', 'w2', '--role', 'worker', '--status', 'consumed']);
+  const w2Review = await accept(f, 'packages', ['--id', 'r2-w2', '--package', 'r2', '--status', 'consumed', '--reviews', 'w2', '--ref', 'v2', '--verdict', 'PASS']);
+  assert.equal(w2Review.receipt.accepted, true, JSON.stringify(w2Review.receipt));
+  const missingRef = await accept(f, 'task-end', ['--id', 'end-missing-ref', '--final-ref', 'm1', '--evidence', 'npm test 通过']);
+  assert.equal(missingRef.receipt.accepted, false, JSON.stringify(missingRef.receipt));
+  assert.deepEqual(missingRef.receipt.missing, ['review:w2']);
+  const deliveredRef = await emit(f, { action: 'packages', packages: [{ packageId: 'w2', status: 'consumed', deliveredRef: 'v2' }], validation: { ref: 'm1', evidence: ['npm test 通过'] } });
+  assert.equal(deliveredRef.result.accepted, true, JSON.stringify(deliveredRef.result));
+  // Stop 与账本一致：门禁其余条目已齐，只提醒任务仍 active。
+  const stopReady = await event(f, 'Stop');
+  assert.equal(stopReady.decision, 'block', JSON.stringify(stopReady));
+  assert.match(stopReady.reason, /门禁已无缺项但仍为 active/);
   const ended = await accept(f, 'task-end', ['--id', 'end-fixed', '--final-ref', 'm1', '--evidence', 'npm test 通过']);
   assert.equal(ended.receipt.accepted, true, JSON.stringify(ended.receipt));
+  const finalTask = Object.values((await readState(f.directory)).tasks)[0];
+  assert.equal(finalTask.lifecycle, 'complete');
+  assert.deepEqual(
+    { w1: finalTask.packages.w1.status, w2: finalTask.packages.w2.status, r1: finalTask.packages.r1.verdict, r2: finalTask.packages.r2.verdict, r3: finalTask.packages.r3.verdict },
+    { w1: 'consumed', w2: 'consumed', r1: 'PASS', r2: 'PASS', r3: 'PASS' },
+  );
+  // 新回合已无活动任务，Stop 放行。
+  f.turnId = 'turn-after-end';
+  await event(f, 'UserPromptSubmit');
+  assert.deepEqual(await event(f, 'Stop'), {});
 
   // 角色错误：非法 role-claim 返回 ROLE，修正为 worker 后接受；worker 会话不能再发业务信号。
   const worker = { sessionId: 'worker-session', turnId: 'worker-turn' };
@@ -553,4 +581,38 @@ test('F13 真实 PostToolUse 回执逐类定位拒绝内容，修正后接受；
   assert.equal(claimed.receipt.accepted, true, JSON.stringify(claimed.receipt));
   const forbidden = await accept(f, 'packages', ['--id', 'worker-pkg', '--package', 'w1', '--status', 'dispatched', '--task', f.taskId], worker);
   assert.equal(forbidden.receipt.reason, 'ROLE');
+});
+
+test('F12/F14 同一批重复 packageId 整批拒绝，diagnostic 不能借批内重写补挂', async () => {
+  const f = await gitFixture(['m1']);
+  await emit(f, { action: 'task-start', goal: '重复包反例', route: 'delegated', permissions: { mode: 'write', allowedPaths: ['README.md'] } });
+  const before = structuredClone(Object.values((await readState(f.directory)).tasks)[0].packages);
+  // 同一批内新建 w1 并消费，再改 dispatched 补 diagnostic，再消费写结论：批前预校验看不到批内前项，必须整批拒绝。
+  const file = path.join(f.area, 'duplicate.json');
+  await writeFile(file, JSON.stringify({ packages: [
+    { packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v1' },
+    { packageId: 'w1', status: 'dispatched', diagnostic: { purpose: '核对 README', scope: ['README.md'], reason: '只读核对' } },
+    { packageId: 'w1', status: 'consumed', note: '结论：一致；证据 README.md' },
+  ] }));
+  const duplicate = await accept(f, 'packages', ['--id', 'dupe-batch', '--input', file]);
+  assert.equal(duplicate.receipt.accepted, false, JSON.stringify(duplicate.receipt));
+  assert.equal(duplicate.receipt.reason, 'PACKAGE');
+  assert.match(duplicate.receipt.message, /重复/);
+  const task = Object.values((await readState(f.directory)).tasks)[0];
+  assert.deepEqual(task.packages, before, '重复包被拒必须整批回滚，不留下 diagnostic 或半成品状态');
+  assert.equal(task.packages.w1, undefined);
+  // 绕过被堵住后，正常创建的 w1 仍要审查，不能免审收尾。
+  await accept(f, 'packages', ['--id', 'w1-first', '--package', 'w1', '--role', 'worker', '--status', 'consumed', '--ref', 'v1']);
+  const gated = await accept(f, 'task-end', ['--id', 'end-before-review', '--final-ref', 'm1', '--evidence', 'npm test 通过']);
+  assert.equal(gated.receipt.accepted, false, JSON.stringify(gated.receipt));
+  assert.deepEqual(gated.receipt.missing, ['review:w1']);
+  // 正常派审后同一账本可以收尾。
+  await accept(f, 'packages', ['--id', 'r1-pass', '--package', 'r1', '--role', 'reviewer', '--status', 'consumed', '--reviews', 'w1', '--verdict', 'PASS', '--ref', 'v1']);
+  const ended = await accept(f, 'task-end', ['--id', 'end-after-review', '--final-ref', 'm1', '--evidence', 'npm test 通过']);
+  assert.equal(ended.receipt.accepted, true, JSON.stringify(ended.receipt));
+  const finalTask = Object.values((await readState(f.directory)).tasks)[0];
+  assert.equal(finalTask.lifecycle, 'complete');
+  assert.equal(finalTask.packages.w1.status, 'consumed');
+  assert.equal(finalTask.packages.w1.diagnostic, undefined);
+  assert.equal(finalTask.packages.r1.verdict, 'PASS');
 });
