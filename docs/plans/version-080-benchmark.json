@@ -1,0 +1,2360 @@
+{
+  "date": "2026-10-30",
+  "node": "v24.21.0",
+  "source": "5eddd1e162c9fe7fc0795e5b9e1dd481f72b9ce0",
+  "baselineTag": "v0.7.0",
+  "baselineTagObject": "b47aab1a2754e207205c047a135d86fed687ad66",
+  "installedDigest": "cd2f4b5b7f28e479204c40546f304c30f197f99e70ceec42e164bdb6ea8d7c81",
+  "rows": [
+    {
+      "round": 0,
+      "variant": "release070",
+      "scenario": "prompt",
+      "ms": 229.25259999999997,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "installed070",
+      "scenario": "prompt",
+      "ms": 235.4728,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "source080",
+      "scenario": "prompt",
+      "ms": 230.06679999999994,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "release070",
+      "scenario": "posttool",
+      "ms": 121.10749999999996,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "installed070",
+      "scenario": "posttool",
+      "ms": 129.67950000000002,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "source080",
+      "scenario": "posttool",
+      "ms": 128.01459999999997,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "release070",
+      "scenario": "stop-no-spec",
+      "ms": 233.9375,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "installed070",
+      "scenario": "stop-no-spec",
+      "ms": 226.6896999999999,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "source080",
+      "scenario": "stop-no-spec",
+      "ms": 228.45770000000005,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "release070",
+      "scenario": "end-no-spec",
+      "ms": 228.322,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "installed070",
+      "scenario": "end-no-spec",
+      "ms": 226.6866,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "source080",
+      "scenario": "end-no-spec",
+      "ms": 224.24059999999997,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "release070",
+      "scenario": "stop-spec",
+      "ms": 600.5953000000001,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "installed070",
+      "scenario": "stop-spec",
+      "ms": 686.8552999999999,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "source080",
+      "scenario": "stop-spec",
+      "ms": 674.1301000000001,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "release070",
+      "scenario": "end-spec",
+      "ms": 663.7378,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "installed070",
+      "scenario": "end-spec",
+      "ms": 734.1913000000001,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "source080",
+      "scenario": "end-spec",
+      "ms": 679.7336,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "source080",
+      "scenario": "prompt",
+      "ms": 268.95670000000007,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "installed070",
+      "scenario": "prompt",
+      "ms": 230.71180000000004,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "release070",
+      "scenario": "prompt",
+      "ms": 232.58039999999994,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "source080",
+      "scenario": "posttool",
+      "ms": 122.53289999999998,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "installed070",
+      "scenario": "posttool",
+      "ms": 121.5353,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "release070",
+      "scenario": "posttool",
+      "ms": 125.95979999999997,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "source080",
+      "scenario": "stop-no-spec",
+      "ms": 224.21480000000008,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "installed070",
+      "scenario": "stop-no-spec",
+      "ms": 235.3832,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "release070",
+      "scenario": "stop-no-spec",
+      "ms": 222.78919999999994,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "source080",
+      "scenario": "end-no-spec",
+      "ms": 225.02110000000005,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "installed070",
+      "scenario": "end-no-spec",
+      "ms": 265.09069999999997,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "release070",
+      "scenario": "end-no-spec",
+      "ms": 223.18710000000004,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "source080",
+      "scenario": "stop-spec",
+      "ms": 716.1315999999999,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "installed070",
+      "scenario": "stop-spec",
+      "ms": 714.2182999999999,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "release070",
+      "scenario": "stop-spec",
+      "ms": 613.3351,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "source080",
+      "scenario": "end-spec",
+      "ms": 735.9920999999999,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "installed070",
+      "scenario": "end-spec",
+      "ms": 679.6792999999999,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "release070",
+      "scenario": "end-spec",
+      "ms": 654.2150999999999,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "release070",
+      "scenario": "prompt",
+      "ms": 234.567,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "installed070",
+      "scenario": "prompt",
+      "ms": 279.5351,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "source080",
+      "scenario": "prompt",
+      "ms": 231.5292,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "release070",
+      "scenario": "posttool",
+      "ms": 127.35950000000003,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "installed070",
+      "scenario": "posttool",
+      "ms": 125.20819999999998,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "source080",
+      "scenario": "posttool",
+      "ms": 125.01670000000001,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "release070",
+      "scenario": "stop-no-spec",
+      "ms": 226.0018,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "installed070",
+      "scenario": "stop-no-spec",
+      "ms": 223.1123,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "source080",
+      "scenario": "stop-no-spec",
+      "ms": 226.39199999999994,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "release070",
+      "scenario": "end-no-spec",
+      "ms": 272.36030000000005,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "installed070",
+      "scenario": "end-no-spec",
+      "ms": 232.9457,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "source080",
+      "scenario": "end-no-spec",
+      "ms": 226.44810000000007,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "release070",
+      "scenario": "stop-spec",
+      "ms": 612.2204999999999,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "installed070",
+      "scenario": "stop-spec",
+      "ms": 726.0717999999999,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "source080",
+      "scenario": "stop-spec",
+      "ms": 677.7981000000001,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "release070",
+      "scenario": "end-spec",
+      "ms": 648.9720999999998,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "installed070",
+      "scenario": "end-spec",
+      "ms": 674.1965999999999,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "source080",
+      "scenario": "end-spec",
+      "ms": 681.9816,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "source080",
+      "scenario": "prompt",
+      "ms": 273.55100000000004,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "installed070",
+      "scenario": "prompt",
+      "ms": 234.6669,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "release070",
+      "scenario": "prompt",
+      "ms": 232.62249999999995,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "source080",
+      "scenario": "posttool",
+      "ms": 120.59039999999999,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "installed070",
+      "scenario": "posttool",
+      "ms": 129.32619999999997,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "release070",
+      "scenario": "posttool",
+      "ms": 124.95499999999993,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "source080",
+      "scenario": "stop-no-spec",
+      "ms": 237.0281,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "installed070",
+      "scenario": "stop-no-spec",
+      "ms": 226.88279999999997,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "release070",
+      "scenario": "stop-no-spec",
+      "ms": 224.3886,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "source080",
+      "scenario": "end-no-spec",
+      "ms": 270.2318,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "installed070",
+      "scenario": "end-no-spec",
+      "ms": 263.3256,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "release070",
+      "scenario": "end-no-spec",
+      "ms": 231.87400000000002,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "source080",
+      "scenario": "stop-spec",
+      "ms": 721.9483,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "installed070",
+      "scenario": "stop-spec",
+      "ms": 719.5133000000001,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "release070",
+      "scenario": "stop-spec",
+      "ms": 656.5156000000001,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "source080",
+      "scenario": "end-spec",
+      "ms": 727.6961,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "installed070",
+      "scenario": "end-spec",
+      "ms": 727.1152999999999,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 3,
+      "variant": "release070",
+      "scenario": "end-spec",
+      "ms": 657.2137999999999,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "release070",
+      "scenario": "prompt",
+      "ms": 230.08669999999995,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "installed070",
+      "scenario": "prompt",
+      "ms": 275.73819999999995,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "source080",
+      "scenario": "prompt",
+      "ms": 232.34180000000003,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "release070",
+      "scenario": "posttool",
+      "ms": 120.40840000000003,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "installed070",
+      "scenario": "posttool",
+      "ms": 120.3836,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "source080",
+      "scenario": "posttool",
+      "ms": 133.37,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "release070",
+      "scenario": "stop-no-spec",
+      "ms": 259.14239999999995,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "installed070",
+      "scenario": "stop-no-spec",
+      "ms": 304.2265000000001,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "source080",
+      "scenario": "stop-no-spec",
+      "ms": 236.3197,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "release070",
+      "scenario": "end-no-spec",
+      "ms": 224.31639999999993,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "installed070",
+      "scenario": "end-no-spec",
+      "ms": 270.01289999999995,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "source080",
+      "scenario": "end-no-spec",
+      "ms": 224.70439999999996,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "release070",
+      "scenario": "stop-spec",
+      "ms": 706.0420000000001,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "installed070",
+      "scenario": "stop-spec",
+      "ms": 834.1093000000001,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "source080",
+      "scenario": "stop-spec",
+      "ms": 893.0301000000001,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "release070",
+      "scenario": "end-spec",
+      "ms": 699.6158000000001,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "installed070",
+      "scenario": "end-spec",
+      "ms": 768.0102,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 4,
+      "variant": "source080",
+      "scenario": "end-spec",
+      "ms": 780.6022,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "source080",
+      "scenario": "prompt",
+      "ms": 229.4149,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "installed070",
+      "scenario": "prompt",
+      "ms": 276.6798,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "release070",
+      "scenario": "prompt",
+      "ms": 240.65249999999997,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "source080",
+      "scenario": "posttool",
+      "ms": 132.8231,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "installed070",
+      "scenario": "posttool",
+      "ms": 175.73850000000004,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "release070",
+      "scenario": "posttool",
+      "ms": 127.43619999999999,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "source080",
+      "scenario": "stop-no-spec",
+      "ms": 244.02139999999997,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "installed070",
+      "scenario": "stop-no-spec",
+      "ms": 291.7739,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "release070",
+      "scenario": "stop-no-spec",
+      "ms": 278.93690000000004,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "source080",
+      "scenario": "end-no-spec",
+      "ms": 298.6191,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "installed070",
+      "scenario": "end-no-spec",
+      "ms": 294.1051,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "release070",
+      "scenario": "end-no-spec",
+      "ms": 291.8437,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "source080",
+      "scenario": "stop-spec",
+      "ms": 903.7568000000001,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "installed070",
+      "scenario": "stop-spec",
+      "ms": 694.5661,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "release070",
+      "scenario": "stop-spec",
+      "ms": 663.3367,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "source080",
+      "scenario": "end-spec",
+      "ms": 692.124,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "installed070",
+      "scenario": "end-spec",
+      "ms": 675.1288999999999,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 5,
+      "variant": "release070",
+      "scenario": "end-spec",
+      "ms": 712.2850000000001,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "release070",
+      "scenario": "prompt",
+      "ms": 265.58849999999995,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "installed070",
+      "scenario": "prompt",
+      "ms": 230.51500000000004,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "source080",
+      "scenario": "prompt",
+      "ms": 234.5428,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "release070",
+      "scenario": "posttool",
+      "ms": 126.63350000000003,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "installed070",
+      "scenario": "posttool",
+      "ms": 127.0874,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "source080",
+      "scenario": "posttool",
+      "ms": 121.01590000000004,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "release070",
+      "scenario": "stop-no-spec",
+      "ms": 228.0075,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "installed070",
+      "scenario": "stop-no-spec",
+      "ms": 218.46360000000004,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "source080",
+      "scenario": "stop-no-spec",
+      "ms": 225.76729999999998,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "release070",
+      "scenario": "end-no-spec",
+      "ms": 223.7647,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "installed070",
+      "scenario": "end-no-spec",
+      "ms": 262.6467,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "source080",
+      "scenario": "end-no-spec",
+      "ms": 221.8356,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "release070",
+      "scenario": "stop-spec",
+      "ms": 665.6694,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "installed070",
+      "scenario": "stop-spec",
+      "ms": 709.8616,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "source080",
+      "scenario": "stop-spec",
+      "ms": 716.8004,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "release070",
+      "scenario": "end-spec",
+      "ms": 608.2336,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "installed070",
+      "scenario": "end-spec",
+      "ms": 669.8682999999999,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 6,
+      "variant": "source080",
+      "scenario": "end-spec",
+      "ms": 694.4323999999999,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "source080",
+      "scenario": "prompt",
+      "ms": 230.11440000000005,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "installed070",
+      "scenario": "prompt",
+      "ms": 223.62160000000006,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "release070",
+      "scenario": "prompt",
+      "ms": 232.79809999999998,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "source080",
+      "scenario": "posttool",
+      "ms": 130.61540000000002,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "installed070",
+      "scenario": "posttool",
+      "ms": 133.05630000000002,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "release070",
+      "scenario": "posttool",
+      "ms": 134.9701,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "source080",
+      "scenario": "stop-no-spec",
+      "ms": 230.05780000000004,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "installed070",
+      "scenario": "stop-no-spec",
+      "ms": 286.1354,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "release070",
+      "scenario": "stop-no-spec",
+      "ms": 220.68240000000003,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "source080",
+      "scenario": "end-no-spec",
+      "ms": 224.11919999999998,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "installed070",
+      "scenario": "end-no-spec",
+      "ms": 231.34029999999996,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "release070",
+      "scenario": "end-no-spec",
+      "ms": 234.5181,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "source080",
+      "scenario": "stop-spec",
+      "ms": 672.9931,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "installed070",
+      "scenario": "stop-spec",
+      "ms": 721.7096,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "release070",
+      "scenario": "stop-spec",
+      "ms": 650.9829,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "source080",
+      "scenario": "end-spec",
+      "ms": 736.5664999999999,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "installed070",
+      "scenario": "end-spec",
+      "ms": 733.1172,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 7,
+      "variant": "release070",
+      "scenario": "end-spec",
+      "ms": 609.7834,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "release070",
+      "scenario": "prompt",
+      "ms": 228.69879999999995,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "installed070",
+      "scenario": "prompt",
+      "ms": 232.0781,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "source080",
+      "scenario": "prompt",
+      "ms": 235.64979999999997,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "release070",
+      "scenario": "posttool",
+      "ms": 161.87390000000005,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "installed070",
+      "scenario": "posttool",
+      "ms": 122.10210000000001,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "source080",
+      "scenario": "posttool",
+      "ms": 125.11869999999999,
+      "success": true,
+      "receipt": null,
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "release070",
+      "scenario": "stop-no-spec",
+      "ms": 225.93290000000002,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "installed070",
+      "scenario": "stop-no-spec",
+      "ms": 219.9687,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "source080",
+      "scenario": "stop-no-spec",
+      "ms": 221.7851,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "release070",
+      "scenario": "end-no-spec",
+      "ms": 223.15909999999997,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "installed070",
+      "scenario": "end-no-spec",
+      "ms": 223.6698,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "source080",
+      "scenario": "end-no-spec",
+      "ms": 220.26070000000004,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "release070",
+      "scenario": "stop-spec",
+      "ms": 606.4639,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "installed070",
+      "scenario": "stop-spec",
+      "ms": 674.2678999999999,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "source080",
+      "scenario": "stop-spec",
+      "ms": 679.1747,
+      "success": true,
+      "receipt": null,
+      "decision": "block",
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "release070",
+      "scenario": "end-spec",
+      "ms": 604.0877,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "installed070",
+      "scenario": "end-spec",
+      "ms": 679.2096999999999,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 8,
+      "variant": "source080",
+      "scenario": "end-spec",
+      "ms": 735.2096000000001,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": null,
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "release070",
+      "scenario": "end-spec-slow",
+      "ms": 2821.7644,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": {
+        "acquired": false,
+        "waitMs": 1205.5863000000002,
+        "error": "LOCKED"
+      },
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "installed070",
+      "scenario": "end-spec-slow",
+      "ms": 3289.1415999999995,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": {
+        "acquired": true,
+        "waitMs": 6.059200000000004
+      },
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "source080",
+      "scenario": "end-spec-slow",
+      "ms": 3179.1234,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": {
+        "acquired": true,
+        "waitMs": 6.2074
+      },
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "source080",
+      "scenario": "end-spec-slow",
+      "ms": 3206.9345000000003,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": {
+        "acquired": true,
+        "waitMs": 6.207000000000004
+      },
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "installed070",
+      "scenario": "end-spec-slow",
+      "ms": 3258.0453,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": {
+        "acquired": true,
+        "waitMs": 5.963499999999996
+      },
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 1,
+      "variant": "release070",
+      "scenario": "end-spec-slow",
+      "ms": 2896.4854,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": {
+        "acquired": false,
+        "waitMs": 1208.4649,
+        "error": "LOCKED"
+      },
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "release070",
+      "scenario": "end-spec-slow",
+      "ms": 2779.0553,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": {
+        "acquired": false,
+        "waitMs": 1210.508,
+        "error": "LOCKED"
+      },
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "installed070",
+      "scenario": "end-spec-slow",
+      "ms": 3305.1482,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": {
+        "acquired": true,
+        "waitMs": 6.243100000000002
+      },
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 2,
+      "variant": "source080",
+      "scenario": "end-spec-slow",
+      "ms": 3754.3525,
+      "success": true,
+      "receipt": {
+        "accepted": true,
+        "revision": 3,
+        "taskId": "bench-task",
+        "phase": "unknown"
+      },
+      "lock": {
+        "acquired": true,
+        "waitMs": 6.414399999999997
+      },
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "release070",
+      "scenario": "end-spec-hang",
+      "ms": 10280.113,
+      "success": true,
+      "receipt": {
+        "accepted": false,
+        "reason": "GATE",
+        "message": "完成门禁未满足：spec-check:git",
+        "missing": [
+          "spec-check:git"
+        ],
+        "expectedRevision": 2,
+        "turnId": "bench-turn"
+      },
+      "lock": {
+        "acquired": false,
+        "waitMs": 1206.2479999999998,
+        "error": "LOCKED"
+      },
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "installed070",
+      "scenario": "end-spec-hang",
+      "ms": 4234.3973,
+      "success": true,
+      "receipt": {
+        "accepted": false,
+        "reason": "GATE",
+        "message": "完成门禁未满足：spec-check:git",
+        "missing": [
+          "spec-check:git"
+        ],
+        "expectedRevision": 2,
+        "turnId": "bench-turn"
+      },
+      "lock": {
+        "acquired": true,
+        "waitMs": 6.016300000000001
+      },
+      "files": 47,
+      "error": null
+    },
+    {
+      "round": 0,
+      "variant": "source080",
+      "scenario": "end-spec-hang",
+      "ms": 4241.839599999999,
+      "success": true,
+      "receipt": {
+        "accepted": false,
+        "reason": "GATE",
+        "message": "完成门禁未满足：spec-check:git",
+        "missing": [
+          "spec-check:git"
+        ],
+        "expectedRevision": 2,
+        "turnId": "bench-turn"
+      },
+      "lock": {
+        "acquired": true,
+        "waitMs": 6.539900000000003
+      },
+      "files": 47,
+      "error": null
+    }
+  ]
+}
