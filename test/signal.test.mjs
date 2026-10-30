@@ -510,9 +510,11 @@ test('F13 真实 PostToolUse 回执逐类定位拒绝内容，修正后接受；
 
   // 审查对象未登记、或指向 reviewer 包，都给出可定位 PACKAGE；不会模糊成功。
   const ghost = await accept(f, 'packages', ['--id', 'r2-ghost', '--package', 'r2', '--role', 'reviewer', '--status', 'consumed', '--reviews', 'ghost', '--verdict', 'PASS', '--ref', 'v1']);
+  assert.equal(ghost.receipt.accepted, false, JSON.stringify(ghost.receipt));
   assert.equal(ghost.receipt.reason, 'PACKAGE');
   assert.match(ghost.receipt.message, /ghost/);
   const wrongObject = await accept(f, 'packages', ['--id', 'r3-wrong', '--package', 'r3', '--role', 'reviewer', '--status', 'consumed', '--reviews', 'r1', '--verdict', 'PASS', '--ref', 'v1']);
+  assert.equal(wrongObject.receipt.accepted, false, JSON.stringify(wrongObject.receipt));
   assert.equal(wrongObject.receipt.reason, 'PACKAGE');
   assert.match(wrongObject.receipt.message, /worker/);
   // 逐类恢复：未登记对象和错误对象修正后都能被同一回执路径接受。

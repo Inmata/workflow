@@ -28,6 +28,7 @@ related:
 - 新旧任务不需要额外迁移：新任务的 taskId 在状态里没有记录，历史任务则有记录；以记录缺失与 `route` 字段缺失区分两种情况，既不改历史数据也不新增 schema 字段。
 - 只在 CLI 便捷参数层校验不足以覆盖 `signal --input` 的完整 payload；协议是唯一校验点，避免两条入口行为不一致。
 - 只看当前 reviewer 状态判断 PASS，会被同一批或后续信号的 verdict 改写洗掉；重复 `packageId` 又让批前预校验看不到批内前项。因此把曾 PASS 落成单调事实，并用“一批一包”的显式规则保证 `diagnostic` 只能在首次创建时声明。
+- `wasReviewed` 只看当前 reviewer、取消预校验只看批前已有包，同样会漏掉历史事实：换审查对象后再改 `waived`、或同批新建 `canceled` 包并补一条指向它的 PASS，都能绕开“已审包不能放弃审查”的约束。因此把当前结论与单调 `reviewPasses` 合成同一份审查事实，统一沿 `supersedes` 链遍历，并让取消预校验使用本批合并后的包记录。
 
 ## 验收
 
@@ -36,10 +37,11 @@ related:
 - 未声明的历史任务 `task-end` 接受并附 `warning:'route-missing'`，spec 漂移仍被检查。
 - 经真实 PostToolUse 的便捷子命令与完整 payload 得到相同的接受/拒绝行为；伪造输出、组合命令和非本插件入口不被接收。
 - 用户指定分工后，`operation-only`/`lead-direct` 不能消除用户要求的 Worker/Reviewer 分工；`route` 只决定门禁范围，不认证任务复杂度。通道偏离必须在同一 `packages` 信号附 `change.packages`，先声明错误通道再“实际执行与声明一致”不能绕过；未声明通道或未指定角色的旧行为不变。
-- 曾有 PASS 审查的 worker 包（含沿 `supersedes` 链的曾 PASS 事实）改 `canceled` 返回 `PACKAGE`，原账本不变；PASS 事实是单调的：同一批把审查改成 `FIX`、或先单独改 `FIX` 再取消，都不能抹掉曾 PASS，取消仍被拒。旧账本没有历史字段时按当前 PASS 动态推导，并在下一次写账本前落成历史；随后合法返修新 `deliveredRef` 再取得匹配 PASS 仍可通过，不阻塞新 ref 再审。从未审查的包可合法取消，已合法 `waived` 的语义保持不变。同包返修后旧 `reviewedRef` 不再匹配新 `deliveredRef`，必须重新送审；换新包只能在创建时声明 `supersedes`，接替包需要自己的 PASS，继承的旧结论不能直接抵扣。历史上已被标成 `canceled` 但链路有 PASS 的包仍列入 `review:<id>`。
+- 曾有 PASS 审查的 worker 包（含沿 `supersedes` 链的曾 PASS 事实）改 `canceled` 返回 `PACKAGE`，原账本不变；PASS 事实是单调的：同一批把审查改成 `FIX`/`BLOCKED`、或先单独改 `FIX` 再取消，都不能抹掉曾 PASS，取消仍被拒。旧账本没有历史字段时按当前 PASS 动态推导，并在下一次写账本前落成历史；随后合法返修新 `deliveredRef` 再取得匹配 PASS 仍可通过，不阻塞新 ref 再审。从未审查的包可合法取消，已合法 `waived` 的语义保持不变；审查对象改成指向其他包后，历史 PASS 仍算已审：该包不能改标 `waived`，其 `review:<id>` 缺项也不能用 waiver 抵扣；审查取消而无结论的包仍算未审、可合法 waived；同一批 reviewer 的结论按整批合并后的最终状态计入 waived 判定（含 FIX/BLOCKED），与数组顺序无关。同包返修后旧 `reviewedRef` 不再匹配新 `deliveredRef`，必须重新送审；换新包只能在创建时声明 `supersedes`，接替包需要自己的 PASS，继承的旧结论不能直接抵扣。历史上已被标成 `canceled` 但链路有 PASS 的包仍列入 `review:<id>`。
+- 同一批新建 worker 包并把它标成 `canceled` 时，按本批合并后的目标包与 `supersedes` 链接替关系核对曾 PASS：若同批 reviewer 的 PASS 指向它，或它接替的旧包（链）有 PASS，返回 `PACKAGE`，且不因数组顺序改变；拒绝整批回滚，不写入 worker、reviewer 或 `reviewPasses`。从未有 PASS 的新包仍可合法取消。
 - 同一批 `packages` 中同一 `packageId` 重复出现返回 `PACKAGE`，整批不写入；因此不能借“先消费、再改 `dispatched` 带 `diagnostic`、再消费并写 `note`”绕开首次声明限制。`diagnostic` 的其余首次创建约束不变。
 - 只读诊断免审只能在首次创建 worker 包时用 `diagnostic:{purpose, scope[], reason}` 声明：只允许 `dispatched`、不带 `deliveredRef`、不接替已有包；用途与理由非空，`scope` 为 1-50 项项目内相对路径。合法声明记入包记录，`gateReport` 的 `diagnostic` 列出这些包，免去 `review:<id>`。交付时必须在 `note` 写可定位结论与证据；缺结论列 `diagnostic:<id>` 且不能用 waiver 抵扣。实现包、审查包、事后补声明或修改声明、空理由、空/绝对/越界范围、接替已审包都返回 `PACKAGE`。历史未声明包仍要求审查。
-- 拒绝信号在真实 PostToolUse 回执中给出可定位原因：PASS 缺 `reviewedRef`、`reviews` 指向未登记包或非 worker 包、包状态/角色错误、审查版本与最终交付不匹配等；修正声明后重发被接受。同 `signalId` 同正文重试保持幂等并标记重放，同 ID 改正文返回 `SIGNAL_ID`；组合命令不被接收，同一 payload 改为独立直接调用后接受。CLI 退出成功不等于 `accepted`；未落盘的失败信号不猜测内容、不自动重放，只依据当前宿主回执与幂等重发恢复。
+- 拒绝信号在真实 PostToolUse 回执中给出可定位原因（`accepted:false` 与 `reason`）：PASS 缺 `reviewedRef`、`reviews` 指向未登记包或非 worker 包、包状态/角色错误、审查版本与最终交付不匹配等；修正声明后重发被接受。同 `signalId` 同正文重试保持幂等并标记重放，同 ID 改正文返回 `SIGNAL_ID`；组合命令不被接收，同一 payload 改为独立直接调用后接受。CLI 退出成功不等于 `accepted`；未落盘的失败信号不猜测内容、不自动重放，只依据当前宿主回执与幂等重发恢复。
 - 慢 Git 预检期间其他会话能用短预算取得状态锁；4 秒是当次预检内 Git 调用共享的截止预算，卡住的 Git 只使用剩余预算并在耗尽后停止发起新调用，但同步文件读取无法强制中断，锁内复核另有独立预算，整个回执的总时长不在该保证内，也不承诺在宿主 10 秒回执窗口内返回；root、ref、任务或会话快照变化时列出 `spec-check:stale`，不复用旧结果。干净预检后受管代码被改动、HEAD 或分支等可移动 ref 移动、会话/任务快照变化或索引快照被改写时，旧报告同样作废；`spec-check:stale` 不接受 `spec`、`spec:<id>`、`spec-check` 或完整条目的豁免。锁内复核只做一次有界 ref 解析与文件快照比对，不新增 status/log/rev-list 调用。
 - Stop 在预检过期或检查失败时不报“门禁无缺项”，而是明确列出 `spec 检查无法确认（spec-check:<原因>）` 并提示重试；其余缺项照常列出。
 - Stop 检查当前 worktree 的 HEAD，task-end 使用显式 `finalRef`；非 Git 且没有 `.spec` 的项目仍按 `no-spec` 跳过。

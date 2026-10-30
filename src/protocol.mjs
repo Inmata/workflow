@@ -231,31 +231,50 @@ function batchReviewerFixes(items, task) {
   }
   return final;
 }
-// 包本身或它沿 supersedes 接替过的旧包有过审查结论（verdict），即算已审；取消、失败而没给结论的审查包不算。
-function wasReviewed(task, item) {
-  const packages = task.packages || {};
-  for (let current = item, hops = 0; current && hops <= MAX_PACKAGES; current = packages[current.supersedes], hops++) {
-    if (Object.values(packages).some(p => p.role === 'reviewer' && p.reviews === current.packageId && p.verdict)) return true;
-  }
-  return false;
-}
-// 只有 PASS 才让 worker 包“已通过审查”；FIX/BLOCKED 与取消而无结论的审查不算。
-function chainHasPass(task, item, passTargets) {
-  const packages = task.packages || {};
-  for (let current = item, hops = 0; current && hops <= MAX_PACKAGES; current = packages[current.supersedes], hops++) {
-    if (passTargets.has(current.packageId)) return true;
-  }
-  return false;
-}
+// 审查事实的统一来源：当前 reviewer 结论 + 单调历史 reviewPasses + 本批 reviewer 合并后的最终状态。
+// - reviewed：包有过任何审查结论（PASS/FIX/BLOCKED）；取消而无结论的审查不算，真正未审的包仍可合法 waived。
+// - passed：只有 PASS 才让 worker 包“已通过审查”；FIX/BLOCKED 不算。
 // 曾 PASS 是单调事实：一旦审查给过 PASS，之后把 verdict 改成 FIX、换审查对象或取消 worker 都不能把它抹掉。
-// 旧账本没有 reviewPasses 字段时按当前 reviewer 的 PASS 动态推导；下一次写账本前落成历史，
-// 这样后续单独信号先改 verdict 再取消也仍能核对。历史事实只用于取消门禁，不放宽 reviewedRef 必须匹配最终交付的要求。
-function passTargetsOf(task) {
-  const targets = new Set(task.reviewPasses || []);
+// 旧账本没有 reviewPasses 字段时按当前 reviewer 的 PASS 动态推导；下一次写账本前落成历史。
+// 本批按整批合并后的 reviewer 状态计入，保证与数组顺序无关；历史事实只用于取消/waived 与豁免判断，
+// 不放宽 reviewedRef 必须匹配最终交付的要求。
+function reviewFacts(task, items = []) {
+  const passed = new Set(task.reviewPasses || []);
+  const reviewed = new Set(passed);
+  const add = (reviews, verdict) => {
+    if (!reviews || !verdict) return;
+    reviewed.add(reviews);
+    if (verdict === 'PASS') passed.add(reviews);
+  };
   for (const item of Object.values(task.packages || {})) {
-    if (item.role === 'reviewer' && item.reviews && item.verdict === 'PASS') targets.add(item.reviews);
+    if (item.role === 'reviewer') add(item.reviews, item.verdict);
   }
-  return targets;
+  // 同一批已拒绝重复 packageId；这里用本批给出的 reviewer 最终状态覆盖旧账本。
+  const merged = new Map();
+  for (const item of items) {
+    const previous = merged.get(item.packageId) || task.packages?.[item.packageId];
+    merged.set(item.packageId, {
+      role: item.role ?? previous?.role,
+      reviews: item.reviews !== undefined ? item.reviews : previous?.reviews,
+      verdict: item.verdict !== undefined ? item.verdict : previous?.verdict,
+    });
+  }
+  for (const state of merged.values()) if (state.role === 'reviewer') add(state.reviews, state.verdict);
+  return { reviewed, passed };
+}
+// 包本身或它沿 supersedes 接替过的旧包命中审查事实，即算命中；取消/waived/门禁统一用这一条遍历规则。
+function chainHas(task, item, facts) {
+  const packages = task.packages || {};
+  for (let current = item, hops = 0; current && hops <= MAX_PACKAGES; current = packages[current.supersedes], hops++) {
+    if (current.packageId && facts.has(current.packageId)) return true;
+  }
+  return false;
+}
+function wasReviewed(task, item) {
+  return chainHas(task, item, reviewFacts(task).reviewed);
+}
+function passTargetsOf(task) {
+  return reviewFacts(task).passed;
 }
 function rememberPassTargets(task, items = []) {
   const targets = new Set(task.reviewPasses || []);
@@ -305,14 +324,16 @@ function validateBatch(task, items) {
   const roles = new Map();
   for (const [packageId, item] of Object.entries(task.packages || {})) roles.set(packageId, item.role);
   for (const item of items) roles.set(item.packageId, item.role ?? roles.get(item.packageId));
-  // 取消检查用单调的曾 PASS 事实，而不是本批合并后的当前 verdict：同批或跨信号把审查改 FIX 都不能洗白。
-  const passTargets = passTargetsOf(task);
+  // 取消用单调的曾 PASS 事实，而不是合并后的当前 verdict：同批或跨信号把审查改 FIX 都不能洗白。
+  // waived 用更宽的“有过任何审查结论”；两者都按本批合并后的包记录、沿 supersedes 链判断，
+  // 本批新建的包不能因为批前没有记录就放过，也不因数组顺序改变。
+  const facts = reviewFacts(task, items);
   const diagnostics = new Map();
   for (const item of items) {
     const previous = task.packages?.[item.packageId];
     const role = roles.get(item.packageId);
+    const next = { ...previous, ...item };
     if (role === 'reviewer') {
-      const next = { ...previous, ...item };
       const verdict = next.verdict ?? null;
       if (verdict && !next.reviews) fail('PACKAGE', `审查包 ${item.packageId} 给出 ${verdict} 结论时必须用 reviews 指向被审 worker 包`);
       if (next.reviews !== undefined && next.reviews !== null) {
@@ -321,8 +342,12 @@ function validateBatch(task, items) {
       }
       if (verdict === 'PASS' && !next.reviewedRef) fail('PACKAGE', `PASS 审查包 ${item.packageId} 缺少 reviewedRef：PASS 必须绑定被审交付版本`);
     }
-    if (role === 'worker' && item.status === 'canceled' && previous?.status !== 'canceled' && chainHasPass(task, previous, passTargets)) {
+    if (role === 'worker' && item.status === 'canceled' && previous?.status !== 'canceled' && chainHas(task, next, facts.passed)) {
       fail('PACKAGE', `工作包 ${item.packageId} 已有 PASS 审查，不能改 canceled 退出审查门禁：让审查对上最终交付版本，或用 supersedes 接替`);
+    }
+    // 审过的 worker 包不能改标 waived 绕过审查；放弃用 canceled，返修用 supersedes 或原包重新派发。
+    if (role === 'worker' && next.status === 'waived' && previous?.status !== 'waived' && chainHas(task, next, facts.reviewed)) {
+      fail('PACKAGE', `工作包 ${item.packageId} 已有审查结论，不能标 waived：让审查对上最终交付版本，或用 supersedes 接替，或 canceled 放弃`);
     }
     if (item.diagnostic !== undefined) {
       const parsed = diagnosticInput(item.diagnostic);
@@ -364,8 +389,6 @@ export function upsertPackages(task, items, change = null) {
     }
     if (item.diagnostic !== undefined) next.diagnostic = diagnostics.get(item);
     if (next.role !== 'reviewer' && (next.verdict || next.reviews || next.reviewedRef)) fail('PACKAGE', '只有 reviewer 包可带 verdict/reviews/reviewedRef');
-    // 审过的 worker 包不能改标 waived 绕过审查；放弃用 canceled，返修用 supersedes 或原包重新派发。
-    if (next.role === 'worker' && next.status === 'waived' && previous?.status !== 'waived' && wasReviewed(task, next)) fail('PACKAGE', `工作包 ${next.packageId} 已有审查结论，不能标 waived：让审查对上最终交付版本，或用 supersedes 接替，或 canceled 放弃`);
     // 只有本次信号显式给出的 deliveredRef 才参与开轮；继承来的旧引用不能当成新交付。
     const incomingRef = item.deliveredRef === undefined ? null : item.deliveredRef;
     // 返修计数的单位是交付轮次：先推进轮次，再判断重派或接替时是否有尚未计入的一轮。
@@ -498,7 +521,7 @@ export function gateReport(state, task, finalRef, root, spec) {
   const diagnostic = [];
   // 曾有 PASS 的 worker 包即使历史记录里被标成 canceled、或当前 verdict 后来改成 FIX，也不能因此退出审查；未审取消照旧放行。
   for (const worker of packages.filter(item => item.role === 'worker' && item.status !== 'waived' && !item.supersededBy)) {
-    if (worker.status === 'canceled' && !chainHasPass(task, worker, passTargets)) continue;
+    if (worker.status === 'canceled' && !chainHas(task, worker, passTargets)) continue;
     if (worker.diagnostic) {
       // 只读诊断免审只按事先声明放行；交付结论必须写在 note 里，可定位但插件不验证内容真实性。
       if (!worker.note?.trim()) missing.push(`diagnostic:${worker.packageId}`);
