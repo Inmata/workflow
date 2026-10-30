@@ -144,7 +144,7 @@ node bin/workflow.mjs learning status --root "D:/项目"
 
 材料、反馈和提取作业可用 `learning status --root "D:/项目" --session <sessionId> --task <taskId>` 按会话/任务过滤；不传时是项目范围。指定会话时只统计带同一 `sessionId` 的记录，同任务其他会话不混入；缺少 `sessionId` 的记录单列在 `unattributed.taskLevel/unknown`，不计入会话结果。`limits` 与 `capture.todayStarted` 按项目实际累计并标注 `project`。`knowledge select` 只是查询，不算 `adopted`。
 
-task-end 被接受后，已启用学习的项目会登记一次幂等的候选提取作业。它使用宿主 transcript 中用户与助手的短文本，剔除工具输出；只接受绝对路径普通文件，拒绝相对路径、符号链接和真实路径不一致；Claude 消息必须逐条带当前 `sessionId`，Codex 必须有匹配的 `session_meta`。读取失败、格式错误、身份不足、超时或无效输出只影响该作业（`skipped`/`failed`/`timeout`），不阻塞任务结束，也不会直接产生正式知识。同一任务结束重放、Stop 或普通 Hook 不会重复登记。自动候选引用已有 `knowledgeId` 时与人工采集一样登记反例并唤醒 `waiting` 材料；引用不存在的知识会被拒绝。完成、跳过与用量在 `capture` 中单独展示。
+task-end 被接受后，已启用学习的项目会登记一次幂等的候选提取作业。它使用宿主 transcript 中用户与助手的短文本，剔除工具输出；只接受绝对路径普通文件，拒绝相对路径、符号链接和真实路径不一致；Claude 消息必须逐条带当前 `sessionId`，Codex 必须有匹配的 `session_meta`。读取失败、格式错误、身份不足、超时或无效输出只影响该作业（`skipped`/`failed`/`timeout`），不阻塞任务结束，也不会直接产生正式知识。同一任务结束重放、Stop 或普通 Hook 不会重复登记。自动候选引用已有 `knowledgeId` 时，只有明确纠正或已验证失败才与人工采集一样登记反例；候选仍会唤醒同知识或同条件的 `waiting` 材料，引用不存在的知识则会被拒绝。完成、跳过与用量在 `capture` 中单独展示。
 
 确认通知：`learning acknowledge --root "D:/项目"`。
 
