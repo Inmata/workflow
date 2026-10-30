@@ -163,8 +163,11 @@ async function saveCandidate(directory, project, job, candidate, index, evidence
   const hash = digest(JSON.stringify(observation));
   const file = path.join(projectData(directory, project), 'inbox', id + '.json');
   const raw = await readText(file);
-  // 同 ID 同正文视为重放；正文不同则保留原记录，不静默覆盖人工材料。
-  if (raw !== null) return JSON.parse(raw).hash === hash;
+  // 同 ID 同正文视为重放；正文不同不静默覆盖，按候选拒绝保留原记录。
+  if (raw !== null) {
+    if (JSON.parse(raw).hash === hash) return true;
+    throw extractionError('CONFLICT', '候选 ID 已存在但正文不同');
+  }
   const createdAt = new Date().toISOString();
   await putItem(directory, project, 'inbox', {
     ...observation, hash, projectId: project.projectId, taskId: job.taskId, sessionId: job.sessionId, turnId: job.turnId,
