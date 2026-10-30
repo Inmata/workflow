@@ -300,7 +300,7 @@ npm run verify
 
 - 派工通道：你指定了各角色用哪个智能体时，Lead 在 task-start 用 `channels` 记下，每个工作包填实际 `channel`。中途改用宿主内置子代理，或分工任务的 worker 包改由 Lead 自己实施，必须先告诉你并在账本附 `change`，否则信号被拒；不再能静默换路。
 - 返修换新包号时用 `supersedes` 接上旧包：轮次照样累计（两轮上限数得到），旧包自动收尾，审查只看链上最新的包。
-- 当前账本仍有审查结论的 worker 包（PASS/FIX/BLOCKED；包括它用 supersedes 接替过的旧包，同一批按合并后的最终结论核对），审查对不上最终版本时不能再用豁免或改标 waived 通过，只能重新送审最终版本。历史只有 PASS 会保留：审查对象改指其他包后，历史 PASS 仍算已审，旧的 FIX/BLOCKED 不留存。从没审过的小包仍可豁免。取消只按 PASS 判断：曾有 PASS 的包不能改 canceled（即使审查后来改成 FIX/BLOCKED）；只有 FIX/BLOCKED 而没有 PASS 的包仍可取消。同一批新建 worker 包并直接标 canceled 时，若同批 PASS 指向它或 supersedes 链上有 PASS，整批拒绝。
+- 当前账本仍有审查结论的 worker 包（PASS/FIX/BLOCKED；包括它用 supersedes 接替过的旧包），审查对不上最终版本时不能再用豁免或改标 waived 通过，只能重新送审最终版本。waived 预校验同时看批前当前结论与本批合并后的最终结论，同一批改指审查对象不会立即洗掉旧 FIX/BLOCKED；重指须在单独信号成功落盘后，后续信号才不再保留旧结论。历史只有 PASS 会保留，并跨信号沿 supersedes 链单调保留。从没审过的小包仍可豁免。取消只按 PASS 判断：曾有 PASS 的包不能改 canceled（即使审查后来改成 FIX/BLOCKED）；只有 FIX/BLOCKED 而没有 PASS 的包仍可取消。同一批新建 worker 包并直接标 canceled 时，若同批 PASS 指向它或 supersedes 链上有 PASS，整批拒绝。判定细节见[协议](docs/design/protocol.md#信号)。
 - 在途包全由宿主内置子代理执行时，Stop 不再要求 Codeg 式等待，只要求说明在等什么；内置子代理误发 signal 时会收到“没有 workflow 身份、不记录”的说明。
 
 升级后重装宿主即可，不需要重新接入；不用这些新字段的任务行为与 0.6.1 相同。
