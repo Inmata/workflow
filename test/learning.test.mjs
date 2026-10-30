@@ -839,6 +839,156 @@ test('P02 大量未匹配知识不撑大自动入口；排除清单受预算，�
   assert.equal(full.excluded.length, 60);
 });
 
+// F17：一项无旧知识反例的修订不应拖垮同批合法决定。样本仅使用重写后的最小结构。
+function oldKnowledgeDecision(overrides = {}) {
+  return {
+    observationIds: ['o1'], action: 'revise', targetId: 'K-old', supersedes: null,
+    title: '等待流程', summary: '等到当前回合结束再继续', conditions: '当前项目', type: 'method',
+    importance: 'critical', status: 'active', paths: ['src/login.mjs'], version: null, tags: ['等待'],
+    reason: '把等待范围限定到当前回合', ...overrides,
+  };
+}
+function createDecision(observationId, overrides = {}) {
+  return {
+    observationIds: [observationId], action: 'create', targetId: null, supersedes: null,
+    title: '经验 ' + observationId, summary: '材料 ' + observationId + ' 的结论', conditions: '当前项目',
+    type: 'method', importance: 'normal', status: 'active', paths: ['src/login.mjs'], version: null, tags: [],
+    reason: '根据本批材料整理', ...overrides,
+  };
+}
+function preferenceDecision(observationId) {
+  return createDecision(observationId, { type: 'preference', title: '用户偏好 ' + observationId, summary: '用户明确表达的偏好 ' + observationId });
+}
+async function fourMaterials(f) {
+  await putKnowledge(f, 'K-old', '等待流程', '等待五分钟再继续', ['src/login.mjs']);
+  await observe(f, 1);
+  await observe(f, 2, { kind: 'preference', explicit: true, verified: false, summary: '用户偏好更短的回复', conditions: '协作方式' });
+  await observe(f, 3, { kind: 'preference', explicit: true, verified: false, summary: '用户偏好中文说明', conditions: '文档' });
+  await observe(f, 4, { kind: 'failure', verified: true, summary: '构建脚本失败', conditions: '构建' });
+  await finish(f);
+  await setLearningEnabled(f.directory, f.project, true);
+  await setLearningConfig(f.directory, f.project, { maxRunsPerDay: 3 });
+}
+const inboxById = async f => Object.fromEntries((await readItems(f.directory, await projectFor(f.directory, f.project), 'inbox')).map(item => [item.id, item]));
+
+test('F17 四项决定按决定隔离：无旧知识反例的修订被拒，其余三项提交且旧知识不变', async () => {
+  const f = await fixture(); await start(f); await fourMaterials(f);
+  const oldFile = path.join(f.project, '.workflow', 'knowledge', 'K-old.md');
+  const before = await readFile(oldFile, 'utf8');
+  const decisions = [oldKnowledgeDecision(), preferenceDecision('o2'), preferenceDecision('o3'), createDecision('o4', { type: 'fact', paths: [], conditions: '构建' })];
+  const result = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true, runner: async () => ({ status: 'completed', usage: { input_tokens: 10, output_tokens: 5 }, answer: { decisions } }) }));
+  assert.equal(result.status, 'partial');
+  assert.equal(result.rejected.length, 1);
+  assert.equal(result.rejected[0].code, 'EVIDENCE');
+  assert.deepEqual(result.rejected[0].observationIds, ['o1']);
+  // 旧知识正文与重要性保持不变，也没有追加历史。
+  assert.equal(await readFile(oldFile, 'utf8'), before);
+  const entries = await readEntries(await projectFor(f.directory, f.project));
+  assert.equal(entries.length, 4);
+  assert.deepEqual(entries.map(e => e.id).sort(), ['K-o2', 'K-o3', 'K-o4', 'K-old']);
+  assert.equal(entries.find(e => e.id === 'K-old').importance, 'normal');
+  const items = await inboxById(f);
+  assert.equal(items.o1.status, 'pending');
+  assert.equal(items.o1.lastRejected.runId, result.id);
+  assert.equal(items.o1.lastRejected.code, 'EVIDENCE');
+  for (const id of ['o2', 'o3', 'o4']) assert.equal(items[id].status, 'processed');
+  const status = await learningStatus(f.directory, f.project);
+  assert.equal(status.pending, 1);
+  assert.equal(status.processed, 3);
+  assert.equal(status.runs.at(-1).status, 'partial');
+  assert.equal(status.runs.at(-1).rejected[0].code, 'EVIDENCE');
+  assert.deepEqual(status.runs.at(-1).rejected[0].observationIds, ['o1']);
+});
+
+test('F17 全部决定无效时不写知识，材料保持待处理且失败 run 保留原因', async () => {
+  const f = await fixture(); await start(f); await fourMaterials(f);
+  const oldFile = path.join(f.project, '.workflow', 'knowledge', 'K-old.md');
+  const before = await readFile(oldFile, 'utf8');
+  const result = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true, runner: async () => ({ status: 'completed', answer: { decisions: [oldKnowledgeDecision()] } }) }));
+  assert.equal(result.status, 'failed');
+  assert.equal(result.reason, 'EVIDENCE');
+  assert.deepEqual(result.rejected.map(item => item.code), ['EVIDENCE']);
+  assert.equal(await readFile(oldFile, 'utf8'), before);
+  assert.equal((await readEntries(await projectFor(f.directory, f.project))).length, 1);
+  const items = await inboxById(f);
+  for (const id of ['o1', 'o2', 'o3', 'o4']) assert.equal(items[id].status, 'pending');
+  const runs = await readItems(f.directory, await projectFor(f.directory, f.project), 'runs');
+  assert.equal(runs.at(-1).status, 'failed');
+  assert.equal(runs.at(-1).reason, 'EVIDENCE');
+  assert.deepEqual(runs.at(-1).rejected[0].observationIds, ['o1']);
+});
+
+test('F17 多材料决定整体拒绝；跨批引用只拒绝该项决定', async () => {
+  const f = await fixture(); await start(f); await fourMaterials(f);
+  const decisions = [
+    oldKnowledgeDecision({ observationIds: ['o1', 'o2'] }),
+    createDecision('o3', { observationIds: ['o3', 'outside-batch'] }),
+    createDecision('o4', { paths: [] }),
+  ];
+  const result = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true, runner: async () => ({ status: 'completed', answer: { decisions } }) }));
+  assert.equal(result.status, 'partial');
+  assert.equal(result.rejected.length, 2);
+  assert.deepEqual(result.rejected.map(item => item.code).sort(), ['EVIDENCE', 'RESULT']);
+  const items = await inboxById(f);
+  assert.equal(items.o1.status, 'pending');
+  assert.equal(items.o2.status, 'pending');
+  assert.equal(items.o3.status, 'pending');
+  assert.equal(items.o4.status, 'processed');
+  const entries = await readEntries(await projectFor(f.directory, f.project));
+  assert.deepEqual(entries.map(e => e.id).sort(), ['K-o4', 'K-old']);
+});
+
+test('F17 同一材料重复引用与同一知识重复修改都保守拒绝相关决定', async () => {
+  const duplicate = await fixture(); await start(duplicate); await fourMaterials(duplicate);
+  const dup = await reviewOnce(duplicate.directory, duplicate.project, fakeOptions({ nowRequested: true, runner: async () => ({ status: 'completed', answer: { decisions: [createDecision('o1'), { ...createDecision('o1'), action: 'wait', title: '', summary: '' }] } }) }));
+  assert.equal(dup.status, 'failed');
+  assert.equal(dup.reason, 'DUPLICATE');
+  assert.equal(dup.rejected.length, 2);
+  assert.deepEqual(dup.rejected.map(item => item.observationIds).flat(), ['o1', 'o1']);
+  assert.equal((await inboxById(duplicate)).o1.status, 'pending');
+
+  const same = await fixture(); await start(same); await fourMaterials(same);
+  const reviseTwice = [oldKnowledgeDecision({ importance: 'critical', summary: '等待五分钟再继续' }), oldKnowledgeDecision({ observationIds: ['o2'], importance: 'critical', summary: '等待五分钟再继续' })];
+  const twice = await reviewOnce(same.directory, same.project, fakeOptions({ nowRequested: true, runner: async () => ({ status: 'completed', answer: { decisions: reviseTwice } }) }));
+  assert.equal(twice.status, 'failed');
+  assert.equal(twice.reason, 'CONFLICT');
+  assert.equal(twice.rejected.length, 2);
+  const items = await inboxById(same);
+  assert.equal(items.o1.status, 'pending');
+  assert.equal(items.o2.status, 'pending');
+  assert.equal((await readEntries(await projectFor(same.directory, same.project)))[0].importance, 'normal');
+});
+
+test('F17 部分成功写入冲突保留全部材料；重放与作废不重复消费', async () => {
+  const f = await fixture(); await start(f); await fourMaterials(f);
+  // 预先占用 create 决定将写入的路径，模拟提交前已被其他任务修改。
+  await putKnowledge(f, 'K-o4', '外部写入', '提交前出现的同路径知识', []);
+  const result = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true, runner: async () => ({ status: 'completed', answer: { decisions: [createDecision('o4', { paths: [] })] } }) }));
+  assert.equal(result.status, 'conflict');
+  assert.equal(result.rejected.length, 0);
+  const items = await inboxById(f);
+  for (const id of ['o1', 'o2', 'o3', 'o4']) assert.equal(items[id].status, 'pending');
+  const discarded = await resolveReview(f.directory, f.project, result.id, 'discard');
+  assert.equal(discarded.status, 'discarded');
+  assert.equal(discarded.restored, 0);
+  for (const id of ['o1', 'o2', 'o3', 'o4']) assert.equal((await inboxById(f))[id].status, 'pending');
+  await assert.rejects(recoverReview(f.directory, f.project, result.id), { code: 'RUN' });
+});
+
+test('F17 部分成功 run 重放返回原状态，不再消费材料', async () => {
+  const f = await fixture(); await start(f); await fourMaterials(f);
+  const decisions = [oldKnowledgeDecision(), preferenceDecision('o2'), preferenceDecision('o3'), createDecision('o4', { type: 'fact', paths: [], conditions: '构建' })];
+  const result = await reviewOnce(f.directory, f.project, fakeOptions({ nowRequested: true, runner: async () => ({ status: 'completed', answer: { decisions } }) }));
+  assert.equal(result.status, 'partial');
+  const before = await inboxById(f);
+  const replay = await recoverReview(f.directory, f.project, result.id);
+  assert.equal(replay.status, 'partial');
+  assert.equal(replay.replayed, true);
+  const after = await inboxById(f);
+  assert.deepEqual(Object.fromEntries(Object.entries(after).map(([key, item]) => [key, item.status])), Object.fromEntries(Object.entries(before).map(([key, item]) => [key, item.status])));
+  assert.equal((await readItems(f.directory, await projectFor(f.directory, f.project), 'runs')).at(-1).status, 'partial');
+});
+
 test('P02 对齐读取失败单独降级，不阻断新回合保存', async () => {
   const f = await fixture(); await start(f);
   await mutate(f.directory, async state => {

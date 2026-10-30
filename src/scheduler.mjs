@@ -3,6 +3,7 @@ import { atomicWrite, digest, fail, mutate, readState } from './store.mjs';
 import { projectFor, learningConfig } from './learning-config.mjs';
 import { projectData } from './learning.mjs';
 import { DEFERRED_CODES, reviewOnce } from './review.mjs';
+import { runExtractionJobs } from './capture.mjs';
 import { runProcess } from './runner.mjs';
 
 const xml = s => String(s).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -74,6 +75,8 @@ export async function tick(directory, root, options = {}) {
   let result;
   try { result = await reviewOnce(directory, root, options); }
   catch (error) { result = { status: 'deferred', reason: error.code || 'IO' }; }
+  // 提取作业与复盘共用这一轮维护机会，但配额与状态独立；提取失败不影响复盘结论。
+  try { await runExtractionJobs(directory, root, options); } catch {}
   const deferred = result.status === 'deferred' && (DEFERRED_CODES.has(result.reason) || result.reason === 'LOCKED');
   await mutate(directory, async state => {
     const learning = state.projects[project.projectId]?.learning;

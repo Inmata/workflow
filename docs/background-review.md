@@ -62,7 +62,8 @@ node "$env:LOCALAPPDATA/workflow/current/bin/workflow.mjs" learning config get -
 
 | 字段 | 默认 | 作用 |
 | --- | --- | --- |
-| `maxRunsPerDay` | 1 | 每个项目每天最多调用几次模型，失败也计入 |
+| `maxRunsPerDay` | 1 | 每个项目每天最多调用几次复盘模型，失败也计入 |
+| `maxCaptureRunsPerDay` | 1 | 每个项目每天最多启动几次会话候选提取；与复盘额度分开，已开始作业的重试只受尝试次数约束 |
 | `maxBatchItems` | 10 | 一次最多处理几份材料 |
 | `pendingThreshold` | 10 | 攒到几份材料触发 |
 | `maxPendingAgeHours` | 24 | 最旧材料放了多少小时也触发 |
@@ -129,11 +130,21 @@ node bin/workflow.mjs learning status --root "D:/项目"
 | 字段 | 含义 |
 | --- | --- |
 | `enabled` | 是否已启用 |
-| `pending` / `waiting` | 待处理材料数 / 等待更多证据的材料数 |
+| `materials` | 材料总数与 `pending/waiting/processed`；顶层 `pending/waiting` 仍保留 |
 | `due` | 当前是否满足触发条件：`count`（数量）、`age`（年龄）、`counterevidence`（明确纠正或已验证失败），不满足为 `null` |
-| `todayStarted` | 今天已启动的模型调用次数，对照 `maxRunsPerDay` |
-| `runs` | 最近 10 次运行的状态、时间、`usage` 和失败原因 |
+| `limits` | 复盘与提取各自的当日启动数和额度，两者分开 |
+| `evidence` | 按 `success/failure/correction` 统计的材料数，展示次数不计入 |
+| `feedback` | `shown/adopted/total`；没有记录时 `note` 写“无记录”，不推断效果为零 |
+| `runs` / `runSummary` | 最近 10 次运行的状态、时间、`usage`、失败原因，以及 `partial` 运行每项被拒决定的材料、代码和说明；`unhandled` 是模型未处置、仍待下次复盘的材料 |
+| `knowledge` | 知识总数、活跃数、创建/修订/已替代次数；读取失败时 `available:false` 并给错误码 |
+| `capture` | task-end 提取作业的总数、各状态、当日启动数、`usage`、被拒候选数和最近作业；`skippedFiles` 是损坏的作业文件数 |
+| `scope` | 材料、反馈和提取作业的过滤范围；复盘运行与知识文件按项目统计并标注 `project`，不与过滤结果混算 |
+| `at` | 本报告的统计时点 |
 | `notices` | 给 Lead 的通知，例如有知识被降级 |
+
+材料、反馈和提取作业可用 `learning status --root "D:/项目" --session <sessionId> --task <taskId>` 按会话/任务过滤；不传时是项目范围。`knowledge select` 只是查询，不算 `adopted`。
+
+task-end 被接受后，已启用学习的项目会登记一次幂等的候选提取作业。它使用宿主 transcript 中用户与助手的短文本，剔除工具输出；读取失败、格式错误、身份不符、超时或无效输出只影响该作业（`skipped`/`failed`/`timeout`），不阻塞任务结束，也不会直接产生正式知识。同一任务结束重放、Stop 或普通 Hook 不会重复登记。完成、跳过与用量在 `capture` 中单独展示。
 
 确认通知：`learning acknowledge --root "D:/项目"`。
 
@@ -156,11 +167,12 @@ node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --d
 | 状态 | 含义与处理 |
 | --- | --- |
 | `completed` | 已写入知识，材料标为已处理 |
+| `partial` | 部分决定无效：合法决定与材料已在同一事务提交，被拒决定的材料保持 `pending` 并记录原因；这是终态，`recover` 只返回原状态，不会重复消费 |
 | `not-due` | 未达到触发条件；需要立即跑就加 `--now` |
-| `daily-limit` | 今天的额度已用完，第二天自动继续；也可调大 `maxRunsPerDay` |
+| `daily-limit` | 今天的复盘额度已用完，第二天自动继续；也可调大 `maxRunsPerDay` |
 | `no-fit` | 没有材料，或单份材料超出 `maxInputChars` |
 | `timeout` | 超过 `maxRunMinutes` 被终止；材料保留，占用当日额度 |
-| `failed` | 模型失败、结果无效或隔离未生效，`reason` 说明原因；材料保留 |
+| `failed` | 模型失败、结果无效或全部决定都无效，`reason` 说明原因；材料保留。全部决定无效时不写任何知识 |
 | `deferred` | 业务任务、只读会话或复盘锁竞争导致暂缓；提案已保存，条件允许后由下次检查先重试提交，不再调用模型 |
 | `conflict` | 提案与人工编辑冲突，未覆盖任何文件；用 `learning resolve --keep` 保留，或在本运行的知识文件均未偏离写入前快照时用 `--discard` 作废 |
 | `kept` | 已选择保留冲突提案；核对后用 `learning recover` 手动应用，处理前不自动重试 |
@@ -168,6 +180,8 @@ node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --d
 | `recovery-required` | 有未完成的运行需要辨认；有提案的会在条件允许时自动接续，其余用 `learning recover` 处理 |
 
 错误码 `BUSY` 表示项目还有活动的业务任务，等业务结束后再跑。`LOCKED` 表示另一个复盘正在运行，所有项目共用一个复盘锁。这两类短延期不推进正常检查周期，也不会再次调用模型：计划任务仍按 `checkIntervalMinutes` 触发，下一次触发（或手动/其他 tick）一定会先补提交已保存的提案；`nextCheckAt` 只是给 tick 判断用的有界退避，不会自行在 30 秒后重试。
+
+复盘按决定逐项校验。合法决定在同一事务中提交；非法决定只留下自身原因，材料保持 `pending` 并写入 `lastRejected`（运行 ID、代码、说明），可原样重试，不影响同批其他决定。同一材料被多项决定引用、跨批引用或同一知识被多项决定修改时，提交图无法安全确定，相关决定会以 `DUPLICATE`/`CONFLICT`/`RESULT` 保守拒绝。改变旧结论、降级、替代、偏好证据和范围校验的门槛没有放宽。模型完全没处置的材料不算拒绝，仍留在 `pending`，运行记录的 `unhandled` 会列出它们。
 
 内容冲突不会反复按旧 baseline 自动提交。`--keep` 保留提案和待写隔离，人工核对冲突后可再执行 `learning recover`。`--discard` 仅在本运行的知识文件均未偏离写入前快照时可用：作废旧提案、撤销本批隔离，并把本运行已标记的材料恢复为待处理，人工编辑不被覆盖，下一次新模型调用仍按正常额度计算。若任一知识文件已偏离写入前快照（例如替代提案只写入了新知识、写入后又被人工编辑，或原有文件被删除），作废会留下新旧知识并存且材料仍待处理，因此会被拒绝；此时先 `--keep` 保留提案，人工核对后用 `learning recover` 完成，或按事务快照还原后再作废。
 

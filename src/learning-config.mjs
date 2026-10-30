@@ -3,14 +3,16 @@ import { atomicWrite, fail, mutate, readState, readText, withLock } from './stor
 import { resolveProject } from './projects.mjs';
 import { safePath } from './documents.mjs';
 
+// 复盘与提取作业共用的自然日口径，按配置时区计算，避免两台机器跨时区重复占额度。
+export const dayKey = (now, timeZone) => new Intl.DateTimeFormat('sv-SE', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
 export const DEFAULT_CONFIG = Object.freeze({
   pendingThreshold: 10, maxPendingAgeHours: 24, checkIntervalMinutes: 15,
-  maxRunMinutes: 30, maxBatchItems: 10, maxRunsPerDay: 1, maxInputChars: 24000,
+  maxRunMinutes: 30, maxBatchItems: 10, maxRunsPerDay: 1, maxCaptureRunsPerDay: 1, maxInputChars: 24000,
   retrievalLimit: 5, retrievalChars: 2500, model: null, reasoningEffort: null, profile: null,
   executor: 'codex', executorPath: 'codex', claudePath: 'claude', claudeSettings: null, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
 });
 export const EXECUTOR_NAMES = ['codex', 'claude'];
-const ranges = { pendingThreshold: [1, 10000], maxPendingAgeHours: [1, 8760], checkIntervalMinutes: [1, 10080], maxRunMinutes: [1, 1440], maxBatchItems: [1, 500], maxRunsPerDay: [1, 1000], maxInputChars: [2000, 1000000], retrievalLimit: [1, 100], retrievalChars: [200, 50000] };
+const ranges = { pendingThreshold: [1, 10000], maxPendingAgeHours: [1, 8760], checkIntervalMinutes: [1, 10080], maxRunMinutes: [1, 1440], maxBatchItems: [1, 500], maxRunsPerDay: [1, 1000], maxCaptureRunsPerDay: [1, 1000], maxInputChars: [2000, 1000000], retrievalLimit: [1, 100], retrievalChars: [200, 50000] };
 export function validateConfig(input, partial = false) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('CONFIG', '配置必须是对象');
   for (const [key, value] of Object.entries(input)) {

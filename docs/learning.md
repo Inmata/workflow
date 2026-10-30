@@ -15,7 +15,8 @@
 | `checkIntervalMinutes` | 15 | 系统定时检查间隔，只查本机状态 |
 | `maxRunMinutes` | 30 | 一次模型进程的最长时间，超时终止进程树 |
 | `maxBatchItems` | 10 | 单次最多处理多少份 |
-| `maxRunsPerDay` | 1 | 单项目每天最多启动多少次模型，失败也计入 |
+| `maxRunsPerDay` | 1 | 单项目每天最多启动多少次复盘模型，失败也计入 |
+| `maxCaptureRunsPerDay` | 1 | 单项目每天最多启动多少次会话候选提取模型；与复盘额度分开计算，已开始作业的重试只受尝试次数约束 |
 | `maxInputChars` | 24000 | 本批材料与相关旧知识的 JSON 字符预算 |
 | `retrievalLimit` / `retrievalChars` | 5 / 2500 | 默认召回条数和摘要字符预算 |
 | `executor` | `codex` | 后台复盘用的 CLI：`codex` 或 `claude`；可按项目分别设置 |
@@ -37,6 +38,7 @@
   "maxRunMinutes": 60,
   "maxBatchItems": 12,
   "maxRunsPerDay": 2,
+  "maxCaptureRunsPerDay": 1,
   "model": null,
   "reasoningEffort": null,
   "profile": null
@@ -95,6 +97,7 @@ node bin/workflow.mjs learning config set --global --input learning-config.json
   projects/<projectId>/
     inbox/<材料ID>.json            # pending / waiting / processed
     runs/<运行ID>.json             # 启动配置、提案、结果、用量
+    capture/<作业ID>.json          # task-end 候选提取作业、状态与用量
     feedback/                     # shown / adopted，不能当成成功
     knowledge-index.json          # 可重建的检索索引
     work/<运行ID>/                # 隔离执行目录、schema、模型结果
@@ -143,6 +146,26 @@ node "<hook 给出的入口>" knowledge capture --input observation.json
 
 `knowledge feedback --input feedback.json` 的公共字段为当前身份、`knowledgeId`、`outcome`。`shown/adopted` 另给事件 `id`，仅记展示或采纳；`success/failure/correction` 另给上述 `observation`，必须有具体证据，不因“用了”就晋升。
 
+## 任务结束的候选提取
+
+项目已启用后台学习且宿主事件带 `transcript_path` 时，被接受的 `task-end` 会登记一份幂等的候选提取作业；同一 `task-end` 重放、Stop 或普通 Hook 不会重复登记，业务任务也不等待模型、不因提取失败回滚。学习未启用、任务 `permissions.learning=false` 或宿主没有 transcript 时不建作业，模型调用为零，仍可手动 `knowledge capture`。
+
+提取输入只取该会话 transcript 中用户与助手的短文本：工具结果、工具调用和超长输出在进入预算前剔除，超出 `maxInputChars` 时保留最早与最近部分。程序核对路径、文件类型、大小、逐行 JSON、会话身份和可用文本；读取失败、格式错误、身份不符会记为该作业的 `skipped` 并保留原因，不阻塞任务结束。模型只能返回候选观察，且证据必须指向本次 transcript 中的用户消息；偏好与纠正要求用户明确表达，成功与失败要求验证依据。候选经既有材料校验和敏感信息检查后只写入 `inbox`（`origin:auto-extract`），摘要、条件、证据与相对路径都可定位，不会直接创建或修订正式知识，也不能指定其他项目、任务或会话。
+
+提取与复盘共用隔离执行器和项目外工作目录，但额度、状态和输入独立：`maxCaptureRunsPerDay` 只限制新作业，超时或进程中断的作业最多尝试两次；完成、跳过、失败与 `usage` 可在 `learning status` 的 `capture` 中查询，与复盘额度分开显示。相同候选 ID 与正文重放不会重复计数，正文不同则保留原记录。
+
+## 学习漏斗报告
+
+`learning status` 是只读报告，按项目给出统计时点 `at` 和范围 `scope`。材料、提取作业与反馈可按 `--session`、`--task` 过滤；复盘运行和知识文件没有会话归属，仍按项目统计并显式标注为 `project`，不与过滤后的材料数混算。报告分开展示：
+
+- `materials`：材料总数与 `pending/waiting/processed`，另有顶层 `pending/waiting/processed` 兼容旧输出。
+- `evidence`：按 `success/failure/correction` 统计材料条数，不把展示次数当成功。
+- `feedback`：`shown/adopted/total`；没有反馈记录时写“无记录”，不推断为“效果为零”。`knowledge select` 只读查询不计为 `adopted`。
+- `runSummary` 与 `runs`：最近运行状态、`usage`、原因，以及每项被拒决定的材料 ID、动作、目标与代码；`unhandled` 列出模型未处置、仍待下次复盘的材料。
+- `knowledge`：知识总数、活跃数、创建/修订次数和已替代数；读取失败时 `available:false` 并给错误码。
+- `capture`：提取作业总数、`pending/running/completed/skipped/failed/timeout`、当日启动数、用量、被拒候选数、损坏作业文件数，以及最近作业的来源文件名和结果。
+- `limits`：复盘与提取各自的当日额度，避免把两种模型调用混为一个配额。
+
 ## 分级、冲突与手动管理
 
 | 维度 | 值与用途 |
@@ -154,6 +177,8 @@ node "<hook 给出的入口>" knowledge capture --input observation.json
 | 类型 `type` | `method/fact/preference`；偏好需要用户明确表达，不套成功次数门槛 |
 
 模型提出整理方案，程序核对范围、材料归属和证据门槛。数量只能作为门槛，事件是否独立、证据是否可信仍需采集者与复盘判断。旧结论被反例推翻时可以修订、降级或替代；即使用户曾提高重要性也允许有证据的降级，保留原因和旧记录，并在下次 Lead 入口提示一次。改了结论、条件或类型会重置该结论的证据代际，旧成功不能直接晋升新结论。
+
+复盘按决定逐项校验：合法决定在同一事务中提交，非法决定只留下自身原因，其材料保持 `pending` 并记录 `lastRejected`（运行 ID、代码与说明），可原样重试；同一批里其余合法决定不受影响。运行状态为 `partial` 时同时给出被拒数量与原因；所有决定都无效时运行记为 `failed`，不写任何知识，状态与原因仍可查询。改变旧结论、降级或替代仍要求针对该旧知识的明确反例，偏好仍要求用户明确表达，范围变化仍要求创建独立知识，这些门槛没有放宽。同一材料被多项决定引用、跨批引用材料，或同一知识被多项决定修改，提交图无法安全确定，相关决定会被保守拒绝；已有失败运行不会被改写。模型完全没处置的材料不算拒绝，也不会被消费，留在 `pending` 等待下次复盘。
 
 手动提高重要性：先 `knowledge inspect` 获取当前指纹，在业务任务结束后执行 `knowledge revise`：
 
@@ -180,7 +205,7 @@ node bin/workflow.mjs learning schedule preview --root "D:/项目"
 node bin/workflow.mjs learning schedule install --root "D:/项目"
 ```
 
-Windows 计划任务只在当前用户登录时运行，无常驻插件服务。定时检查本身不调用模型；达到条件、没有活动业务任务或只读/计划会话、没有未恢复作业且额度足够才启动。已有提案的中断运行在条件允许时先补提交，不再次调用模型。所有项目共用一个复盘锁，单项目每日限额分别计算。
+Windows 计划任务只在当前用户登录时运行，无常驻插件服务。定时检查本身不调用模型；达到条件、没有活动业务任务或只读/计划会话、没有未恢复作业且额度足够才启动。同一轮检查也会接续已登记的 task-end 提取作业；提取使用独立配额，失败不影响复盘结论，也不会回滚已完成的任务。已有提案的中断运行在条件允许时先补提交，不再次调用模型。所有项目共用一个复盘锁，单项目每日限额分别计算。
 
 任务经 `conhost.exe --headless` 直接启动 Node（需 Windows 10 1809+），运行时不弹终端窗口、不抢焦点，也不受 PowerShell 执行策略限制。登录触发器限定为当前用户；不限定时 Windows 视为“任意用户登录”，普通权限注册会报拒绝访问。0.3.0 及更早版本登记的任务经 PowerShell 脚本启动，在执行策略为 `Restricted` 的电脑上根本不会运行；0.3.0 的登录触发器也未限定用户，注册会失败。升级后请重新执行一次 `learning schedule install`。旧任务若能正常运行，也会在下一次定时检查时自动按新定义重新注册。
 
@@ -198,6 +223,6 @@ node bin/workflow.mjs learning resolve --root "D:/项目" --run "<运行ID>" --d
 node bin/workflow.mjs learning acknowledge --root "D:/项目"
 ```
 
-超时、模型失败、结果不完整不消费原始材料。写后崩溃以指纹恢复，未完成批次的知识暂不召回。与用户新编辑冲突时保留原文和提案，不自动覆盖，也不再反复自动提交：用 `learning resolve --run <运行ID> --keep` 保留提案供人工核对后 `learning recover`；只有本运行的知识文件均未偏离写入前快照时才可用 `--discard`，作废会撤销本批隔离并把本运行已标记的材料恢复为待处理，不丢人工编辑，下一次新模型调用仍按正常额度计算。若任一知识文件已偏离写入前快照（例如替代提案只写入了新知识、写入后又被人工编辑，或原有文件被删除），作废会留下新旧知识并存，命令会被拒绝；先 `--keep` 再人工核对后用 `learning recover` 完成，或按事务快照还原后再作废。等待更多证据的材料标为 `waiting`，相同知识 ID 或适用条件出现新材料后重新进入队列，避免每天重读同一材料。
+超时、模型失败、结果不完整不消费原始材料。写后崩溃以指纹恢复，未完成批次的知识暂不召回。部分成功运行（`partial`）是终态：合法决定已作为一个事务提交，被拒决定的材料保持 `pending`，原因记录在运行和材料上，可用 `learning status` 查看；`learning recover` 只返回原状态，不会重复消费材料。与用户新编辑冲突时保留原文和提案，不自动覆盖，也不再反复自动提交：用 `learning resolve --run <运行ID> --keep` 保留提案供人工核对后 `learning recover`；只有本运行的知识文件均未偏离写入前快照时才可用 `--discard`，作废会撤销本批隔离并把本运行已标记的材料恢复为待处理，不丢人工编辑，下一次新模型调用仍按正常额度计算。若任一知识文件已偏离写入前快照（例如替代提案只写入了新知识、写入后又被人工编辑，或原有文件被删除），作废会留下新旧知识并存，命令会被拒绝；先 `--keep` 再人工核对后用 `learning recover` 完成，或按事务快照还原后再作废。等待更多证据的材料标为 `waiting`，相同知识 ID 或适用条件出现新材料后重新进入队列，避免每天重读同一材料。
 
 停用或撤销：先 `learning disable` 停止维护，再 `learning schedule remove` 移除自有计划任务，最后按需撤销宿主安装。本机材料、正式知识、旧副本和迁移备份均保留。回退旧代码前恢复匹配的 v1 状态备份，不能让旧程序直接写 v2 状态。

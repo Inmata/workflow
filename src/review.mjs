@@ -3,12 +3,14 @@ import { fail, id, mutate, readState, readText, withLock } from './store.mjs';
 import { pendingFor } from './protocol.mjs';
 import { reconcileTransactions } from './knowledge.mjs';
 import { document, safeDocument, writeDocuments } from './documents.mjs';
-import { projectFor, learningConfig } from './learning-config.mjs';
+import { dayKey, projectFor, learningConfig } from './learning-config.mjs';
 import { entryPath, maintenanceAllowed, maturityFor, projectData, putItem, readEntries, readItems, renderEntry } from './learning.mjs';
 import { EXECUTORS } from './runner.mjs';
+import { readExtractionJobs } from './capture.mjs';
 
 // 运行状态分类：终态不再需要后续动作；已有提案的中断状态可先重试落盘，不再调用模型。
-const TERMINAL_RUN = new Set(['completed', 'failed', 'timeout', 'discarded']);
+// partial 表示部分决定被隔离、其余决定已提交，同样是终态。
+const TERMINAL_RUN = new Set(['completed', 'partial', 'failed', 'timeout', 'discarded']);
 const AUTO_RESUME_RUN = new Set(['proposed', 'committing', 'recovery', 'deferred']);
 // 业务任务仍在运行、只读/计划会话和锁竞争只是短时暂缓：保留提案，条件允许后先重试提交。
 export const DEFERRED_CODES = new Set(['BUSY', 'PERMISSION']);
@@ -26,7 +28,6 @@ export const REVIEW_SCHEMA = {
     },
   } } },
 };
-export const dayKey = (now, timeZone) => new Intl.DateTimeFormat('sv-SE', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
 export function dueReason(items, config, now) {
   const pending = items.filter(i => i.status === 'pending');
   if (!pending.length) return null;
@@ -35,17 +36,85 @@ export function dueReason(items, config, now) {
   if (pending.some(i => now - Date.parse(i.createdAt) >= config.maxPendingAgeHours * 3600000)) return 'age';
   return null;
 }
-export async function learningStatus(directory, root, now = new Date()) {
+const sumUsage = items => {
+  const totals = {};
+  for (const item of items) {
+    if (!item.usage || typeof item.usage !== 'object') continue;
+    for (const [key, value] of Object.entries(item.usage)) if (Number.isFinite(value)) totals[key] = (totals[key] || 0) + value;
+  }
+  return Object.keys(totals).length ? totals : null;
+};
+// 只读报告：材料、运行、知识、反馈和提取作业分开展示；项目累计与 session/task 归因不混算。
+// 知识文件和复盘运行没有会话归属，按项目范围统计并显式标注；材料、反馈与提取作业可按 task/session 过滤。
+export async function learningStatus(directory, root, now = new Date(), options = {}) {
   const project = await projectFor(directory, root);
   const { values: config, sources } = await learningConfig(directory, project);
-  const items = await readItems(directory, project, 'inbox');
-  const runs = await readItems(directory, project, 'runs');
   const day = dayKey(now, config.timeZone);
+  const scope = { taskId: options.taskId || null, sessionId: options.sessionId || null };
+  const filtered = Boolean(scope.taskId || scope.sessionId);
+  // 反馈事件只记录 taskId；缺少 sessionId 时按任务归因，不因会话维度缺失而漏计。
+  const inScope = item => (!scope.taskId || item.taskId === scope.taskId) && (!scope.sessionId || !item.sessionId || item.sessionId === scope.sessionId);
+  const items = (await readItems(directory, project, 'inbox')).filter(inScope);
+  const runs = await readItems(directory, project, 'runs');
+  const feedbackEvents = (await readItems(directory, project, 'feedback')).filter(inScope);
+  const { jobs, skipped: skippedJobFiles } = await readExtractionJobs(directory, project);
+  const scopedJobs = jobs.filter(inScope);
+  let entries = [], knowledgeError = null;
+  try { entries = await readEntries(project); } catch (error) { knowledgeError = error.code || 'KNOWLEDGE'; }
+  const count = (list, status) => list.filter(item => item.status === status).length;
+  const materials = { total: items.length, pending: count(items, 'pending'), waiting: count(items, 'waiting'), processed: count(items, 'processed') };
+  const evidence = { success: 0, failure: 0, correction: 0 };
+  for (const item of items) if (Object.hasOwn(evidence, item.kind)) evidence[item.kind] += 1;
+  const feedback = {
+    shown: feedbackEvents.filter(item => item.outcome === 'shown').length,
+    adopted: feedbackEvents.filter(item => item.outcome === 'adopted').length,
+    total: feedbackEvents.length,
+  };
+  // 没有反馈只说明没有可核对记录，不能据此推断知识没有效果。
+  if (!feedback.total) feedback.note = '无记录';
+  const history = entries.flatMap(entry => (entry.history || []).map(item => ({ ...item, knowledgeId: entry.id })));
+  const runList = runs.map(run => ({
+    id: run.id, status: run.status, startedAt: run.startedAt, finishedAt: run.finishedAt, usage: run.usage ?? null, reason: run.reason,
+    rejected: (run.rejected || run.proposal?.rejected || []).map(item => ({
+      observationIds: Array.isArray(item.observationIds) ? item.observationIds : [],
+      action: item.action ?? null, targetId: item.targetId ?? null, code: item.code || 'RESULT', message: item.message || '决定无效',
+    })),
+    // 模型未处置、仍待下次复盘的材料不算拒绝，单独列出便于定位。
+    unhandled: Array.isArray(run.unhandled) ? run.unhandled : [],
+  }));
+  const runSummary = {};
+  for (const run of runs) runSummary[run.status] = (runSummary[run.status] || 0) + 1;
+  const capture = {
+    total: scopedJobs.length, pending: count(scopedJobs, 'pending'), running: count(scopedJobs, 'running'),
+    completed: count(scopedJobs, 'completed'), skipped: count(scopedJobs, 'skipped'), failed: count(scopedJobs, 'failed'), timeout: count(scopedJobs, 'timeout'),
+    todayStarted: scopedJobs.filter(job => job.startedAt && job.day === day).length,
+    usage: sumUsage(scopedJobs),
+    rejected: scopedJobs.reduce((total, job) => total + (Array.isArray(job.rejected) ? job.rejected.length : 0), 0),
+    skippedFiles: skippedJobFiles,
+    recent: scopedJobs.slice(-5).map(job => ({
+      id: job.id, status: job.status, taskId: job.taskId || null, sessionId: job.sessionId || null, reason: job.reason ?? null,
+      candidates: job.candidates ?? null, rejected: Array.isArray(job.rejected) ? job.rejected.length : 0,
+      usage: job.usage ?? null, createdAt: job.createdAt, finishedAt: job.finishedAt ?? null,
+      // 状态报告只显示来源文件名，不回显本机 transcript 绝对路径。
+      source: job.source?.path ? { name: path.basename(job.source.path), bytes: job.source.size ?? null } : null,
+    })),
+  };
+  const todayStarted = runs.filter(run => run.startedAt && run.day === day).length;
   return {
-    projectId: project.projectId, enabled: project.learning?.enabled === true,
-    pending: items.filter(i => i.status === 'pending').length, waiting: items.filter(i => i.status === 'waiting').length,
-    due: dueReason(items, config, now), todayStarted: runs.filter(r => r.startedAt && r.day === day).length,
-    config, sources, runs: runs.map(r => ({ id: r.id, status: r.status, startedAt: r.startedAt, finishedAt: r.finishedAt, usage: r.usage ?? null, reason: r.reason })).slice(-10),
+    at: now.toISOString(), projectId: project.projectId, enabled: project.learning?.enabled === true,
+    scope: { ...scope, materials: filtered ? 'filtered' : 'project', runs: 'project', knowledge: 'project', capture: filtered ? 'filtered' : 'project', feedback: filtered ? 'filtered' : 'project' },
+    pending: materials.pending, waiting: materials.waiting, processed: materials.processed,
+    due: dueReason(items, config, now), todayStarted,
+    limits: { review: { todayStarted, maxRunsPerDay: config.maxRunsPerDay }, capture: { todayStarted: capture.todayStarted, maxRunsPerDay: config.maxCaptureRunsPerDay } },
+    config, sources, materials, evidence, feedback, runSummary, capture,
+    runs: runList.slice(-10),
+    knowledge: {
+      available: !knowledgeError, total: entries.length, active: entries.filter(entry => entry.status === 'active').length,
+      created: history.filter(item => item.action === 'create').length,
+      revised: history.filter(item => item.action === 'revise').length,
+      superseded: entries.filter(entry => entry.status === 'superseded').length,
+      ...(knowledgeError ? { error: knowledgeError } : {}),
+    },
     notices: project.learning?.notices || [],
   };
 }
@@ -62,55 +131,109 @@ function prepareBatch(items, entries, config) {
   }
   return { batch, previous };
 }
+const decisionError = (code, message) => { const error = new Error(message); error.code = code; return error; };
+// 单个决定独立校验；只返回可提交的变更与会被消费的材料，不修改全局集合。
+function planDecision(decision, run, old, now) {
+  if (!Array.isArray(decision.observationIds) || !decision.observationIds.length || typeof decision.reason !== 'string' || !decision.reason.trim()) throw decisionError('RESULT', '每项决定需要材料和理由');
+  if (new Set(decision.observationIds).size !== decision.observationIds.length) throw decisionError('RESULT', '同一决定重复引用同一材料');
+  const evidence = decision.observationIds.map(key => {
+    if (typeof key !== 'string') throw decisionError('RESULT', '材料 ID 无效');
+    const item = run.batch.find(i => i.id === key);
+    if (!item) throw decisionError('RESULT', '引用了本批之外的材料');
+    return item;
+  });
+  if (!['create', 'revise', 'wait', 'dismiss'].includes(decision.action)) throw decisionError('RESULT', '未知复盘动作');
+  if (['wait', 'dismiss'].includes(decision.action)) return { evidence, keys: [], changes: [] };
+  for (const key of ['title', 'summary', 'conditions']) if (typeof decision[key] !== 'string' || !decision[key].trim() || decision[key].length > 4000) throw decisionError('RESULT', '知识字段无效 ' + key);
+  if (!['method', 'fact', 'preference'].includes(decision.type) || !['normal', 'important', 'critical'].includes(decision.importance) || !['active', 'disputed', 'retired'].includes(decision.status)) throw decisionError('RESULT', '知识分类或状态无效');
+  if (!Array.isArray(decision.paths) || decision.paths.some(p => typeof p !== 'string' || p.includes('..') || path.isAbsolute(p)) || !Array.isArray(decision.tags) || decision.tags.some(t => typeof t !== 'string') || (decision.version !== null && typeof decision.version !== 'string')) throw decisionError('RESULT', '适用范围无效');
+  const previous = decision.action === 'revise' ? old.get(decision.targetId) : null;
+  if (decision.action === 'revise' && !previous) throw decisionError('RESULT', '修订目标不在已读取知识中');
+  const superseded = decision.supersedes ? old.get(decision.supersedes) : null;
+  if (decision.supersedes && (!superseded || decision.action !== 'create')) throw decisionError('RESULT', '替代目标无效');
+  const target = previous || superseded;
+  const counter = target && evidence.some(e => e.knowledgeId === target.id && ((e.kind === 'correction' && e.explicit) || (e.kind === 'failure' && e.verified)));
+  const conclusionChanged = target && (decision.summary !== target.summary || decision.conditions !== target.conditions || decision.type !== target.type);
+  if (target && (conclusionChanged || decision.status !== target.status || ({ normal: 0, important: 1, critical: 2 }[decision.importance] < { normal: 0, important: 1, critical: 2 }[target.importance]) || superseded) && !counter) throw decisionError('EVIDENCE', '改变结论、降级或替代需要针对旧知识的明确反例');
+  if (counter && !conclusionChanged && decision.status === 'active' && !evidence.some(e => e.kind === 'success' && e.verified)) throw decisionError('EVIDENCE', '原结论仍有反例且未重新验证，应标为 disputed 或修订结论');
+  if (target && (JSON.stringify(decision.paths) !== JSON.stringify(target.scope.paths) || decision.version !== target.scope.version)) throw decisionError('SCOPE', '范围变化应创建独立知识，不覆盖原范围');
+  if (decision.type === 'preference' && ![...(previous?.evidence || []), ...evidence].some(e => e.kind === 'preference' && e.explicit || e.kind === 'correction' && e.explicit)) throw decisionError('EVIDENCE', '偏好需要明确用户表达');
+  const key = previous?.id || 'K-' + evidence.map(e => e.id).sort()[0];
+  const generation = (previous?.generation || 1) + (previous && conclusionChanged ? 1 : 0);
+  const allEvidence = [...new Map([...(previous?.evidence || []).map(e => ({ ...e, generation: e.generation || 1 })), ...evidence.map(e => ({ ...e, generation }))].map(e => [e.id, e])).values()];
+  const entry = { schemaVersion: 1, id: key, generation, title: decision.title, summary: decision.summary, conditions: decision.conditions, type: decision.type, importance: decision.importance, status: decision.status, scope: { paths: decision.paths, version: decision.version }, tags: decision.tags, evidence: allEvidence, history: [...(previous?.history || []), { at: now, action: decision.action, reason: decision.reason, runId: run.id, before: target ? { summary: target.summary, importance: target.importance, status: target.status } : null }], supersedes: decision.supersedes || null };
+  entry.maturity = maturityFor(allEvidence.filter(e => e.generation === generation), entry.type, entry.status);
+  const changes = [];
+  const keys = new Set();
+  const add = (value, baseline) => {
+    if (keys.has(value.id)) throw decisionError('CONFLICT', '同一决定重复修改同一知识');
+    keys.add(value.id);
+    changes.push({ path: entryPath(value.id), baseline, content: renderEntry(value), reason: decision.reason, responsibility: '后台知识维护', evidence: evidence.map(e => 'observation:' + e.id) });
+  };
+  add(entry, previous?.fingerprint ?? null);
+  if (superseded) {
+    const { fingerprint } = superseded;
+    const retired = { ...superseded, status: 'superseded', supersededBy: entry.id, history: [...(superseded.history || []), { at: now, action: 'superseded', reason: decision.reason, runId: run.id }] };
+    delete retired.path;
+    add(retired, fingerprint);
+  }
+  return { evidence, keys: [...keys], changes };
+}
+// 按决定隔离校验：非法决定只留下决定级原因，其材料保持 pending；合法决定组成同一事务。
+// 无法安全建立提交图的情况（同一材料被多项决定引用、同一知识被多项决定修改）保守拒绝相关决定。
 function proposalChanges(answer, run) {
   if (!answer || !Array.isArray(answer.decisions)) fail('RESULT', '复盘结果缺少 decisions');
-  const consumed = new Set(), changed = new Map(), outcomes = [];
   const old = new Map(run.previous.map(e => [e.id, e]));
   const now = new Date().toISOString();
-  const add = (entry, baseline, reason, evidence) => {
-    if (changed.has(entry.id)) fail('RESULT', '一次复盘不能重复修改同一知识');
-    changed.set(entry.id, { path: entryPath(entry.id), baseline, content: renderEntry(entry), reason, responsibility: '后台知识维护', evidence: evidence.map(e => 'observation:' + e.id) });
-  };
-  for (const decision of answer.decisions) {
-    if (!Array.isArray(decision.observationIds) || !decision.observationIds.length || typeof decision.reason !== 'string' || !decision.reason.trim()) fail('RESULT', '每项决定需要材料和理由');
-    const evidence = decision.observationIds.map(key => {
-      if (consumed.has(key)) fail('RESULT', '同一材料被重复消费');
-      const item = run.batch.find(i => i.id === key);
-      if (!item) fail('RESULT', '引用了本批之外的材料');
-      consumed.add(key); return item;
-    });
-    if (!['create', 'revise', 'wait', 'dismiss'].includes(decision.action)) fail('RESULT', '未知复盘动作');
-    outcomes.push(...evidence.map(e => ({ id: e.id, status: decision.action === 'wait' ? 'waiting' : 'processed', reason: decision.reason })));
-    if (['wait', 'dismiss'].includes(decision.action)) continue;
-    for (const key of ['title', 'summary', 'conditions']) if (typeof decision[key] !== 'string' || !decision[key].trim() || decision[key].length > 4000) fail('RESULT', '知识字段无效 ' + key);
-    if (!['method', 'fact', 'preference'].includes(decision.type) || !['normal', 'important', 'critical'].includes(decision.importance) || !['active', 'disputed', 'retired'].includes(decision.status)) fail('RESULT', '知识分类或状态无效');
-    if (!Array.isArray(decision.paths) || decision.paths.some(p => typeof p !== 'string' || p.includes('..') || path.isAbsolute(p)) || !Array.isArray(decision.tags) || decision.tags.some(t => typeof t !== 'string') || (decision.version !== null && typeof decision.version !== 'string')) fail('RESULT', '适用范围无效');
-    const previous = decision.action === 'revise' ? old.get(decision.targetId) : null;
-    if (decision.action === 'revise' && !previous) fail('RESULT', '修订目标不在已读取知识中');
-    const superseded = decision.supersedes ? old.get(decision.supersedes) : null;
-    if (decision.supersedes && (!superseded || decision.action !== 'create')) fail('RESULT', '替代目标无效');
-    const target = previous || superseded;
-    const counter = target && evidence.some(e => e.knowledgeId === target.id && ((e.kind === 'correction' && e.explicit) || (e.kind === 'failure' && e.verified)));
-    const conclusionChanged = target && (decision.summary !== target.summary || decision.conditions !== target.conditions || decision.type !== target.type);
-    if (target && (conclusionChanged || decision.status !== target.status || ({normal:0,important:1,critical:2}[decision.importance] < {normal:0,important:1,critical:2}[target.importance]) || superseded) && !counter) fail('EVIDENCE', '改变结论、降级或替代需要针对旧知识的明确反例');
-    if (counter && !conclusionChanged && decision.status === 'active' && !evidence.some(e => e.kind === 'success' && e.verified)) fail('EVIDENCE', '原结论仍有反例且未重新验证，应标为 disputed 或修订结论');
-    if (target && (JSON.stringify(decision.paths) !== JSON.stringify(target.scope.paths) || decision.version !== target.scope.version)) fail('SCOPE', '范围变化应创建独立知识，不覆盖原范围');
-    if (decision.type === 'preference' && ![...(previous?.evidence || []), ...evidence].some(e => e.kind === 'preference' && e.explicit || e.kind === 'correction' && e.explicit)) fail('EVIDENCE', '偏好需要明确用户表达');
-    const key = previous?.id || 'K-' + evidence.map(e => e.id).sort()[0];
-    const generation = (previous?.generation || 1) + (previous && conclusionChanged ? 1 : 0);
-    const allEvidence = [...new Map([...(previous?.evidence || []).map(e => ({ ...e, generation: e.generation || 1 })), ...evidence.map(e => ({ ...e, generation }))].map(e => [e.id, e])).values()];
-    const entry = { schemaVersion: 1, id: key, generation, title: decision.title, summary: decision.summary, conditions: decision.conditions, type: decision.type, importance: decision.importance, status: decision.status, scope: { paths: decision.paths, version: decision.version }, tags: decision.tags, evidence: allEvidence, history: [...(previous?.history || []), { at: now, action: decision.action, reason: decision.reason, runId: run.id, before: target ? { summary: target.summary, importance: target.importance, status: target.status } : null }], supersedes: decision.supersedes || null };
-    entry.maturity = maturityFor(allEvidence.filter(e => e.generation === generation), entry.type, entry.status);
-    add(entry, previous?.fingerprint ?? null, decision.reason, evidence);
-    if (superseded) {
-      const { fingerprint, path: p, ...retired } = superseded;
-      retired.status = 'superseded'; retired.supersededBy = entry.id;
-      retired.history.push({ at: now, action: 'superseded', reason: decision.reason, runId: run.id });
-      add(retired, fingerprint, decision.reason, evidence);
+  const rejected = [];
+  const reject = (decision, error) => rejected.push({
+    observationIds: Array.isArray(decision?.observationIds) ? decision.observationIds.filter(key => typeof key === 'string') : [],
+    action: typeof decision?.action === 'string' ? decision.action : null,
+    targetId: typeof decision?.targetId === 'string' ? decision.targetId : null,
+    code: error?.code || 'RESULT', message: error?.message || '决定无效',
+  });
+  const decisions = answer.decisions.map((decision, index) => ({ decision, index }));
+  // 先找出跨决定重复引用的材料：无法判断该保留哪一项，相关决定全部拒绝。
+  const owners = new Map();
+  for (const { decision, index } of decisions) {
+    if (!Array.isArray(decision?.observationIds)) continue;
+    for (const key of new Set(decision.observationIds.filter(item => typeof item === 'string'))) {
+      const set = owners.get(key) || new Set();
+      set.add(index);
+      owners.set(key, set);
     }
   }
-  if (consumed.size !== run.batch.length) fail('RESULT', '结果没有逐一处置本批材料');
-  return { changes: [...changed.values()], outcomes };
+  const duplicated = new Set();
+  for (const set of owners.values()) if (set.size > 1) for (const index of set) duplicated.add(index);
+  const plans = [];
+  for (const { decision, index } of decisions) {
+    if (duplicated.has(index)) { reject(decision, decisionError('DUPLICATE', '同一材料被多项决定引用，无法安全建立提交图')); continue; }
+    try { plans.push({ decision, plan: planDecision(decision, run, old, now) }); }
+    catch (error) { reject(decision, error); }
+  }
+  // 同一知识被两项决定修改会让提交顺序决定结果，保守拒绝全部相关决定。
+  const byKnowledge = new Map();
+  for (const item of plans) for (const key of item.plan.keys) {
+    const set = byKnowledge.get(key) || new Set();
+    set.add(item);
+    byKnowledge.set(key, set);
+  }
+  const conflicting = new Set();
+  for (const set of byKnowledge.values()) if (set.size > 1) for (const item of set) conflicting.add(item);
+  const accepted = [];
+  for (const item of plans) {
+    if (conflicting.has(item)) { reject(item.decision, decisionError('CONFLICT', '同一知识被多项决定修改，无法安全建立提交图')); continue; }
+    accepted.push(item);
+  }
+  const changes = [], outcomes = [];
+  for (const { decision, plan } of accepted) {
+    outcomes.push(...plan.evidence.map(e => ({ id: e.id, status: decision.action === 'wait' ? 'waiting' : 'processed', reason: decision.reason })));
+    changes.push(...plan.changes);
+  }
+  // 模型没有处置的材料不静默消费，也不当成决定级拒绝：保持 pending 等待下次重试，单独记录待补处置。
+  const referenced = new Set(answer.decisions.flatMap(decision => Array.isArray(decision?.observationIds) ? decision.observationIds.filter(key => typeof key === 'string') : []));
+  const unhandled = run.batch.filter(item => !referenced.has(item.id)).map(item => item.id);
+  return { changes, outcomes, rejected, unhandled };
 }
 async function commitRun(directory, root, run, options = {}) {
   return mutate(directory, async (state, save) => {
@@ -142,18 +265,53 @@ async function commitRun(directory, root, run, options = {}) {
       const current = JSON.parse(await readText(path.join(projectData(directory, project), 'inbox', outcome.id + '.json')));
       if (current.status === 'processed' && current.runId !== run.id) fail('CONFLICT', '材料已被其他运行消费');
       Object.assign(current, outcome, { runId: run.id, processedAt: new Date().toISOString() });
+      delete current.lastRejected;
       await putItem(directory, project, 'inbox', current);
     }
+    // 被拒决定的材料不消费，只留下可定位的决定级原因，方便原样重试。
+    await markRejected(directory, project, run);
     for (const c of run.proposal.changes) delete project.learning.quarantine[c.path];
     for (const item of run.batch) if (item.knowledgeId && project.learning.disputes?.[item.knowledgeId]?.observationId === item.id && run.proposal.changes.some(c => c.path === entryPath(item.knowledgeId))) delete project.learning.disputes[item.knowledgeId];
     for (const p of Object.values(state.pending)) if (p.taskId === run.id && p.projectId === project.projectId) p.status = 'closed';
     const important = run.previous.filter(e => e.importance !== 'normal' && run.proposal.changes.some(c => c.path === e.path));
     project.learning.notices ||= [];
     if (important.length && !project.learning.notices.some(n => n.runId === run.id)) project.learning.notices.push({ runId: run.id, ids: important.map(e => e.id), text: '重要知识已修订，请查看运行记录中的证据与原因', acknowledged: false });
-    run.status = 'completed'; run.finishedAt = new Date().toISOString();
+    run.status = run.proposal.rejected.length ? 'partial' : 'completed';
+    run.rejected = run.proposal.rejected;
+    run.unhandled = run.proposal.unhandled || [];
+    run.finishedAt = new Date().toISOString();
     await putItem(directory, project, 'runs', run);
-    return { id: run.id, status: run.status, processed: run.batch.length, usage: run.usage ?? null };
+    return { id: run.id, status: run.status, processed: run.proposal.outcomes.length, rejected: run.proposal.rejected, usage: run.usage ?? null };
   });
+}
+// 被拒材料的诊断只写到仍待处理的材料上；已消费材料不被回写。
+async function markRejected(directory, project, run) {
+  const rejected = run.proposal?.rejected || [];
+  const seen = new Set();
+  let marked = 0;
+  for (const rejection of rejected) for (const key of rejection.observationIds || []) {
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const raw = await readText(path.join(projectData(directory, project), 'inbox', key + '.json'));
+    if (raw === null) continue;
+    const item = JSON.parse(raw);
+    if (!['pending', 'waiting'].includes(item.status)) continue;
+    item.lastRejected = { runId: run.id, code: rejection.code, message: rejection.message, at: new Date().toISOString() };
+    await putItem(directory, project, 'inbox', item);
+    marked++;
+  }
+  return marked;
+}
+// 全部决定都被拒时不写知识：运行记为失败并保留原因，材料原样等待下次复盘。
+async function settleRejected(directory, project, run) {
+  run.status = 'failed';
+  run.reason = run.proposal.rejected[0]?.code || 'RESULT';
+  run.rejected = run.proposal.rejected;
+  run.unhandled = run.proposal.unhandled || [];
+  run.finishedAt = new Date().toISOString();
+  await markRejected(directory, project, run);
+  await putItem(directory, project, 'runs', run);
+  return { id: run.id, status: run.status, reason: run.reason, rejected: run.proposal.rejected, usage: run.usage ?? null };
 }
 function failureStatus(run, error) {
   if (!run.proposal) return 'failed';
@@ -170,7 +328,7 @@ async function settleRunFailure(directory, project, run, error) {
   if (run.status === 'deferred') { run.deferredAt = new Date().toISOString(); delete run.finishedAt; }
   else run.finishedAt = new Date().toISOString();
   await putItem(directory, project, 'runs', run);
-  return { id: run.id, status: run.status, reason: code, usage: run.usage ?? null };
+  return { id: run.id, status: run.status, reason: code, rejected: run.proposal?.rejected || [], usage: run.usage ?? null };
 }
 async function resumeRun(directory, root, project, run, options) {
   try { return { ...await commitRun(directory, root, run, options), resumed: true }; }
@@ -215,6 +373,8 @@ export async function reviewOnce(directory, root, options = {}) {
       run.usage = response.usage ?? null;
       if (response.status !== 'completed') { run.status = response.status; run.reason = response.reason || response.status; run.finishedAt = new Date().toISOString(); await putItem(directory, project, 'runs', run); return { id: run.id, status: run.status, usage: run.usage }; }
       run.proposal = proposalChanges(response.answer, run);
+      // 全部决定无效：不进入提交，也不写知识；材料保持 pending，失败运行保留每项原因。
+      if (!run.proposal.changes.length && !run.proposal.outcomes.length) return await settleRejected(directory, project, run);
       run.status = 'proposed'; await putItem(directory, project, 'runs', run);
       return await commitRun(directory, root, run, options);
     } catch (error) {
@@ -228,7 +388,7 @@ export async function recoverReview(directory, root, runId) {
     const project = await projectFor(directory, root);
     const run = (await readItems(directory, project, 'runs')).find(r => r.id === runId);
     if (!run) fail('RUN', '运行记录不存在');
-    if (run.status === 'completed') return { id: run.id, status: run.status, replayed: true };
+    if (run.status === 'completed' || run.status === 'partial') return { id: run.id, status: run.status, replayed: true };
     if (run.status === 'discarded') fail('RUN', '提案已作废；材料保留待下次复盘');
     if (run.status === 'conflict') fail('CONFLICT', '内容冲突需先选择保留或作废');
     if (!run.proposal) { run.status = 'failed'; run.reason = '上次进程退出且没有完整提案，材料保持未处理'; await putItem(directory, project, 'runs', run); return { id: run.id, status: run.status }; }

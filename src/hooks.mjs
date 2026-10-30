@@ -5,6 +5,7 @@ import { resolveProject } from './projects.mjs';
 import { precheckSpecs } from './spec.mjs';
 import { projectContext, readOptionalContext, signalUsage } from './context.mjs';
 import { PRODUCT_ROOT, PRODUCT_VERSION } from './entry.mjs';
+import { registerExtraction } from './capture.mjs';
 
 export const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'Interrupt', 'SessionEnd', 'PreCompact', 'PostCompact'];
 // Claude Code 没有 Interrupt 事件；StopFailure 承担中断保存语义，其余同名事件语义与 Codex 对齐。
@@ -334,6 +335,15 @@ export async function handleHook(directory, event, options = {}) {
           // 附当前 revision 与回合，代理据此直接重发，不必再猜状态。
           const current = state.sessions[sessionKey(project.projectId, event.session_id)];
           result = { accepted: false, reason: error.code || 'INPUT', message: error.message, ...(error.missing ? { missing: error.missing } : {}), ...(error.findings ? { findings: error.findings } : {}), expectedRevision: current?.revision, turnId: current?.turnId };
+        }
+        // 已接受的任务结束才登记会话提取；登记失败只写作业级诊断，不阻塞、不回滚业务任务。
+        if (result.accepted && payload.action === 'task-end') {
+          try {
+            const task = session.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
+            result.extraction = await registerExtraction(directory, project, { task, session, transcriptPath: event.transcript_path });
+          } catch (error) {
+            result.extraction = { status: 'error', reason: error.code || 'IO' };
+          }
         }
         return contextOutput(name, `workflow 回执：${JSON.stringify(result)}`);
       }

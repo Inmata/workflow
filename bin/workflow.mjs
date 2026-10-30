@@ -200,7 +200,7 @@ async function main() {
     if (action === 'enable') { const result = await setLearningEnabled(directory, root, true); return { ...result, migration: await migrateCandidates(directory, root) }; }
     if (action === 'disable') return setLearningEnabled(directory, root, false);
     const { acknowledgeNotices, learningStatus, recoverReview, resolveReview, reviewOnce } = await import('../src/review.mjs');
-    if (action === 'status') return learningStatus(directory, root);
+    if (action === 'status') return learningStatus(directory, root, new Date(), { sessionId: options.session, taskId: options.task });
     if (action === 'migrate') return migrateCandidates(directory, root);
     if (action === 'acknowledge') return acknowledgeNotices(directory, root);
     if (action === 'review') return reviewOnce(directory, root, { nowRequested: options.now });
