@@ -229,3 +229,49 @@ Worker 与 Reviewer（drift-sim）：Codex Worker 包 w-mul 增加 `mul` 和测�
 ### 8.6 CI
 
 未规划。仓库远端是 GitHub，但已跟踪文件中没有 `.github` 工作流；Actions 是否可用、账户额度、runner 环境和 secrets 策略均未确认。未确认托管条件前不写 CI 配置，也不假设平台能力。若以后确认，首选复用 `npm run verify -- --out <artifact 目录>`，把摘要和原始日志作为 artifact 留存；demo 保持合成标识，需要 PowerShell 或回收站适配的检查要先确定 runner 环境，跳过的用例不能当通过。
+
+## 9. 会话学习与协议收紧（F11–F18）验收
+
+本节只记录源码维护场景，不改变前面真实宿主验收的结论。A 批（F16–F18）最终交付为 `af135ef4d18a107ee6e26a171cd82f44e4645351`，B 批（F11–F14、F15 注释）最终交付为 `dbf1a37b4969e3271806d625de8254cc77aabe60`；两批都经独立只读审查 PASS。C 批只回写公开文档，行为证据复用同一最终代码版本。逐项处理、公开测试场景和证据归属见 `docs/plans/session-learning-implementation.md`。
+
+### 9.1 场景与命令
+
+以下命令在仓库根目录运行，需要 Node.js 24+。按改动选择受影响场景，不要求每次全跑。
+
+| 范围 | 命令 | 必须看到的业务结果 |
+| --- | --- | --- |
+| F11 route 与通道声明 | `node --test test/protocol-review.test.mjs` | 三种合法 route 原契约不变；指定通道后偏离无 `change` 被拒、有 `change` 接受 |
+| F12 已审包取消与返修 ref | `node --test test/protocol-review.test.mjs test/signal.test.mjs test/gate.test.mjs` | PASS 后取消返回 `PACKAGE`；同批改写或改指不能抹掉曾 PASS；同包返修旧 PASS 失效；重复 `packageId` 整批回滚；未审取消仍合法 |
+| F13 拒绝到恢复的回执闭环 | `node --test test/signal.test.mjs` | 每类拒绝有可定位 `reason`；修正后接受；同 ID 同正文幂等、改正文 `SIGNAL_ID`；CLI 退出码不等于 `accepted` |
+| F14 只读诊断免审 | `node --test test/protocol-review.test.mjs test/signal.test.mjs` | 首次声明合法并进入 `gateReport`；缺交付结论列 `diagnostic:<id>` 且不可豁免；实现包、审查包、事后补声明与接续已审包被拒 |
+| F15 预算注释与当前事实 | `node --test test/hooks.test.mjs test/spec.test.mjs`；`npm run check` | Git 调用受共享截止预算约束、过期结果 `spec-check:stale` 不可复用；注释和文档不再承诺整个 Hook 4 秒或 10 秒必回 |
+| F16 任务结束候选提取 | `node --test test/capture.test.mjs` | accepted task-end 幂等登记；禁用或无 transcript 零模型调用；身份/路径/格式失败不阻塞；候选只进 `inbox`；工具输出不进入提示词 |
+| F17 按决定隔离失败 | `node --test test/learning.test.mjs` | 合法决定与材料事务提交；被拒材料保持 `pending` 并记录原因；全部无效不写知识；冲突、跨批与重放不重复消费 |
+| F18 学习吸收漏斗 | `node --test test/capture.test.mjs` | 材料、运行、知识、反馈、提取作业分开计数；`scope` 与 `unattributed` 不混算；无反馈写“无记录” |
+| 交付前全量 | `npm test` | 任一用例失败或退出码非 0；跳过项必须在结论中列出，不能当通过 |
+| 仓库一致性与 spec | `npm run check`；`node bin/workflow.mjs spec check --project <仓库根>`；`git diff --check` | `ok:true` 且无错误；spec 无 findings；差异检查无输出 |
+
+### 9.2 结果
+
+| 项目 | 实际结果 |
+| --- | --- |
+| A 批全量测试 | 339 项：337 通过、2 跳过、0 失败 |
+| A 批独立审查 | 首轮定向 47 项通过；最终文档变化复用已通过的行为证据 |
+| B 批全量测试 | 354 项：352 通过、2 跳过、0 失败；日志复用于同一最终代码版本，未另造新全量记录 |
+| B 批独立审查 | 首轮定向 95 项、返修 37 项通过；最终文档复审复用有效行为证据 |
+| 时间敏感用例 | F05 曾在并发负载下失败一次，随后单测与全量重跑均通过；该次失败保留在记录中 |
+| 仓库检查 | `npm run check` 通过；B 交付时为 51 个语法文件、28 份文档、48 个发布文件、168 个本地链接 |
+| spec 检查 | 无发现 |
+| 差异检查 | 无输出 |
+| C 批文档检查 | `npm run check` 通过（51 个语法文件、29 份文档、48 个发布文件、174 个本地链接）；`spec check` 无 findings；`git diff --check` 无输出 |
+
+2 项跳过分别是文件符号链接权限和仅 POSIX 用例。Windows 跳过的用例不能当通过；跳过的场景也没有用其他平台的结果冒充。
+
+### 9.3 剩余边界
+
+- 真实模型提取与真实模型复盘没有运行，未消耗模型额度；测试只使用人工重写的最小脱敏样本，不读取或提交真实聊天记录。
+- 真实宿主端到端、CI、POSIX、junction/目录联接删除保护和超大仓库性能仍未验证；角色认领与 PostToolUse 回执只覆盖信号接收层。
+- `canceled` 只表示放弃该包改动，不证明最终 ref 不含这些改动；只读诊断声明不证明进程实际未写；两者都由 Lead 和 Reviewer 继续人工核对。
+- 学习报告的计数不是效果证明；`shown/adopted` 不等于方法有效，`knowledge select` 不计为采纳。“6 份材料、0 份正式知识”的脱敏合成归因只用于验证报告口径，不表示真实材料已 `processed`。
+- 4 秒是 Git 调用共享预算，不是整个 Hook 的上限；宿主终止和真实超大仓库的耗时没有实测。
+- 本机安装仍是 0.8.0，源码中的本轮改动没有安装到运行副本；GitHub 最新 Release 仍是 0.7.0，本轮没有发布新版本。
