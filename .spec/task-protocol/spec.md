@@ -20,7 +20,7 @@ related:
 - `task-start` 接续保留原 `goal` 与 `permissions`；新任务缺 `goal`、`permissions` 或 `route` 时回执点名缺项。
 - 信号只在当前 shell 确实直接执行本安装副本的 `signal` 子命令后由 PostToolUse 接受；完整 payload 与便捷子命令走同一协议校验。拒绝时状态整体回滚。
 - spec 检查对非 `operation-only` 任务生效：`lead-direct`、`delegated` 与历史无 `route` 任务都检查，历史任务声明 `operation-only` 后不检查。
-- 生产 Hook 的 spec 检查在状态锁外预检，整次检查的 Git 调用共用 4 秒总预算（文件快照读取与锁内复核不计入）；预检把检查对象固定进 `binding`：显式 ref 与 HEAD 都固定成提交 OID，HEAD 另含受管文件摘要、spec 清单与索引快照；索引快照取在只读 `status` 之前，`status` 用 `--no-optional-locks` 不自行刷新索引，检查期间索引被改写同样按过期处理。同时绑定 worktree、ref、项目、任务与（task-end 与 Stop 的）会话回合/票据/修订。复用前只重解析一次 ref 并比对文件快照，不重跑 status/log/rev-list。项目、任务或会话标识缺失、不匹配，提交移动或工作区变化都按 `spec-check:stale` 处理，不把过期结果当成通过，也不在锁内补跑慢 Git。`spec-check:stale` 不可豁免，只能重试；直接调用协议函数且未提供预检结果时，仍在调用内同步检查。
+- 生产 Hook 的 spec 检查在状态锁外预检，整次检查按开始时刻的绝对截止时间给 Git 调用共用 4 秒总预算：同步文件读取不能强制中断，但耗时同样消耗截止时间、减少后续 Git 剩余时长，4 秒不保证预检或 Hook 总时长；锁内复核另有独立预算；预检把检查对象固定进 `binding`：显式 ref 与 HEAD 都固定成提交 OID，HEAD 另含受管文件摘要、spec 清单与索引快照；索引快照取在只读 `status` 之前，`status` 用 `--no-optional-locks` 不自行刷新索引，检查期间索引被改写同样按过期处理。同时绑定 worktree、ref、项目、任务与（task-end 与 Stop 的）会话回合/票据/修订。复用前只重解析一次 ref 并比对文件快照，不重跑 status/log/rev-list。项目、任务或会话标识缺失、不匹配，提交移动或工作区变化都按 `spec-check:stale` 处理，不把过期结果当成通过，也不在锁内补跑慢 Git。`spec-check:stale` 不可豁免，只能重试；直接调用协议函数且未提供预检结果时，仍在调用内同步检查。
 
 ## 原因
 
@@ -45,4 +45,4 @@ related:
 - 不改变三种分流的契约与门禁缺项内容；`route` 一旦声明不可中途切换。
 - 校验只放在协议层，不在 `signal.mjs` 复制一套规则；接收仍只认 PostToolUse 中可核对的直接调用。
 - 不覆盖宿主权限真实性的证明，也不代替用户授权；spec 的 Git 调用与预算留在 `src/spec.mjs`，协议只消费生产 Hook 预检的内部结果。`binding` 只随当次预检在内存中传递，不写状态、不做持久缓存；锁内复核的重解析上限独立于 4 秒预检预算，超时按过期处理。
-- 4 秒总预算与 10 秒单次上限只约束 Git 子进程；文件系统读取、宿主自身超时和真实超大仓库的耗时不做承诺。不为慢检查新增调度器、持久缓存或 schema 字段。
+- 4 秒总预算与 10 秒单次上限只约束 Git 子进程；同步文件读取不检查也无法中断截止时间，其耗时仍会消耗绝对剩余量、缩短后续 Git 可用时间，因此 4 秒不保证整次预检或 Hook 的总时长；宿主自身超时和真实超大仓库的耗时同样不做承诺。不为慢检查新增调度器、持久缓存或 schema 字段。
