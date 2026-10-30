@@ -7,7 +7,7 @@ import { readState } from '../src/store.mjs';
 import { taskKey } from '../src/protocol.mjs';
 import { applyKnowledge } from '../src/knowledge.mjs';
 import { applyAlignment } from '../src/alignment.mjs';
-import { entry, event, fixture, identity, start } from './helpers.mjs';
+import { claudeEvent, claudeStart, entry, event, fixture, identity, start } from './helpers.mjs';
 
 const task = async f => (await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)];
 const update = (f, value) => emitSignal(f, { action: 'task-update', ...value });
@@ -16,8 +16,11 @@ async function emitSignal(f, value) {
   const payload = { ...await identity(f), taskId: f.taskId, signalId: `signal-${crypto.randomUUID()}`, ...value };
   return receive(f, payload);
 }
-async function receive(f, payload) {
+async function receive(f, payload, extra = {}) {
   const output = await event(f, 'PostToolUse', {
+    // 模拟宿主可能不在后续事件重复 permission_mode，不能借 helper 的 default 覆盖已知模式。
+    permission_mode: undefined,
+    ...extra,
     tool_name: 'Bash',
     tool_input: { command: `node "${entry}" signal --base64 e30=` },
     tool_response: { output: JSON.stringify({ workflow_signal: payload }) },
@@ -61,6 +64,49 @@ test('P07 宿主 plan/read-only 时不能经 payload 提升权限；拒绝后状
     await event(f, 'UserPromptSubmit', { permission_mode: 'default' });
     assert.equal((await update(f, { permissions: { mode: 'write' } })).accepted, true);
   }
+});
+
+test('PostToolUse 采用当前宿主 plan/read-only，拒绝回滚不丢模式，缺字段不能恢复 default', async () => {
+  for (const mode of ['plan', 'read-only']) {
+    const f = await fixture();
+    await start(f, { mode: 'plan', allowedPaths: ['README.md'] });
+    const before = structuredClone(await task(f));
+    const send = async (value, extra) => receive(f, { ...await identity(f), taskId: f.taskId, signalId: `signal-${crypto.randomUUID()}`, action: 'task-update', ...value }, extra);
+    const session = async () => Object.values((await readState(f.directory)).sessions).find(item => item.sessionId === f.sessionId);
+    const revision = (await session()).revision;
+    const denied = await send({ permissions: { allowedPaths: ['docs/new.md'] }, allowedPathsMode: 'append' }, { permission_mode: mode });
+    assert.equal(denied.accepted, false, JSON.stringify(denied));
+    assert.equal(denied.reason, 'PERMISSION');
+    assert.deepEqual(await task(f), before);
+    assert.equal((await session()).permissionMode, mode, '宿主模式应在拒绝后持久保存');
+    assert.equal((await session()).revision, revision, '宿主模式同步不使当前信号身份失效');
+    const missingMode = await send({ permissions: { mode: 'write' } });
+    assert.equal(missingMode.reason, 'PERMISSION', JSON.stringify(missingMode));
+    assert.equal((await session()).permissionMode, mode);
+    const goal = await send({ goal: '只记录目标' });
+    assert.equal(goal.accepted, true, JSON.stringify(goal));
+    assert.equal(goal.hostPermissionMode, mode);
+    const shrink = await send({ permissions: { allowedPaths: [] } });
+    assert.equal(shrink.accepted, true, JSON.stringify(shrink));
+    const writable = await send({ permissions: { mode: 'write', allowedPaths: ['README.md', 'docs/new.md'] } }, { permission_mode: 'default' });
+    assert.equal(writable.accepted, true, JSON.stringify(writable));
+    assert.equal(writable.hostPermissionMode, 'default');
+  }
+});
+
+test('Claude 无 turn_id 的 PostToolUse 同样按当前宿主模式拒绝提权并保留该模式', async () => {
+  const f = await fixture({ claude: true });
+  await claudeStart(f, { mode: 'plan', allowedPaths: ['README.md'] });
+  const before = structuredClone(await task(f));
+  const payload = { ...await identity(f), taskId: f.taskId, signalId: 'claude-plan-update', action: 'task-update', permissions: { mode: 'write' } };
+  const output = await claudeEvent(f, 'PostToolUse', {
+    permission_mode: 'plan', tool_name: 'Bash', tool_input: { command: `node "${entry}" signal --base64 e30=` },
+    tool_response: { stdout: JSON.stringify({ workflow_signal: payload }) },
+  });
+  const result = JSON.parse(output.hookSpecificOutput.additionalContext.slice('workflow 回执：'.length));
+  assert.equal(result.reason, 'PERMISSION', JSON.stringify(result));
+  assert.deepEqual(await task(f), before);
+  assert.equal(Object.values((await readState(f.directory)).sessions).find(item => item.sessionId === f.sessionId).permissionMode, 'plan');
 });
 
 test('P07 追加与收缩 allowedPaths：追加去重，替换按新集合收缩', async () => {

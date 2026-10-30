@@ -38,10 +38,12 @@ export function openTurn(state, project, sessionId, turnId, { compact = false, e
     projectId: project.projectId, sessionId, taskId: session?.taskId || null, turnId,
     ticket: id('ticket'), interruptEpoch: session?.interruptEpoch || 0,
     revision: (session?.revision || 0) + 1, phase: 'unknown', interrupted: false,
-    permissionMode: mode || 'unknown', eventId: eventId || null, lastSeenAt: new Date().toISOString(),
+    permissionMode: mode || session?.permissionMode || 'unknown', eventId: eventId || null, lastSeenAt: new Date().toISOString(),
     receipts: session?.receipts || {}, observed: session?.observed || {}, contextKey: session?.contextKey, briefed: session?.briefed,
     // 结束事件回执跨回合保留：新回合开启后旧事件重放仍然只生效一次。
     ...(session?.lifecycleReceipts ? { lifecycleReceipts: session.lifecycleReceipts } : {}),
+    ...(session?.captureStart ? { captureStart: session.captureStart } : {}),
+    ...(session?.captureBoundary ? { captureBoundary: session.captureBoundary } : {}),
     // role-claim 声明的子角色跨回合保留；未声明的会话按 Lead 处理。
     ...(session?.role ? { role: session.role, packageId: session.packageId || null } : {}),
   };
@@ -321,9 +323,15 @@ function validateBatch(task, items) {
     if (seen.has(item.packageId)) fail('PACKAGE', `同一批 packages 不能重复 packageId：${item.packageId}；请合并为一项或拆成独立信号`);
     seen.add(item.packageId);
   }
-  const roles = new Map();
-  for (const [packageId, item] of Object.entries(task.packages || {})) roles.set(packageId, item.role);
-  for (const item of items) roles.set(item.packageId, item.role ?? roles.get(item.packageId));
+  // 用整批合并图遍历接替链：新建的中间包尚未写入 task.packages，也必须参与历史事实判断。
+  const mergedPackages = { ...task.packages };
+  for (const item of items) {
+    const previous = task.packages?.[item.packageId];
+    if (previous && item.role !== undefined && item.role !== previous.role) fail('PACKAGE', `工作包 ${item.packageId} 的 role 不能修改；请新建同角色的接替包`);
+    mergedPackages[item.packageId] = { ...previous, ...item, role: item.role ?? previous?.role, supersedes: item.supersedes !== undefined ? item.supersedes : previous?.supersedes };
+  }
+  const mergedTask = { ...task, packages: mergedPackages };
+  const roles = new Map(Object.entries(mergedPackages).map(([packageId, item]) => [packageId, item.role]));
   // 取消用单调的曾 PASS 事实，而不是合并后的当前 verdict：同批或跨信号把审查改 FIX 都不能洗白。
   // waived 用更宽的“有过任何审查结论”；两者都按本批合并后的包记录、沿 supersedes 链判断，
   // 本批新建的包不能因为批前没有记录就放过，也不因数组顺序改变。
@@ -332,7 +340,7 @@ function validateBatch(task, items) {
   for (const item of items) {
     const previous = task.packages?.[item.packageId];
     const role = roles.get(item.packageId);
-    const next = { ...previous, ...item };
+    const next = mergedPackages[item.packageId];
     if (role === 'reviewer') {
       const verdict = next.verdict ?? null;
       if (verdict && !next.reviews) fail('PACKAGE', `审查包 ${item.packageId} 给出 ${verdict} 结论时必须用 reviews 指向被审 worker 包`);
@@ -342,11 +350,11 @@ function validateBatch(task, items) {
       }
       if (verdict === 'PASS' && !next.reviewedRef) fail('PACKAGE', `PASS 审查包 ${item.packageId} 缺少 reviewedRef：PASS 必须绑定被审交付版本`);
     }
-    if (role === 'worker' && item.status === 'canceled' && previous?.status !== 'canceled' && chainHas(task, next, facts.passed)) {
+    if (role === 'worker' && item.status === 'canceled' && previous?.status !== 'canceled' && chainHas(mergedTask, next, facts.passed)) {
       fail('PACKAGE', `工作包 ${item.packageId} 已有 PASS 审查，不能改 canceled 退出审查门禁：让审查对上最终交付版本，或用 supersedes 接替`);
     }
     // 审过的 worker 包不能改标 waived 绕过审查；放弃用 canceled，返修用 supersedes 或原包重新派发。
-    if (role === 'worker' && next.status === 'waived' && previous?.status !== 'waived' && chainHas(task, next, facts.reviewed)) {
+    if (role === 'worker' && next.status === 'waived' && previous?.status !== 'waived' && chainHas(mergedTask, next, facts.reviewed)) {
       fail('PACKAGE', `工作包 ${item.packageId} 已有审查结论，不能标 waived：让审查对上最终交付版本，或用 supersedes 接替，或 canceled 放弃`);
     }
     if (item.diagnostic !== undefined) {

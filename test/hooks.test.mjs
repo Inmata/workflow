@@ -375,6 +375,27 @@ test('P01 入口拿不到身份时只给恢复提示，不输出入口成功也�
   assert.match(output.hookSpecificOutput.additionalContext, /未建立入口身份/);
   assert.equal(Object.keys((await readState(f.directory)).sessions).length, before);
 });
+test('宿主模式在普通 PostToolUse 与入口更新，缺字段跨回合保留，旧回合和工具输出不能改模式', async () => {
+  const f = await fixture();
+  await start(f);
+  const session = async () => Object.values((await readState(f.directory)).sessions).find(item => item.sessionId === f.sessionId);
+  const revision = (await session()).revision;
+  assert.deepEqual(await event(f, 'PostToolUse', { permission_mode: 'plan', tool_name: 'Read', tool_input: {}, tool_response: {} }), {});
+  assert.equal((await session()).permissionMode, 'plan');
+  assert.equal((await session()).revision, revision);
+  await event(f, 'PostToolUse', { permission_mode: undefined, tool_name: 'Read', tool_response: { permission_mode: 'default' } });
+  assert.equal((await session()).permissionMode, 'plan', '工具输出不是宿主模式来源');
+  await event(f, 'PostToolUse', { turn_id: 'old-turn', permission_mode: 'default', tool_name: 'Read', tool_response: {} });
+  assert.equal((await session()).permissionMode, 'plan', '旧回合事件不能改当前模式');
+  f.turnId = 'turn-next';
+  await event(f, 'UserPromptSubmit', { permission_mode: undefined });
+  assert.equal((await session()).permissionMode, 'plan', '入口缺字段不能丢最近已知模式');
+  await event(f, 'SessionStart', { permission_mode: 'read-only' });
+  assert.equal((await session()).permissionMode, 'read-only', '同一回合入口也同步当前模式');
+  await event(f, 'PostToolUse', { permission_mode: 'default', tool_name: 'Read', tool_response: {} });
+  assert.equal((await session()).permissionMode, 'default');
+});
+
 test('P01 结束事件落盘失败如实报告，不把内存写入当作已持久化', async () => {
   const f = await fixture();
   await start(f);

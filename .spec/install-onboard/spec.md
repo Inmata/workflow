@@ -22,6 +22,7 @@ related:
 - 核心检查未通过时不读取也不执行个人 `config.json` 或项目 `.workflow/config.json` 指定的执行器；学习报告为 `status: not-run`、`reason: core-blocked`。加 `--skip-learning` 时仍为 `status: skipped`。
 - 核心检查通过且未加 `--skip-learning` 时才运行执行器能力预检（不调用模型）。执行器与各执行器路径可在个人配置和项目配置中设置，项目值覆盖个人值。
 - 正常接入、重复接入、显式 `--enable-learning` 和 `--skip-learning` 维持既有语义：重复接入保留已有学习开关、计划任务和对齐裁决；显式请求学习而未完整生效时返回 `status: partial`，CLI 退出码为 1。
+- 安装、卸载和项目接入先落盘意图再改用户文件；重试按配置前后指纹、`current` 原/新目标和管理区绑定意图收敛，遇到第三种用户内容保留现场待核对。核心接入检查把实际注册缺失、分组 `matcher`、`disableAllHooks` 与配置无法读取一并列为问题，不只核对追溯记录。
 - 给用户或代理的 CLI 命令由 `command()` 生成，可直接粘贴到 Windows PowerShell 5.1 或 PowerShell 7；入口路径和特殊参数使用单引号字面量，空格、单引号、`$`、反引号、分号和 `$(...)` 按原值传入 CLI。5.1 无法原样传递的双引号与空参数改用 `workflow-arg64:` 编码标记，并由生成命令追加 `--workflow-arg64-transport` 开关；CLI 只在带开关时还原，直接手写的同名文本保持字面值。
 
 ## 原因
@@ -36,6 +37,7 @@ related:
 ## 验收
 
 - 核心接入失败（如未安装宿主、AGENTS 管理区冲突）时，执行器调用次数为零；显式学习请求只记录 `requested`。
+- 注册分组带限制性 `matcher`、设置 `disableAllHooks: true`、handler 被修改或配置无法读取时，`onboard`/`doctor` 都不报告已注册；修正配置或重装后恢复。`install`/`uninstall` 在意图落盘后失败时，重试可收敛；用户又写入第三种内容时保留配置与事务待核对。
 - 正常接入、重复接入、显式学习启用和 `--skip-learning` 的既有行为与测试通过。
 - 真实 `powershell.exe` 5.1 与 `pwsh.exe`（实际可用时分别验证）子进程中，空格、单引号、双引号、美元符号、反引号、子表达式字符、空参数和普通路径按原值往返，不被额外执行；普通路径的生成命令可直接执行。
 - 未安装时的安装修复命令由 `command()` 生成；插件路径含 `$`、`$(...)` 或空格时，在真实 shell 中按字面值执行，修复命令里的子表达式不执行。

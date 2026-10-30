@@ -53,7 +53,11 @@ function alignmentAction(alignment) {
     const rest = [changes ? `${changes} 项可读变化` : '', alignment.pendingDecisions ? `${alignment.pendingDecisions} 项待裁决` : '', alignment.pendingFindings ? `${alignment.pendingFindings} 项结构建议` : ''].filter(Boolean);
     return `项目对齐索引有 ${alignment.errors.length} 项读取失败（${codes}）：这些位置未确认是否变化，检查不完整；修复访问后重试 status。${rest.length ? `其余可读部分：${rest.join('、')}。` : ''}`;
   }
-  if (alignment.stale) return `项目对齐索引已过期（${alignment.changed.length + alignment.missing.length + alignment.directoryChanged.length} 项变化）：只重读变化文件和新增资料，再用 apply/decide/suggest 的 sources 带上读取时快照确认已读来源；未确认来源仍会提示，不重新全量扫描。`;
+  if (alignment.stale) {
+    const changes = alignment.changed.length + alignment.missing.length + alignment.directoryChanged.length;
+    if (alignment.incomplete) return `项目对齐检查不完整（已发现 ${changes} 项变化）：请重试 status 确认未检查的来源，再处理已发现的变化。`;
+    return `项目对齐索引已过期（${changes} 项变化）：只重读变化文件和新增资料，再用 apply/decide/suggest 的 sources 带上读取时快照确认已读来源；未确认来源仍会提示，不重新全量扫描。`;
+  }
   if (alignment.pendingDecisions || alignment.pendingFindings) return `项目对齐还有 ${alignment.pendingDecisions} 项待裁决、${alignment.pendingFindings} 项结构建议；按提问路径向用户确认，可跨回合裁决；用户批准的结构建议在当回合直接执行修改，再用 decide 登记 accepted-change。`;
   return '';
 }

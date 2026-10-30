@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { cp, copyFile, mkdir, readFile, readdir, writeFile, lstat } from 'node:fs/promises';
+import { cp, copyFile, mkdir, readFile, readdir, writeFile, lstat, unlink } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { install } from '../src/install.mjs';
+import { install, doctor } from '../src/install.mjs';
 import { onboardProject, removeProject, learningDoctor } from '../src/onboard.mjs';
 import { alignmentStatus, applyAlignment, decideAlignment, suggestAlignment } from '../src/alignment.mjs';
 import { getContext } from '../src/context.mjs';
@@ -95,6 +95,45 @@ test('核心接入被阻断时不预检项目配置指定的执行器；--enable
   assert.equal(skipped.status, 'blocked');
   assert.deepEqual(skipped.learning, { status: 'skipped', requested: false });
   assert.deepEqual(calls, []);
+});
+
+test('onboard 对两宿主实际 hooks 缺失、被改或不可读均阻断，不写入也不预检学习', async () => {
+  for (const agent of ['codex', 'claude']) {
+    for (const damage of ['empty', 'modified', 'invalid', 'missing', 'matcher', 'disabled']) {
+      const f = await environment({ installed: false });
+      const userDir = path.join(f.area, 'user', `.${agent}`);
+      await install(f.directory, { userDir, agent });
+      const configFile = path.join(userDir, agent === 'codex' ? 'hooks.json' : 'settings.json');
+      if (damage === 'missing') await unlink(configFile);
+      else if (damage === 'modified') {
+        const config = JSON.parse(await readFile(configFile, 'utf8'));
+        config.hooks.Stop[0].hooks[0].timeout = 99;
+        await writeFile(configFile, JSON.stringify(config));
+      } else if (damage === 'matcher' || damage === 'disabled') {
+        // 分组 matcher 会限制触发范围；disableAllHooks 会整体停用，都不能算已注册。
+        const config = JSON.parse(await readFile(configFile, 'utf8'));
+        const own = config.hooks.PostToolUse.find(group => group.hooks.some(handler => String(handler.command || '').includes('workflow.mjs') || (handler.args || []).some(arg => String(arg).includes('workflow.mjs'))));
+        assert.ok(own, `${agent}: 未找到本插件 hook 分组`);
+        if (damage === 'matcher') own.matcher = 'Bash';
+        else config.disableAllHooks = true;
+        await writeFile(configFile, JSON.stringify(config));
+      } else await writeFile(configFile, damage === 'empty' ? '{}' : '{invalid');
+      const before = await readFile(configFile, 'utf8').catch(() => null);
+      const info = await doctor(f.directory, undefined, { agent });
+      assert.equal(info.registration, damage === 'invalid' ? 'unreadable-or-unknown' : 'missing-or-modified');
+      const calls = [];
+      const result = await onboardProject(f.directory, f.project, { enableLearning: true, execute: async (...args) => { calls.push(args); throw new Error('注册缺失不得预检学习'); } });
+      assert.equal(result.status, 'blocked', `${agent}/${damage}: ${JSON.stringify(result)}`);
+      assert.equal(result.written, false);
+      assert.deepEqual(result.problems.map(item => item.code), ['REGISTRATION']);
+      assert.ok(result.problems[0].commands[0].includes(`--agent ${agent}`));
+      assert.deepEqual(calls, []);
+      assert.equal(result.learning.reason, 'core-blocked');
+      assert.deepEqual((await readState(f.directory)).projects, {});
+      await assert.rejects(readFile(path.join(f.project, 'AGENTS.md')), { code: 'ENOENT' });
+      assert.equal(await readFile(configFile, 'utf8').catch(() => null), before);
+    }
+  }
 });
 
 test('核心检查通过后仍按个人与项目配置选择执行器预检', async () => {
@@ -332,7 +371,7 @@ test('对齐表格被手改时报告 mismatch；目录里只多了非资料文�
     return decideAlignment(f.directory, f.project, { ...await identity(f), baseline: digest(await readFile(doc)), decisions: [{ id: 'D1', status: 'pending' }] });
   });
   const text = await readFile(doc, 'utf8');
-  await writeFile(doc, `${text}\n## 待裁决差异\n\n| ID | 做法 | 状态 |\n| --- | --- | --- |\n| D1 | x | accepted |\n`);
+  await writeFile(doc, text.replace('<!-- workflow-alignment:end -->', '\n## 待裁决差异\n\n| ID | 做法 | 状态 |\n| --- | --- | --- |\n| D1 | x | accepted |\n<!-- workflow-alignment:end -->'));
   await writeFile(path.join(f.project, 'docs', 'image.png'), 'x');
   const status = await alignmentStatus(f.directory, f.project);
   assert.deepEqual(status.directoryChanged, []);

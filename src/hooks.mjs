@@ -5,7 +5,7 @@ import { resolveProject } from './projects.mjs';
 import { precheckSpecs } from './spec.mjs';
 import { projectContext, readOptionalContext, signalUsage } from './context.mjs';
 import { PRODUCT_ROOT, PRODUCT_VERSION } from './entry.mjs';
-import { registerExtraction } from './capture.mjs';
+import { findExtraction, markExtractionStart, registerExtraction } from './capture.mjs';
 
 export const EVENTS = ['SessionStart', 'UserPromptSubmit', 'PostToolUse', 'Stop', 'Interrupt', 'SessionEnd', 'PreCompact', 'PostCompact'];
 // Claude Code 没有 Interrupt 事件；StopFailure 承担中断保存语义，其余同名事件语义与 Codex 对齐。
@@ -190,12 +190,12 @@ export async function handleHook(directory, event, options = {}) {
       if (name === 'PostToolUse' && (await isSignalInvocation(event, options.entry, directory) || isComposedSignal(event))) return contextOutput(name, 'workflow 未接受：宿主内置子代理与 Lead 共用会话，没有自己的 workflow 身份，信号不记录。不要重发 role-claim 或其他信号；按工作包和对应角色指引完成工作，把结果交回 Lead，由 Lead 记账。');
       return {};
     }
+    const hostMode = typeof event.permission_mode === 'string' && event.permission_mode.trim() ? event.permission_mode : null;
     const question = QUESTION_TOOLS[agent].includes(event.tool_name);
     const signalInvocation = name === 'PostToolUse' && await isSignalInvocation(event, options.entry, directory);
     // 组合命令里的本插件 signal 不接受，但要回执说明，否则模型只能从 revision 反推信号丢失。
     const nearMiss = name === 'PostToolUse' && !signalInvocation && isComposedSignal(event);
     const delegationStatus = name === 'PostToolUse' && DELEGATION_STATUS_TOOLS.includes(event.tool_name);
-    if (name === 'PostToolUse' && !question && !signalInvocation && !nearMiss && !delegationStatus) return {};
     // Codex 每个事件都带 turn_id；Claude Code 的入口事件带 prompt_id，用宿主值建立回合，缺失时才本机生成。
     const hostTurn = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : typeof event.prompt_id === 'string' && event.prompt_id ? event.prompt_id : null;
     const turnId = typeof event.turn_id === 'string' && event.turn_id ? event.turn_id : null;
@@ -204,12 +204,17 @@ export async function handleHook(directory, event, options = {}) {
     const initial = await resolveProject(existing, event.cwd, probe);
     // 未接入目录不会写维护状态，不必先逐文件核验发布副本；确认项目后再做重检查。
     if (!initial) return {};
+    // 普通工具与委派查询只在当前可信宿主模式变化时写状态，避免每次等待都放大锁竞争。
+    const observedSession = existing.sessions[sessionKey(initial.project.projectId, event.session_id)];
+    const modeChanged = hostMode && observedSession && (!turnId || observedSession.turnId === turnId) && observedSession.permissionMode !== hostMode;
+    if (name === 'PostToolUse' && !modeChanged) {
+      if (delegationStatus) return delegationHint(existing, initial.project, event, turnId);
+      if (!question && !signalInvocation && !nearMiss) return {};
+    }
     if (existing.install?.status === 'installed' && !options.synthetic) {
       const { verifyRelease } = await import('./install.mjs');
       if (!await verifyRelease(existing.install)) return { systemMessage: 'workflow 发布副本指纹变化，维护不可用；已保守放行。' };
     }
-    // 委派状态查询只读核对账本，不写状态：每次等待都落盘会放大锁竞争。
-    if (name === 'PostToolUse' && delegationStatus) return delegationHint(existing, initial.project, event, turnId);
     // 信号载荷是纯解析，提前取出供锁外预检和锁内接受共用；真正的身份/正文校验仍在锁内协议层。
     const signalPayloads = signalInvocation ? extractSignals(event.tool_response) : [];
     // spec 的 Git 检查在状态锁外预检：慢 Git 只占本次 Hook 自己的等待，不阻塞其他会话的短锁预算。
@@ -291,12 +296,13 @@ export async function handleHook(directory, event, options = {}) {
         const seenVersion = session?.productVersion;
         if (name === 'UserPromptSubmit') {
           // 每个用户回合开新票据；Claude 入口缺 prompt_id 时用本机值，后续事件按当前回合关联，不因标识缺失丢弃回执。
-          session = openTurn(state, project, event.session_id, hostTurn || id('turn'), { compact: event.source === 'compact', eventId: event.event_id, mode: event.permission_mode });
+          session = openTurn(state, project, event.session_id, hostTurn || id('turn'), { compact: event.source === 'compact', eventId: event.event_id, mode: hostMode });
         } else if (hostTurn) {
-          session = openTurn(state, project, event.session_id, hostTurn, { compact: event.source === 'compact', eventId: event.event_id, mode: event.permission_mode });
+          session = openTurn(state, project, event.session_id, hostTurn, { compact: event.source === 'compact', eventId: event.event_id, mode: hostMode });
         }
         // 拿不到身份时只给恢复提示，不输出入口成功；身份由宿主下一次入口重建。
         if (!session?.ticket || !session?.turnId) return { ...lifecycleOutput, ...(lifecycleNote ? {} : contextOutput(name, identityHint)) };
+        if (hostMode) session.permissionMode = hostMode;
         session.productVersion = seenVersion || PRODUCT_VERSION;
         const upgraded = seenVersion && PRODUCT_VERSION && seenVersion !== PRODUCT_VERSION ? `workflow 插件已从 ${seenVersion} 升级到 ${PRODUCT_VERSION}：本会话早先读取的指引和命令可能已过时，请提醒用户开新会话；继续工作时以下面的入口为准。
 ` : '';
@@ -307,8 +313,12 @@ export async function handleHook(directory, event, options = {}) {
       if (!session) return lifecycleOutput;
       // Codex 严格核对 turn_id；Claude 的 prompt_id 只在入口事件保证存在，后续事件按当前回合关联。
       if (turnId && session.turnId !== turnId) return lifecycleOutput;
+      // 宿主模式属于当前事件的可信观测，不属于信号声明；先同步再建信号回滚快照。
+      // 不增加 revision，当前工具产生的信号仍使用调用前身份；缺字段保留最近已知模式。
+      if (hostMode) session.permissionMode = hostMode;
       if (event.event_id) session.observed[event.event_id] = digest(JSON.stringify({ name, turn: event.turn_id }));
       if (name === 'PostToolUse') {
+        if (delegationStatus) return delegationHint(state, project, event, turnId);
         if (question) {
           // 已显式发过 waiting-user 或同一回合再次调用提问工具时不重复修改同一状态。
           if (session.phase !== 'waiting-user') {
@@ -337,11 +347,16 @@ export async function handleHook(directory, event, options = {}) {
           const current = state.sessions[sessionKey(project.projectId, event.session_id)];
           result = { accepted: false, reason: error.code || 'INPUT', message: error.message, ...(error.missing ? { missing: error.missing } : {}), ...(error.findings ? { findings: error.findings } : {}), expectedRevision: current?.revision, turnId: current?.turnId };
         }
+        if (result.accepted && !result.replayed && payload.action === 'task-start') await markExtractionStart(session, event.transcript_path, payload.taskId);
         // 已接受的任务结束才登记会话提取；登记失败只写作业级诊断，不阻塞、不回滚业务任务。
+        // 副作用绑定回执里的任务身份：同回合先结束 A 再启动 B 后重放 A 的 task-end 时，不能按当前 session.taskId=B 提前登记 B。
         if (result.accepted && payload.action === 'task-end') {
           try {
-            const task = session.taskId ? state.tasks[taskKey(project.projectId, session.taskId)] : null;
-            result.extraction = await registerExtraction(directory, project, { task, session, transcriptPath: event.transcript_path });
+            const endedTaskId = result.taskId || payload.taskId;
+            const task = endedTaskId ? state.tasks[taskKey(project.projectId, endedTaskId)] : null;
+            result.extraction = result.replayed
+              ? await findExtraction(directory, project, { task, session })
+              : await registerExtraction(directory, project, { task, session, transcriptPath: event.transcript_path });
           } catch (error) {
             result.extraction = { status: 'error', reason: error.code || 'IO' };
           }

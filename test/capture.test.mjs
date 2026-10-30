@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, readFile, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, stat, symlink, writeFile } from 'node:fs/promises';
 import { readExtractionJobs, runExtractionJobs } from '../src/capture.mjs';
 import { capture, feedback, putItem, readEntries, readItems, renderEntry, selectKnowledge } from '../src/learning.mjs';
 import { setLearningConfig, setLearningEnabled, projectFor } from '../src/learning-config.mjs';
@@ -26,6 +26,12 @@ async function taskEnd(f, transcriptPath, signalId = 'signal-' + crypto.randomUU
   const text = output.hookSpecificOutput?.additionalContext;
   assert.ok(text?.startsWith('workflow 回执：'), JSON.stringify(output));
   return { payload, result: JSON.parse(text.slice('workflow 回执：'.length)) };
+}
+async function taskStartWithTranscript(f, transcriptPath, learning = true) {
+  const payload = { ...await identity(f), taskId: f.taskId, signalId: crypto.randomUUID(), action: 'task-start', goal: '任务范围提取', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: ['README.md'], learning } };
+  const output = await event(f, 'PostToolUse', { transcript_path: transcriptPath, tool_name: 'Bash', tool_input: { command: `node "${entry}" signal --base64 e30=` }, tool_response: { output: JSON.stringify({ workflow_signal: payload }) } });
+  const result = JSON.parse(output.hookSpecificOutput.additionalContext.slice('workflow 回执：'.length));
+  assert.equal(result.accepted, true, JSON.stringify(result));
 }
 function extract(f, runner) {
   return runExtractionJobs(f.directory, f.project, { preflight: async () => ({ status: 'capabilities-verified' }), runner });
@@ -93,10 +99,13 @@ test('F16 已接受 task-end 登记幂等提取作业：早期纠正形成带证
   assert.equal((await extract(f, async () => { calls++; })).status, 'idle');
   assert.equal(calls, 1);
   assert.equal((await inboxOf(f)).length, 1);
-  // 同 task-end 重放、Stop 与普通 Hook 都不重复登记。
+  // 后续追加内容后重放仍保持已固定范围，不会重新登记或扩大作业边界。
+  await appendFile(transcript, transcriptLine(f.sessionId, 'user', '结束后的新任务内容') + '\n');
+  const sourceBeforeReplay = jobs[0].source;
   const replayed = await taskEnd(f, transcript, ended.payload.signalId, ended.payload);
   assert.equal(replayed.result.replayed, true);
   assert.equal(replayed.result.extraction.status, 'exists');
+  assert.deepEqual((await jobsOf(f))[0].source, sourceBeforeReplay);
   await event(f, 'Stop');
   await event(f, 'PostToolUse', { tool_name: 'Bash', tool_input: { command: 'git status' } });
   assert.equal((await jobsOf(f)).length, 1);
@@ -158,6 +167,128 @@ test('F16 禁用、禁止学习或无 transcript 时零模型调用，任务结�
   assert.equal((await jobsOf(noPath)).length, 0);
   assert.equal((await extract(noPath, async () => { calls++; })).status, 'idle');
   assert.equal(calls, 0);
+});
+
+test('F16 任务提取固定结束边界，前后禁止学习的任务均不进入提示词', async () => {
+  const f = await fixture(); await setLearningEnabled(f.directory, f.project, true);
+  const transcript = await writeTranscript(f, [transcriptLine(f.sessionId, 'user', '禁止学习的前任务内容')]);
+  await taskStartWithTranscript(f, transcript, false);
+  assert.equal((await taskEnd(f, transcript)).result.extraction.reason, 'permission-denied');
+  f.turnId = 'turn-2'; f.taskId = 'task-2'; await event(f, 'UserPromptSubmit');
+  await appendFile(transcript, transcriptLine(f.sessionId, 'user', '允许学习的当前任务纠正') + '\n');
+  await taskStartWithTranscript(f, transcript);
+  await appendFile(transcript, transcriptLine(f.sessionId, 'assistant', '已核对当前任务') + '\n');
+  const ended = await taskEnd(f, transcript);
+  const job = (await jobsOf(f))[0];
+  assert.equal(job.source.startIndex, 1);
+  f.turnId = 'turn-3'; f.taskId = 'task-3'; await event(f, 'UserPromptSubmit');
+  await appendFile(transcript, transcriptLine(f.sessionId, 'user', '禁止学习的后任务内容') + '\n');
+  await taskStartWithTranscript(f, transcript, false);
+  assert.equal((await taskEnd(f, transcript)).result.extraction.reason, 'permission-denied');
+  let seen;
+  const result = await extract(f, async (_config, prompt) => {
+    seen = promptData(prompt).messages;
+    return { status: 'completed', answer: { candidates: [candidateFor(2, { summary: '当前任务纠正' })] } };
+  });
+  assert.equal(result.candidates, 1);
+  assert.deepEqual(seen.map(item => item.text), ['允许学习的当前任务纠正', '已核对当前任务']);
+  assert.equal((await inboxOf(f))[0].taskId, 'task-2');
+  assert.equal(job.id, ended.result.extraction.jobId);
+});
+
+test('F16 同一任务跨回合接续保留开始边界和原始证据编号', async () => {
+  const f = await fixture(); await setLearningEnabled(f.directory, f.project, true);
+  const transcript = await writeTranscript(f, [transcriptLine(f.sessionId, 'user', '旧任务内容')]);
+  await taskStartWithTranscript(f, transcript, false);
+  await taskEnd(f, transcript);
+  f.turnId = 'turn-2'; f.taskId = 'task-2'; await event(f, 'UserPromptSubmit');
+  await appendFile(transcript, transcriptLine(f.sessionId, 'user', '本任务开始的纠正') + '\n');
+  await taskStartWithTranscript(f, transcript);
+  f.turnId = 'turn-3'; await event(f, 'UserPromptSubmit');
+  await appendFile(transcript, transcriptLine(f.sessionId, 'user', '接着处理本任务') + '\n');
+  await taskStartWithTranscript(f, transcript);
+  await taskEnd(f, transcript);
+  const result = await extract(f, async (_config, prompt) => {
+    assert.deepEqual(promptData(prompt).messages.map(item => item.index), [2, 3]);
+    return { status: 'completed', answer: { candidates: [candidateFor(2), candidateFor(1)] } };
+  });
+  assert.equal(result.candidates, 1);
+  assert.equal(result.rejected, 1);
+});
+
+test('F16 同回合重放旧 task-end 不会为当前新任务提前登记提取作业', async () => {
+  const f = await fixture(); await setLearningEnabled(f.directory, f.project, true);
+  const transcript = await writeTranscript(f, [transcriptLine(f.sessionId, 'user', '第一个任务的内容')]);
+  await taskStartWithTranscript(f, transcript);
+  const ended = await taskEnd(f, transcript);
+  assert.equal(ended.result.extraction.status, 'registered');
+  const firstJob = (await jobsOf(f))[0];
+  // 同一回合内结束 A 后启动 B：B 的起点推进到 A 的结束边界。
+  f.taskId = 'task-2';
+  await taskStartWithTranscript(f, transcript);
+  await appendFile(transcript, transcriptLine(f.sessionId, 'user', '第二个任务的最终结果') + '\n');
+  // 重放 A 的已接受 task-end 只查询 A 的作业，不能按当前 session.taskId 提前登记 B。
+  const replayed = await taskEnd(f, transcript, ended.payload.signalId, ended.payload);
+  assert.equal(replayed.result.replayed, true);
+  assert.equal(replayed.result.extraction.status, 'exists');
+  assert.equal(replayed.result.extraction.jobId, firstJob.id);
+  assert.equal((await jobsOf(f)).length, 1);
+  // B 正常结束后才登记，且固定范围包含 B 的最终结果。
+  const endedB = await taskEnd(f, transcript);
+  assert.equal(endedB.result.extraction.status, 'registered');
+  const jobs = await jobsOf(f);
+  assert.equal(jobs.length, 2);
+  const jobB = jobs.find(job => job.taskId === 'task-2');
+  assert.ok(jobB);
+  assert.equal(jobB.source.startIndex, 1);
+  assert.equal(jobB.source.size, (await stat(transcript)).size);
+  await setLearningConfig(f.directory, f.project, { maxCaptureRunsPerDay: 5 });
+  let seen = null;
+  const runner = async (_config, prompt) => {
+    const data = promptData(prompt);
+    if (data.messages.some(item => item.text.includes('第二个任务的最终结果'))) seen = data.messages;
+    return { status: 'completed', answer: { candidates: [] } };
+  };
+  // 每次只执行一个作业：先处理 A，再处理 B。
+  await extract(f, runner);
+  await extract(f, runner);
+  assert.ok(seen, '第二个任务的作业应包含 B 结束前追加的文本');
+  assert.deepEqual(seen.map(item => item.text), ['第二个任务的最终结果']);
+});
+
+test('F16 禁止学习任务没有结束路径时，后续任务不回退采集会话全文', async () => {
+  const f = await fixture(); await setLearningEnabled(f.directory, f.project, true);
+  await start(f, { mode: 'write', allowedPaths: ['README.md'], learning: false });
+  assert.equal((await taskEnd(f)).result.extraction.reason, 'permission-denied');
+  f.turnId = 'turn-2'; f.taskId = 'task-2'; await event(f, 'UserPromptSubmit');
+  const transcript = await writeTranscript(f, [
+    transcriptLine(f.sessionId, 'user', '禁止学习的旧任务'),
+    transcriptLine(f.sessionId, 'user', '当前任务'),
+  ]);
+  await taskStartWithTranscript(f, transcript);
+  const ended = await taskEnd(f, transcript);
+  assert.equal(ended.result.extraction.reason, 'TRANSCRIPT_BOUNDARY');
+  let calls = 0;
+  assert.equal((await extract(f, async () => { calls++; })).status, 'idle');
+  assert.equal(calls, 0);
+});
+
+test('F16 transcript 登记范围被重写或旧作业缺少范围时不调用执行器', async () => {
+  for (const legacy of [false, true]) {
+    const f = await fixture(); await start(f); await setLearningEnabled(f.directory, f.project, true);
+    const transcript = await writeTranscript(f, [transcriptLine(f.sessionId, 'user', '先检查日志')]);
+    await taskEnd(f, transcript);
+    const job = (await jobsOf(f))[0];
+    if (legacy) {
+      delete job.source.hash; delete job.source.startIndex;
+      await putItem(f.directory, await projectFor(f.directory, f.project), 'capture', job);
+    } else await writeFile(transcript, transcriptLine(f.sessionId, 'user', '另一个任务') + '\n');
+    let calls = 0;
+    const result = await extract(f, async () => { calls++; return { status: 'completed', answer: { candidates: [] } }; });
+    assert.equal(result.status, 'skipped');
+    assert.equal(result.reason, legacy ? 'TRANSCRIPT_BOUNDARY' : 'TRANSCRIPT_CHANGED');
+    assert.equal(calls, 0);
+  }
 });
 
 test('F16 读取失败、格式错误、身份不符、超时与无效输出都不阻塞 task-end、不产生正式知识', async () => {

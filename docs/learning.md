@@ -148,9 +148,9 @@ node "<hook 给出的入口>" knowledge capture --input observation.json
 
 ## 任务结束的候选提取
 
-项目已启用后台学习且宿主事件带 `transcript_path` 时，被接受的 `task-end` 会登记一份幂等的候选提取作业；同一 `task-end` 重放、Stop 或普通 Hook 不会重复登记，业务任务也不等待模型、不因提取失败回滚。学习未启用、任务 `permissions.learning=false` 或宿主没有 transcript 时不建作业，模型调用为零，仍可手动 `knowledge capture`。
+项目已启用后台学习且宿主事件带 `transcript_path` 时，被接受的 `task-end` 会登记一份幂等的候选提取作业；同一 `task-end` 重放只查询原任务已有的作业，Stop 或普通 Hook 不会重复登记，业务任务也不等待模型、不因提取失败回滚。作业固定登记时的 transcript 前缀（大小与 SHA-256）和本任务起点（`task-start` 最后一条先前用户消息之后）。学习未启用、任务 `permissions.learning=false` 或宿主没有 transcript 时不建作业，模型调用为零，仍可手动 `knowledge capture`；结束登记仍推进会话边界，后续任务不能重新采集被排除的区间。
 
-提取输入只取该会话 transcript 中用户与助手的短文本：工具结果、工具调用和超长输出在进入预算前剔除，超出 `maxInputChars` 时保留最早与最近部分。程序只接受宿主给出的绝对路径普通文件，限制扩展名与大小；相对路径、符号链接、真实路径与给定路径不一致（Windows 大小写不敏感）或不可读的文件在登记或执行时记为 `skipped`。身份必须正面成立：Claude 每条被采用的 user/assistant 记录都要带当前 `sessionId`，Codex 必须有与当前会话一致的 `session_meta`；缺失或他人会话整份按 `TRANSCRIPT_IDENTITY` 跳过，不调用模型。逐行 JSON 损坏、读取失败等同样只影响该作业并保留原因，不阻塞任务结束。
+提取输入只取该任务范围内的用户与助手短文本：工具结果、工具调用在进入预算前剔除，单条用户或助手文本超过 4,000 字符时截断，再按 `maxInputChars` 保留最早与最近部分。登记后 transcript 继续追加不会进入旧作业；文件被替换或截断、任务起点不可确认、旧作业缺少范围摘要时记为 `skipped`，不回退读取会话全文。程序只接受宿主给出的绝对路径普通文件，限制扩展名与大小；相对路径、符号链接、真实路径与给定路径不一致（Windows 大小写不敏感）或不可读的文件在登记或执行时记为 `skipped`。身份必须正面成立：Claude 每条被采用的 user/assistant 记录都要带当前 `sessionId`，Codex 必须有与当前会话一致的 `session_meta`；缺失或他人会话整份按 `TRANSCRIPT_IDENTITY` 跳过，不调用模型。逐行 JSON 损坏、读取失败等同样只影响该作业并保留原因，不阻塞任务结束。
 
 模型只能返回候选观察，且证据必须指向本次 transcript 中的用户消息；偏好与纠正要求用户明确表达，成功与失败要求验证依据。候选经既有材料校验和敏感信息检查后只写入 `inbox`（`origin:auto-extract`），摘要、条件、证据与相对路径都可定位，不会直接创建或修订正式知识，也不能指定其他项目、任务或会话。候选引用 `knowledgeId` 时与人工 `knowledge capture` 使用同一校验：必须指向本项目已有知识，否则该候选被拒；带 `knowledgeId` 的明确纠正或已验证失败同样登记即时反例、停止该知识的默认召回，并唤醒同知识或同条件的 `waiting` 材料。
 
@@ -165,7 +165,7 @@ node "<hook 给出的入口>" knowledge capture --input observation.json
 - `feedback`：`shown/adopted/total`；没有反馈记录时写“无记录”，不推断为“效果为零”。`knowledge select` 只读查询不计为 `adopted`。
 - `runSummary` 与 `runs`：最近运行状态、`usage`、原因，以及每项被拒决定的材料 ID、动作、目标与代码；`unhandled` 列出模型未处置、仍待下次复盘的材料。
 - `knowledge`：知识总数、活跃数、创建/修订次数和已替代数；读取失败时 `available:false` 并给错误码。
-- `capture`：提取作业总数、`pending/running/completed/skipped/failed/timeout`、当日启动数、用量、被拒候选数、损坏作业文件数，以及最近作业的来源文件名和结果。
+- `capture`：提取作业总数、`pending/running/completed/skipped/failed/timeout`、当日启动数、用量、被拒候选数、损坏作业文件数，以及按作业文件名排序的最后 5 条来源与结果。
 - `limits`：复盘与提取各自的当日额度，避免把两种模型调用混为一个配额。
 
 ## 分级、冲突与手动管理

@@ -19,8 +19,8 @@ related:
 
 ## 目标
 
-- 项目已启用学习且宿主事件带 `transcript_path` 时，被接受的 `task-end` 登记一份稳定的候选提取作业。同一会话回合的 `task-end` 重放、Stop 和普通 Hook 不重复登记；业务任务不等待模型，提取登记或执行失败不回滚、不阻塞任务结束。
-- 学习未启用、任务 `permissions.learning=false` 或没有 transcript 时，不建作业、不调用模型，手动 `knowledge capture` 不受影响。
+- 项目已启用学习且宿主事件带 `transcript_path` 时，被接受的 `task-end` 登记一份稳定的候选提取作业。作业固定登记时的 transcript 前缀（大小与摘要）和本任务起点（`task-start` 最后一条先前用户消息之后）；后续追加不进入旧作业，替换、截断或起点不可确认时跳过，不回退到会话全文。重放只查询原任务已有的作业；业务任务不等待模型，提取登记或执行失败不回滚、不阻塞任务结束。
+- 学习未启用、任务 `permissions.learning=false` 或没有 transcript 时，不建作业、不调用模型，手动 `knowledge capture` 不受影响；结束登记仍推进会话边界，后续任务不能重新采集被排除的区间。
 - 提取输入只取 transcript 中用户与助手的短文本；工具结果、工具调用和超长输出在预算前剔除，超出 `maxInputChars` 时保留最早与最近部分。程序只接受宿主给出的绝对路径普通文件，限制扩展名与大小；相对路径、符号链接、真实路径与给定路径不一致（Windows 大小写按不敏感比较）或不可读的文件在登记或执行时记为 `skipped`。身份必须正面成立：Claude 每条被采用的 user/assistant 记录都带当前 `sessionId`，Codex 必须有与当前会话一致的 `session_meta`；缺失或不一致时整份按 `TRANSCRIPT_IDENTITY` 跳过，不调用模型。逐行 JSON 损坏、无可用文本等失败同样只影响该作业并保留原因，不影响业务交付。
 - 模型只返回候选观察。证据必须指向本次 transcript 中的用户消息；偏好和纠正要求用户明确表达，成功和失败要求验证依据。候选经既有材料校验与敏感信息检查后只写 `inbox`（`origin:auto-extract`，带作业 ID、摘要、条件、证据和相对路径），不直接创建或修订正式知识，也不能指定其他项目、任务或会话。候选与人工 `knowledge capture` 共用 `knowledgeId` 校验：必须指向本项目已有知识，否则该候选被拒。带 `knowledgeId` 的明确 correction 或已验证 failure 与人工采集一样登记即时反例（该知识停止默认召回），并唤醒同知识或同条件的 `waiting` 材料回 `pending`。
 - 提取与复盘共用 `src/runner.mjs` 的隔离执行器、项目外工作目录和结构化输出，但额度、状态与输入独立。`maxCaptureRunsPerDay` 只限制新作业；超时或进程中断的作业最多尝试两次，超过后不再自动重试。完成、跳过、失败、被拒候选和 `usage` 可按项目或会话/任务查询。
@@ -40,6 +40,7 @@ related:
 ## 验收
 
 - 被接受的 `task-end` 登记一次提取作业；同一信号重放、Stop 与普通 Hook 后作业数不变。禁用、禁止学习和无 transcript 时模型调用为零并返回对应跳过原因。
+- 登记后的 transcript 继续追加时，旧作业仍只读取登记时固定的前缀，不把后续任务内容并入；文件被替换或截断、任务起点不可确认、旧作业缺少范围摘要时记为 `skipped`，不回退读取会话全文。同回合先结束 A、再启动 B 后重放 A 的 `task-end` 只查询 A 的作业，不为 B 提前登记。
 - 早期用户纠正经最小脱敏 transcript 形成带 `transcript:<用户消息编号>` 证据的候选，写入 `inbox` 且不产生正式知识；无候选时允许零写入。仅引用助手消息或工具日志的候选被拒。
 - transcript 不存在、读取失败、逐行 JSON 损坏、缺少会话身份、他人会话、相对路径、符号链接或真实路径不一致、超时和无效输出分别产生 `skipped`/`timeout`/`failed` 状态，任务结束仍被接受，正式知识为零；超时重试两次后不再自动运行。
 - 自动 candidate 引用已有知识且为明确 correction 或已验证 failure 时，该知识不再被默认召回，同知识或同条件的 `waiting` 材料回到 `pending`；引用不存在知识时该候选被拒，不写 `inbox`。

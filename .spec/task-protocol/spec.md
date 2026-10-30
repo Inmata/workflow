@@ -18,7 +18,8 @@ related:
 - 新任务必须显式声明合法的 `route`（`operation-only`、`lead-direct`、`delegated`）；漏填或值非法返回 `ROUTE`，不建立任务。三种分流的原有契约不变：`operation-only` 跳过 spec 与 delegated 门禁，`lead-direct` 只做 spec 检查，`delegated` 另核对包终态、审查与 validation。`route` 只决定门禁与检查范围，不是任务复杂度认证；用户明确要求 Worker/Reviewer 时，Lead 不得借 `operation-only` 或 `lead-direct` 消除已要求的分工。用户指定 `channels` 后，工作包通道偏离（含漏填，或 delegated 的 worker 包由 Lead 实施）必须在同一 `packages` 信号用 `change.packages` 记录并先取得用户同意，否则返回 `CHANNEL`；不能先声明错误通道再以实际执行与声明一致为由通过。
 - 历史任务按任务记录自身识别：记录不存在即新任务；记录存在但没有 `route` 字段时视为旧版本任务，允许续接，可在续接时补声明一次，声明后不可更改。不引入迁移字段，也不改写历史数据。
 - `task-start` 接续保留原 `goal` 与 `permissions`；新任务缺 `goal`、`permissions` 或 `route` 时回执点名缺项。
-- 信号只在当前 shell 确实直接执行本安装副本的 `signal` 子命令后由 PostToolUse 接受；完整 payload 与便捷子命令走同一协议校验。拒绝时状态整体回滚。
+- 已登记工作包的 `role` 不可修改；需要更换角色时新建接替包，不能借改 `role` 改写既有审查与取消事实。
+- 信号只在当前 shell 确实直接执行本安装副本的 `signal` 子命令后由 PostToolUse 接受；完整 payload 与便捷子命令走同一协议校验。拒绝时业务状态整体回滚；宿主 `permission_mode` 属于当前事件的可信观测，不随信号声明回滚，普通工具事件在模式变化时也会同步该观测。
 - spec 检查对非 `operation-only` 任务生效：`lead-direct`、`delegated` 与历史无 `route` 任务都检查，历史任务声明 `operation-only` 后不检查。
 - 生产 Hook 的 spec 检查在状态锁外预检，整次检查按开始时刻的绝对截止时间给 Git 调用共用 4 秒总预算：同步文件读取不能强制中断，但耗时同样消耗截止时间、减少后续 Git 剩余时长，4 秒不保证预检或 Hook 总时长；锁内复核另有独立预算；预检把检查对象固定进 `binding`：显式 ref 与 HEAD 都固定成提交 OID，HEAD 另含受管文件摘要、spec 清单与索引快照；索引快照取在只读 `status` 之前，`status` 用 `--no-optional-locks` 不自行刷新索引，检查期间索引被改写同样按过期处理。同时绑定 worktree、ref、项目、任务与（task-end 与 Stop 的）会话回合/票据/修订。复用前只重解析一次 ref 并比对文件快照，不重跑 status/log/rev-list。项目、任务或会话标识缺失、不匹配，提交移动或工作区变化都按 `spec-check:stale` 处理，不把过期结果当成通过，也不在锁内补跑慢 Git。`spec-check:stale` 不可豁免，只能重试；直接调用协议函数且未提供预检结果时，仍在调用内同步检查。
 
@@ -36,6 +37,7 @@ related:
 - 历史无 `route` 任务续接被接受并返回 `kept`；补声明后记录生效，再次声明其他分流返回 `ROUTE`；补声明 `delegated` 后 `task-end` 按 delegated 门禁列出缺项。
 - 未声明的历史任务 `task-end` 接受并附 `warning:'route-missing'`，spec 漂移仍被检查。
 - 经真实 PostToolUse 的便捷子命令与完整 payload 得到相同的接受/拒绝行为；伪造输出、组合命令和非本插件入口不被接收。
+- 已有工作包改 `role` 返回 `PACKAGE`，原账本不变；新建同角色接替包可正常登记。宿主 `permission_mode` 变化后，普通工具事件也会同步该观测；信号被拒绝时业务声明回滚，但已观测到的宿主模式保留。
 - 用户指定分工后，`operation-only`/`lead-direct` 不能消除用户要求的 Worker/Reviewer 分工；`route` 只决定门禁范围，不认证任务复杂度。通道偏离必须在同一 `packages` 信号附 `change.packages`，先声明错误通道再“实际执行与声明一致”不能绕过；未声明通道或未指定角色的旧行为不变。
 - 曾有 PASS 审查的 worker 包（含沿 `supersedes` 链的曾 PASS 事实）改 `canceled` 返回 `PACKAGE`，原账本不变；PASS 事实是单调的：同一批把审查改成 `FIX`/`BLOCKED`、或先单独改 `FIX` 再取消，都不能抹掉曾 PASS，取消仍被拒。旧账本没有历史字段时按当前 PASS 动态推导，并在下一次写账本前落成历史；随后合法返修新 `deliveredRef` 再取得匹配 PASS 仍可通过，不阻塞新 ref 再审。从未有 PASS 的包可合法取消（当前只有 FIX/BLOCKED 而没有 PASS 的包也在内），已合法 `waived` 的语义保持不变；审查对象改成指向其他包后，历史 PASS 仍算已审：该包不能改标 `waived`，其 `review:<id>` 缺项也不能用 waiver 抵扣；`waived` 预校验的已审事实取批前当前 reviewer 结论、本批合并后的最终结论（含 FIX/BLOCKED）与历史 PASS 的并集，因此同一批把审查对象从 A 改指 B 时 A 的批前 FIX/BLOCKED 仍参与（A 同时 waived 返回 `PACKAGE`）；重指在单独信号中成功落盘后，后续信号才不再保留旧 FIX/BLOCKED；PASS 历史跨信号沿 `supersedes` 链单调保留。`waived` 判定与数组顺序无关，取消只按 PASS 事实。审查取消而无结论的包仍算未审、可合法 waived。同包返修后旧 `reviewedRef` 不再匹配新 `deliveredRef`，必须重新送审；换新包只能在创建时声明 `supersedes`，接替包需要自己的 PASS，继承的旧结论不能直接抵扣。历史上已被标成 `canceled` 但链路有 PASS 的包仍列入 `review:<id>`。
 - 同一批新建 worker 包并把它标成 `canceled` 时，按本批合并后的目标包与 `supersedes` 链接替关系核对曾 PASS：若同批 reviewer 的 PASS 指向它，或它接替的旧包（链）有 PASS，返回 `PACKAGE`，且不因数组顺序改变；拒绝整批回滚，不写入 worker、reviewer 或 `reviewPasses`。从未有 PASS 的新包仍可合法取消。

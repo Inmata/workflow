@@ -1,7 +1,7 @@
 import path from 'node:path';
-import { lstat, mkdir } from 'node:fs/promises';
+import { lstat, mkdir, open, rename, unlink } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
-import { atomicWrite, canonical, digest, directoryIdentity, fail, id, mutate, readText, samePath, within, writeJSON } from './store.mjs';
+import { canonical, digest, directoryIdentity, fail, id, mutate, readText, samePath, within, writeJSON } from './store.mjs';
 
 export const BEGIN = '<!-- workflow:begin -->';
 export const END = '<!-- workflow:end -->';
@@ -84,6 +84,23 @@ export async function agentsFile(root) {
   try { const info = await lstat(file); if (info.isSymbolicLink() || info.nlink > 1) fail('LINK', 'AGENTS 是链接；先核对真实目标'); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   return file;
 }
+// 先写完并同步临时文件，再在替换前复核；避免临时文件准备期间的编辑被旧全文覆盖。
+// 普通 rename 不提供文件内容 CAS：最终复核与 rename 之间仍有无法原子消除的竞态窗口。
+async function replaceAgents(root, original, output, action) {
+  const file = path.join(root, 'AGENTS.md');
+  const temporary = path.join(root, `.AGENTS.md.workflow-${id('binding')}.tmp`);
+  const handle = await open(temporary, 'wx');
+  try {
+    try { await handle.writeFile(output, 'utf8'); await handle.sync(); }
+    finally { await handle.close(); }
+    await agentsFile(root);
+    if (await readText(file, '') !== original) fail('CONFLICT', `准备${action}时 AGENTS 已被用户修改，已保留原文和未启用绑定`);
+    await rename(temporary, file);
+  } finally {
+    // 只清理本调用创建的临时文件；不得触碰 AGENTS 或其他会话的材料。
+    await unlink(temporary).catch(error => { if (error.code !== 'ENOENT') throw error; });
+  }
+}
 export function blockFrom(text) {
   const start = text.indexOf(BEGIN);
   const end = text.indexOf(END);
@@ -112,7 +129,15 @@ export async function enableProject(directory, root, options = {}) {
     const file = await agentsFile(root);
     const original = await readText(file, '');
     const oldBlock = blockFrom(original);
-    if (oldBlock && (!previous || digest(oldBlock.content) !== previous.managedBlockHash)) fail('CONFLICT', '发现手改或复制来的管理区；显式核对后再绑定');
+    const actualHash = oldBlock ? digest(oldBlock.content) : null;
+    const pending = previous?.bindingIntent;
+    // 上次替换成功但最终 state save 失败时，只接受同一身份下 intent 记录的新区；
+    // 第三种内容仍是用户改动，绝不能根据“有未完成 intent”就放宽校验。
+    const recoverable = previous && !previous.enabled && pending && identityEqual(previous.identity, currentIdentity)
+      && pending.oldManagedBlockHash === previous.managedBlockHash
+      && actualHash === pending.newManagedBlockHash;
+    if ((oldBlock && (!previous || (actualHash !== previous.managedBlockHash && !recoverable)))
+      || (!oldBlock && pending?.beforeManagedBlockHash != null)) fail('CONFLICT', '发现手改或复制来的管理区；显式核对后再绑定');
     if (previous?.enabled && !identityEqual(previous.identity, currentIdentity)) fail('IDENTITY', '目录或 Git 身份变化；先停用旧绑定再明确接入');
     const block = await portableBlock(root, previous);
     const output = oldBlock ? original.slice(0, oldBlock.start) + block + original.slice(oldBlock.end) : `${original}${original && !original.endsWith('\n') ? '\n' : ''}${block}\n`;
@@ -122,20 +147,30 @@ export async function enableProject(directory, root, options = {}) {
       ...(previous || {}),
       schemaVersion: 1, projectId, root, identity: currentIdentity,
       worktrees: [{ root, identity: currentIdentity }], knowledgeRoot: root,
-      managedBlockHash: digest(block), enabled: true,
+      // 新管理区写入成功前保留已生效指纹；失败后旧区仍可通过校验并重试。
+      managedBlockHash: actualHash ?? previous?.managedBlockHash ?? digest(block), enabled: true,
       coexistenceMode: options.coexistenceMode || previous?.coexistenceMode || 'bounded',
     };
     if (previous?.enabled) project.worktrees = previous.worktrees;
     if (!['bounded', 'pending-only'].includes(project.coexistenceMode)) fail('INPUT', '未知共存模式');
     // Persist intent before touching the managed area, so a crash remains diagnosable.
     await mkdir(path.join(directory, 'project-changes'), { recursive: true });
-    await writeJSON(path.join(directory, 'project-changes', `${id('binding')}.json`), { projectId, root, beforeHash: digest(original), managedBlock: block, action: 'enable' });
+    project.bindingIntent = {
+      oldManagedBlockHash: project.managedBlockHash,
+      beforeManagedBlockHash: actualHash,
+      newManagedBlockHash: digest(block),
+    };
+    await writeJSON(path.join(directory, 'project-changes', `${id('binding')}.json`), { projectId, root, beforeHash: digest(original), managedBlock: block, ...project.bindingIntent, action: 'enable' });
     project.enabled = false;
     state.projects[projectId] = project;
     await save();
-    await agentsFile(root);
-    if (await readText(file, '') !== original) fail('CONFLICT', '准备接入时 AGENTS 已被用户修改，已保留原文和未启用绑定');
-    if (original !== output) await atomicWrite(file, output);
+    if (original !== output) await replaceAgents(root, original, output, '接入');
+    else {
+      await agentsFile(root);
+      if (await readText(file, '') !== original) fail('CONFLICT', '准备接入时 AGENTS 已被用户修改，已保留原文和未启用绑定');
+    }
+    project.managedBlockHash = digest(block);
+    delete project.bindingIntent;
     project.enabled = true;
     await save();
     return { status: 'enabled', projectId, root, agentsChanged: original !== output };
@@ -143,17 +178,30 @@ export async function enableProject(directory, root, options = {}) {
 }
 export async function disableProject(directory, root) {
   root = await canonical(root);
-  return mutate(directory, async state => {
+  return mutate(directory, async (state, save) => {
     const project = Object.values(state.projects).find(p => samePath(p.root, root));
     if (!project) fail('PROJECT', '项目未登记');
     project.enabled = false;
+    await save();
     const file = await agentsFile(root);
     const original = await readText(file, '');
     const block = blockFrom(original);
-    if (!block) return { status: 'disabled', projectId: project.projectId, agentsChanged: false };
-    if (digest(block.content) !== project.managedBlockHash) return { status: 'disabled', projectId: project.projectId, agentsChanged: false, conflict: '管理区被用户修改，已保留原文' };
+    if (!block) {
+      delete project.bindingIntent;
+      return { status: 'disabled', projectId: project.projectId, agentsChanged: false };
+    }
+    const actualHash = digest(block.content);
+    const pending = project.bindingIntent;
+    const recoverable = pending && pending.oldManagedBlockHash === project.managedBlockHash
+      && actualHash === pending.newManagedBlockHash && identityEqual(project.identity, await identity(root));
+    if (actualHash !== project.managedBlockHash && !recoverable) return { status: 'disabled', projectId: project.projectId, agentsChanged: false, conflict: '管理区被用户修改，已保留原文' };
+    if (pending) {
+      project.managedBlockHash = actualHash;
+      delete project.bindingIntent;
+      await save();
+    }
     const suffix = original.slice(block.end);
-    await atomicWrite(file, original.slice(0, block.start) + (suffix.startsWith('\r\n') ? suffix.slice(2) : suffix.startsWith('\n') ? suffix.slice(1) : suffix));
+    await replaceAgents(root, original, original.slice(0, block.start) + (suffix.startsWith('\r\n') ? suffix.slice(2) : suffix.startsWith('\n') ? suffix.slice(1) : suffix), '停用');
     return { status: 'disabled', projectId: project.projectId, agentsChanged: true };
   });
 }

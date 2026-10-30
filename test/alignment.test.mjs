@@ -124,7 +124,7 @@ test('decide 与 suggest 更新状态和文档维护区，不重复追加', asyn
   await assert.rejects(decide(f, { decisions: [{ id: 'D3', status: 'unknown' }] }), { code: 'INPUT' });
   // Lead 直接写表格而没经过 decide/suggest 时，待办数量仍以文档为准。
   const handwritten = await readFile(docPath(f.project), 'utf8');
-  await writeFile(docPath(f.project), `${handwritten}\n## 待裁决差异\n\n| ID | 项目现行做法 | workflow 默认 | 影响 | 我的建议 | 状态 |\n| --- | --- | --- | --- | --- | --- |\n| D9 | 项目做法 | 默认做法 | 影响 | 建议 | pending |\n| D10 | 项目做法 | 默认做法 | 影响 | 建议 | accepted-project |\n`);
+  await writeFile(docPath(f.project), handwritten.replace('<!-- workflow-alignment:end -->', '## 待裁决差异\n\n| ID | 项目现行做法 | workflow 默认 | 影响 | 我的建议 | 状态 |\n| --- | --- | --- | --- | --- | --- |\n| D9 | 项目做法 | 默认做法 | 影响 | 建议 | pending |\n| D10 | 项目做法 | 默认做法 | 影响 | 建议 | accepted-project |\n<!-- workflow-alignment:end -->'));
   status = await alignmentStatus(f.directory, f.project);
   assert.equal(status.pendingDecisions, 2);
   assert.equal(status.pendingFindings, 1);
@@ -143,6 +143,47 @@ test('decide 写入末节时停在管理区结束标记前，并清理占位行'
   await decide(f, { decisions: [{ id: 'D2', status: 'accepted-workflow', reason: '用户选 2A' }] });
   const text = await readFile(docPath(f.project), 'utf8');
   assert.equal(text, '<!-- workflow-alignment:begin -->\n# 项目对齐\n\n## 已裁决记录\n\nD1 accepted-workflow：用户选 1A\nD2 accepted-workflow：用户选 2A\n<!-- workflow-alignment:end -->\n\n手写尾注\n');
+});
+
+test('decide/suggest 及待办读取只定位管理区，外侧同名标题与 ID 逐字保留', async () => {
+  const f = await fixture();
+  const outside = '# 手写笔记\r\n## 待裁决差异\r\n| D1 | 手写差异 | pending |\r\n| D9 | 手写差异 | pending |\r\n## 结构建议\r\n| F1 | 手写建议 | pending |\r\n## 已裁决记录\r\nD1 手写记录\r\n';
+  const tail = '\r\n## 结构建议\r\n| F8 | 手写尾注 | pending |\r\n';
+  await documents(f.project, { 'docs/WORKFLOW-ALIGNMENT.md': outside + '<!-- workflow-alignment:begin -->\n## 待裁决差异\n| D1 | 管理差异 | pending |\n## 结构建议\n| F1 | 管理建议 | pending |\n<!-- workflow-alignment:end -->' + tail });
+  await scanAlignment(f.directory, f.project);
+  let status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.pendingDecisions, 1);
+  assert.equal(status.pendingFindings, 1);
+  await decide(f, { decisions: [{ id: 'D1', status: 'accepted-workflow', reason: '已确认' }] });
+  await suggest(f, { findings: [{ id: 'F1', problem: '新建议' }] });
+  await decide(f, { decisions: [{ id: 'F1', status: 'accepted-change', reason: '已实施' }] });
+  const text = await readFile(docPath(f.project), 'utf8');
+  assert.ok(text.startsWith(outside));
+  assert.ok(text.endsWith(tail));
+  const managed = text.split('<!-- workflow-alignment:begin -->')[1].split('<!-- workflow-alignment:end -->')[0];
+  assert.match(managed, /\| D1 \| 管理差异 \| accepted-workflow \|/);
+  assert.match(managed, /\| F1 \| 新建议 \| 未定位 \| 未给出 \| accepted-change \|/);
+  assert.match(managed, /## 已裁决记录\n\nD1 accepted-workflow：已确认\nF1 accepted-change：已实施/);
+  status = await alignmentStatus(f.directory, f.project);
+  assert.equal(status.pendingDecisions, 0);
+  assert.equal(status.pendingFindings, 0);
+  assert.deepEqual(status.mismatch, []);
+});
+
+test('无管理区时新建管理区，外部表格不参与 apply 自动登记', async () => {
+  const f = await fixture();
+  const outside = '## 结构建议\n| F9 | 手写建议 | accepted-project |\n## 已裁决记录\n手写记录\n';
+  await documents(f.project, { 'docs/WORKFLOW-ALIGNMENT.md': outside });
+  await suggest(f, { findings: [{ id: 'F1', problem: '管理建议' }] });
+  let text = await readFile(docPath(f.project), 'utf8');
+  assert.ok(text.startsWith(outside + '<!-- workflow-alignment:begin -->\n'));
+  assert.ok(text.indexOf('| F1 |') < text.indexOf('<!-- workflow-alignment:end -->'));
+  await apply(f, { content: '## 对齐依据\n已核对' });
+  text = await readFile(docPath(f.project), 'utf8');
+  assert.ok(text.startsWith(outside));
+  const alignment = (await readState(f.directory)).projects[f.projectId].alignment;
+  assert.ok(!alignment.findings.some(item => item.id === 'F9'));
+  assert.deepEqual((await alignmentStatus(f.directory, f.project)).mismatch, []);
 });
 
 test('对齐写入受只读/计划权限与明确基线保护', async () => {
@@ -481,6 +522,48 @@ test('F07 文件读取失败不冒充已删除，可读变化仍照常报告', a
   } finally {
     injected.mock.restore();
     syncBuiltinESMExports();
+  }
+});
+
+test('慢 lstat 耗尽预算时，未检查的目录使 status incomplete/stale，重查能发现新增资料', async t => {
+  for (const slowPhase of ['file', 'directory']) {
+    const f = await fixture();
+    await documents(f.project, { 'docs/a.md': '已索引\n' });
+    await scanAlignment(f.directory, f.project);
+    await writeFile(path.join(f.project, 'docs', 'new.md'), '未确认新增资料\n');
+    const alignment = (await readState(f.directory)).projects[f.projectId].alignment;
+    const slow = path.resolve(f.project, slowPhase === 'file' ? alignment.files.at(-1).path : alignment.directories[0].path);
+    const seen = [];
+    let clock = Date.now();
+    const now = t.mock.method(Date, 'now', () => clock);
+    const original = fs.lstat;
+    const injected = t.mock.method(fs, 'lstat', async target => {
+      seen.push(path.resolve(target));
+      if (path.resolve(target) === slow) {
+        await new Promise(resolve => setTimeout(resolve, 60));
+        clock += 31;
+      }
+      return original(target);
+    });
+    syncBuiltinESMExports();
+    try {
+      const status = await alignmentStatus(f.directory, f.project, { budgetMs: 30 });
+      assert.equal(status.incomplete, true, JSON.stringify(status));
+      assert.equal(status.stale, true, JSON.stringify(status));
+      assert.deepEqual(status.changed, []);
+      assert.deepEqual(status.missing, []);
+      assert.deepEqual(status.directoryChanged, []);
+      assert.deepEqual(status.errors, []);
+      assert.ok(!seen.includes(path.resolve(f.project, 'docs')), '预算耗尽后 docs 尚未检查');
+    } finally {
+      injected.mock.restore();
+      now.mock.restore();
+      syncBuiltinESMExports();
+    }
+    const complete = await alignmentStatus(f.directory, f.project, { budgetMs: 30000 });
+    assert.equal(complete.incomplete, false);
+    assert.equal(complete.stale, true);
+    assert.ok(complete.directoryChanged.includes('docs'));
   }
 });
 

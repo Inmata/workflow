@@ -1,5 +1,5 @@
 import path from 'node:path';
-import { lstat, readdir, readFile, realpath } from 'node:fs/promises';
+import { lstat, open, readdir, realpath } from 'node:fs/promises';
 import { digest, mutate, readState, readText, samePath, withLock } from './store.mjs';
 import { dayKey, learningConfig, projectFor } from './learning-config.mjs';
 import { isCounterEvidence, maintenanceAllowed, markCounterEvidence, normalizeObservation, projectData, putItem, requireKnowledge, wakeWaiting } from './learning.mjs';
@@ -57,27 +57,92 @@ export async function readExtractionJobs(directory, project) {
   }
   return { jobs, skipped };
 }
+// 固定字节范围并验证前缀，后续追加不会进入旧作业；替换、截断或重写则保守跳过。
+async function transcriptPrefix(target, size) {
+  const info = await transcriptInfo(target);
+  const length = size ?? info.size;
+  if (!Number.isSafeInteger(length) || length < 0 || length > MAX_TRANSCRIPT_BYTES) throw extractionError('TRANSCRIPT_LARGE', 'transcript 过大或边界无效');
+  if (info.size < length) throw extractionError('TRANSCRIPT_CHANGED', 'transcript 已截断');
+  const handle = await open(target, 'r');
+  try {
+    const bytes = Buffer.alloc(length);
+    let offset = 0;
+    while (offset < length) {
+      const { bytesRead } = await handle.read(bytes, offset, length - offset, offset);
+      if (!bytesRead) throw extractionError('TRANSCRIPT_CHANGED', 'transcript 读取期间被截断');
+      offset += bytesRead;
+    }
+    return { raw: bytes.toString('utf8'), size: length, hash: digest(bytes) };
+  } finally { await handle.close(); }
+}
+// task-start 的最后一条用户消息属于本任务；此前的会话内容不归入新任务。
+export async function markExtractionStart(session, transcriptPath, taskId) {
+  if (session.captureStart?.taskId === taskId) return;
+  session.captureStart = { taskId, boundary: session.captureBoundary || null };
+  if (!transcriptPath) return;
+  try {
+    const prefix = await transcriptPrefix(transcriptPath);
+    const messages = parseTranscript(prefix.raw, session.sessionId);
+    const user = messages.findLast(item => item.role === 'user');
+    let minimum = 0;
+    if (session.captureBoundary) {
+      const previous = session.captureBoundary;
+      if (previous.error || !samePath(previous.path, transcriptPath) || !Number.isSafeInteger(previous.messageIndex)) throw extractionError('TRANSCRIPT_BOUNDARY', '前一任务 transcript 边界不可确认');
+      if ((await transcriptPrefix(transcriptPath, previous.size)).hash !== previous.hash) throw extractionError('TRANSCRIPT_CHANGED', '前一任务 transcript 已变化');
+      minimum = previous.messageIndex;
+    }
+    session.captureStart = { taskId, path: transcriptPath, ...prefix, messageIndex: Math.max(minimum, user ? user.index - 1 : messages.length) };
+    delete session.captureStart.raw;
+  } catch (error) { session.captureStart.error = error.code || 'TRANSCRIPT_UNREADABLE'; }
+}
+// 重放只查询原任务已有的作业：信号回执保留原任务身份，不能按重放时的会话状态补建新作业。
+export async function findExtraction(directory, project, { task, session }) {
+  const id = jobId(project, task, session);
+  const exists = await readText(path.join(captureFolder(directory, project), id + '.json')) !== null;
+  return exists ? { status: 'exists', jobId: id } : { status: 'missing', jobId: id };
+}
 // task-end 被接受后登记一次提取作业；同一会话回合重放只会看到已存在的作业。
-// 学习未启用、任务禁止学习或宿主没有 transcript 时不建作业，也不调用模型。
+// 禁止学习也推进边界，后续允许学习的任务不能重新采集被排除的内容。
 export async function registerExtraction(directory, project, { task, session, transcriptPath, now = new Date() }) {
-  if (project.learning?.enabled !== true) return { status: 'skipped', reason: 'learning-disabled' };
-  if (task?.permissions?.learning === false) return { status: 'skipped', reason: 'permission-denied' };
-  if (typeof transcriptPath !== 'string' || !transcriptPath) return { status: 'skipped', reason: 'no-transcript' };
   const id = jobId(project, task, session);
   const file = path.join(captureFolder(directory, project), id + '.json');
   if (await readText(file) !== null) return { status: 'exists', jobId: id };
+  const previousBoundary = session.captureBoundary;
+  let boundary = null, boundaryError = null;
+  if (typeof transcriptPath === 'string' && transcriptPath) {
+    try {
+      const prefix = await transcriptPrefix(transcriptPath);
+      boundary = { path: transcriptPath, size: prefix.size, hash: prefix.hash, messageIndex: null };
+      // 格式或身份错误仍留作业交给执行阶段报告，结束登记不影响业务收尾。
+      try { boundary.messageIndex = parseTranscript(prefix.raw, session.sessionId).length; } catch {}
+      session.captureBoundary = boundary;
+    } catch (error) { boundaryError = error; session.captureBoundary = { path: transcriptPath, error: error.code || 'TRANSCRIPT_UNREADABLE' }; }
+  } else {
+    // 无法定位已结束任务时也留下不可采集边界，后续任务不能回退到会话全文。
+    session.captureBoundary = { error: 'TRANSCRIPT_BOUNDARY' };
+  }
+  if (project.learning?.enabled !== true) return { status: 'skipped', reason: 'learning-disabled' };
+  if (task?.permissions?.learning === false) return { status: 'skipped', reason: 'permission-denied' };
+  if (typeof transcriptPath !== 'string' || !transcriptPath) return { status: 'skipped', reason: 'no-transcript' };
   const created = now.toISOString();
   const job = {
     schemaVersion: 1, id, projectId: project.projectId, taskId: task?.taskId || null,
     sessionId: session?.sessionId || null, turnId: session?.turnId || null,
     status: 'pending', attempts: 0, candidates: 0, rejected: [], usage: null,
-    reason: null, source: { path: transcriptPath, size: null }, createdAt: created, startedAt: null, finishedAt: null, day: null,
+    reason: null, source: { path: transcriptPath, size: boundary?.size ?? null, hash: boundary?.hash ?? null, startIndex: 0 }, createdAt: created, startedAt: null, finishedAt: null, day: null,
   };
-  // 路径、类型、链接或大小不可用时保留一条 skipped 作业作为可查询记录，不阻塞 task-end。
+  // 起点或终点无法确认时不猜测任务范围；旧作业没有摘要也不能自动采用当前全文。
   try {
-    const info = await transcriptInfo(transcriptPath);
-    if (info.size > MAX_TRANSCRIPT_BYTES) throw extractionError('TRANSCRIPT_LARGE', 'transcript 过大');
-    job.source.size = info.size;
+    if (boundaryError) throw boundaryError;
+    const start = session.captureStart?.taskId === task?.taskId ? session.captureStart : null;
+    if (start?.error) throw extractionError('TRANSCRIPT_BOUNDARY', '任务开始时无法确认 transcript 边界');
+    const lower = start?.path ? start : start?.boundary || previousBoundary;
+    if (lower) {
+      if (lower.error || !samePath(lower.path, transcriptPath) || !Number.isSafeInteger(lower.messageIndex)) throw extractionError('TRANSCRIPT_BOUNDARY', '任务 transcript 起点不可确认');
+      const prefix = await transcriptPrefix(transcriptPath, lower.size);
+      if (prefix.hash !== lower.hash) throw extractionError('TRANSCRIPT_CHANGED', '任务开始前的 transcript 已变化');
+      job.source.startIndex = lower.messageIndex;
+    }
   } catch (error) {
     job.status = 'skipped';
     job.reason = error.code || 'TRANSCRIPT_UNREADABLE';
@@ -160,14 +225,16 @@ async function loadTranscript(job, config) {
   let raw;
   try {
     // 登记后文件可能被替换成链接或移走，执行前重新核对同一约束。
-    const info = await transcriptInfo(job.source.path);
-    if (info.size > MAX_TRANSCRIPT_BYTES) throw extractionError('TRANSCRIPT_LARGE', 'transcript 过大');
-    raw = await readFile(job.source.path, 'utf8');
+    if (!Number.isSafeInteger(job.source?.size) || typeof job.source?.hash !== 'string' || !Number.isSafeInteger(job.source?.startIndex) || job.source.startIndex < 0) throw extractionError('TRANSCRIPT_BOUNDARY', '旧作业没有可信 transcript 范围，跳过自动提取');
+    const prefix = await transcriptPrefix(job.source.path, job.source.size);
+    if (prefix.hash !== job.source.hash) throw extractionError('TRANSCRIPT_CHANGED', '登记范围内的 transcript 已变化');
+    raw = prefix.raw;
   } catch (error) {
     if (typeof error?.code === 'string' && error.code.startsWith('TRANSCRIPT_')) throw error;
     throw extractionError('TRANSCRIPT_UNREADABLE', 'transcript 读取失败');
   }
-  const messages = parseTranscript(raw, job.sessionId);
+  const messages = parseTranscript(raw, job.sessionId).filter(item => item.index > job.source.startIndex);
+  if (!messages.length) throw extractionError('TRANSCRIPT_EMPTY', '本任务没有可用文本');
   return fitBudget(messages, config.maxInputChars);
 }
 const candidateId = (job, index) => 'auto-' + digest(job.id + ':candidate:' + index).slice(0, 24);

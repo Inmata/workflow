@@ -153,7 +153,7 @@ Lead 和 Worker 都可以在交付前运行它。指定 `--ref` 时先固定成�
 - 对 `delegated` 和 `lead-direct` 两种路线都生效；`operation-only` 不检查。未声明 route 的旧任务同样检查。
 - 只能靠两种方式消除：更新 spec，或在内容提交上附 `Spec-OK`；需要追认既有历史时才用空提交。`waivers` 中 `spec` 类别和 `spec:<id>` 条目都不接受，回执返回 `WAIVER`。这样每次“代码改了但 spec 不用改”的判断都留在 git 历史里。`spec-check:<原因>` 不受此限。
 - 放行权限：Lead 写明理由后可以放行纯重构；修改 spec 的目标、原因、验收、边界正文，必须先经用户同意。只同步 `code:` 路径（文件改名或删除时，在同一提交里修改）不算改动需求原文，Lead 可以直接处理。
-- 检查在 `acceptSignal` 内同步执行，失败时与其他缺项一样整体回滚，不留下部分状态。
+- 检查在 `acceptSignal` 内同步执行，失败时与其他缺项一样回滚业务状态，不留下部分声明；宿主 `permission_mode` 观测单独保留。
 
 `task show --task <id>` 的“当前缺项”同时显示 spec 检查结果。
 

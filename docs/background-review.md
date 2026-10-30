@@ -137,7 +137,7 @@ node bin/workflow.mjs learning status --root "D:/项目"
 | `feedback` | `shown/adopted/total`；没有记录时 `note` 写“无记录”，不推断效果为零 |
 | `runs` / `runSummary` | 最近 10 次运行的状态、时间、`usage`、失败原因，以及 `partial` 运行每项被拒决定的材料、代码和说明；`unhandled` 是模型未处置、仍待下次复盘的材料 |
 | `knowledge` | 知识总数、活跃数、创建/修订/已替代次数；读取失败时 `available:false` 并给错误码 |
-| `capture` | task-end 提取作业的总数、各状态、当日启动数、`usage`、被拒候选数和最近作业；当日启动数按项目累计（`todayStartedScope: project`），不随查询过滤缩小；`skippedFiles` 是损坏的作业文件数 |
+| `capture` | task-end 提取作业的总数、各状态、当日启动数、`usage`、被拒候选数，以及按作业文件名排序的最后 5 条来源与结果；当日启动数按项目累计（`todayStartedScope: project`），不随查询过滤缩小；`skippedFiles` 是损坏的作业文件数 |
 | `scope` | 材料、反馈和提取作业的过滤范围；复盘运行与知识文件按项目统计并标注 `project`，不与过滤结果混算；指定会话时 `unattributed` 标明任务级或未知归属的计数 |
 | `at` | 本报告的统计时点 |
 | `notices` | 给 Lead 的通知，例如有知识被降级 |

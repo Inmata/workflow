@@ -43,6 +43,36 @@ test('真实本地子进程超时被终止，只有程序输出，不调用模�
   const result = await runProcess(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { timeoutMs: 100 });
   assert.equal(result.timedOut, true);
 });
+test('真实子进程 stdout/stderr 的 UTF-8 跨块解码完整，字符预算合并计算', async () => {
+  const script = `
+    const bytes = Buffer.from('中');
+    let index = 0;
+    function emit() {
+      process.stdout.write(bytes.subarray(index, index + 1));
+      process.stderr.write(bytes.subarray(index, index + 1));
+      if (++index < bytes.length) setTimeout(emit, 40);
+    }
+    emit();
+  `;
+  const result = await runProcess(process.execPath, ['-e', script], { maxOutputChars: 2 });
+  assert.equal(result.code, 0);
+  assert.equal(result.stdout, '中');
+  assert.equal(result.stderr, '中');
+  assert.equal(result.overflow, false, '两个流总计两个字符，跨块字节不应膨胀预算');
+  assert.equal(result.timedOut, false);
+  const limited = await runProcess(process.execPath, ['-e', script], { maxOutputChars: 1 });
+  assert.equal(limited.overflow, true, 'stdout 和 stderr 必须共享输出预算');
+  assert.equal(limited.timedOut, false);
+});
+
+test('执行器结束时冲刷不完整 UTF-8 尾字节，尾字符仍受总输出预算保护', async () => {
+  const result = await runProcess(process.execPath, ['-e', 'process.stdout.write(Buffer.from([0xe4])); process.stderr.write(Buffer.from([0xe4]));'], { maxOutputChars: 1 });
+  assert.equal(result.stdout, '�');
+  assert.equal(result.stderr, '�');
+  assert.equal(result.overflow, true);
+  assert.equal(result.timedOut, false);
+});
+
 const claudeHelp = '--bare --setting-sources --settings --strict-mcp-config --tools --json-schema --output-format --no-session-persistence --include-hook-events';
 test('Claude 预检核对是 Claude Code 与隔离参数，不调用模型', async () => {
   const calls = [];

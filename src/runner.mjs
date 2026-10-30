@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { mkdir, readFile } from 'node:fs/promises';
 import { fail, writeJSON } from './store.mjs';
 
@@ -23,14 +24,20 @@ export async function runProcess(executable, args, options = {}) {
       else child.kill('SIGKILL');
     };
     const timer = setTimeout(() => { expired = true; kill(); }, options.timeoutMs || 15000);
-    const collect = (key, bytes) => {
-      if (key === 'out') stdout += bytes; else stderr += bytes;
-      if (stdout.length + stderr.length > (options.maxOutputChars || 2000000)) { overflow = true; kill(); }
+    const outDecoder = new StringDecoder('utf8'), errDecoder = new StringDecoder('utf8');
+    const collect = (key, text) => {
+      if (key === 'out') stdout += text; else stderr += text;
+      if (!overflow && stdout.length + stderr.length > (options.maxOutputChars || 2000000)) { overflow = true; kill(); }
     };
-    child.stdout.on('data', b => collect('out', b));
-    child.stderr.on('data', b => collect('err', b));
+    child.stdout.on('data', b => collect('out', outDecoder.write(b)));
+    child.stderr.on('data', b => collect('err', errDecoder.write(b)));
     child.on('error', e => { clearTimeout(timer); reject(e); });
-    child.on('close', code => { clearTimeout(timer); resolve({ code, stdout, stderr, timedOut: expired, overflow }); });
+    child.on('close', code => {
+      clearTimeout(timer);
+      collect('out', outDecoder.end());
+      collect('err', errDecoder.end());
+      resolve({ code, stdout, stderr, timedOut: expired, overflow });
+    });
     child.stdin.on('error', () => {});
     child.stdin.end(options.input || '');
   });

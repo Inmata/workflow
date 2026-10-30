@@ -131,13 +131,23 @@ export async function scanAlignment(directory, root, options = {}) {
   return { status: 'scanned', projectId: project.projectId, docPath, files, skipped: output.skipped, truncated: output.truncated };
 }
 
-// 小节正文范围：到下一个二级标题或管理区结束标记为止。
+function managedRange(text) {
+  const start = text.indexOf(BEGIN), end = text.indexOf(END);
+  if (start < 0 && end < 0) return null;
+  if (start < 0 || end < start || text.indexOf(BEGIN, start + BEGIN.length) >= 0 || text.indexOf(END, end + END.length) >= 0) fail('CONFLICT', '对齐管理区不完整或重复');
+  return [start + BEGIN.length, end];
+}
+// 只定位管理区内的完整二级标题；标记外的同名标题和表格属于用户正文。
 function sectionRange(text, heading) {
-  const start = text.indexOf(heading);
-  if (start < 0) return null;
-  const bodyStart = start + heading.length;
-  const ends = [text.indexOf('\n## ', bodyStart), text.indexOf('\n' + END, bodyStart)].filter(index => index >= 0);
-  return [bodyStart, ends.length ? Math.min(...ends) : text.length];
+  const managed = managedRange(text);
+  if (!managed) return null;
+  const content = text.slice(...managed);
+  const match = [...content.matchAll(/^## [^\r\n]*/gm)].find(item => item[0] === heading);
+  if (!match) return null;
+  const bodyStart = managed[0] + match.index + heading.length;
+  const next = text.indexOf('\n## ', bodyStart);
+  const end = text[managed[1] - 1] === '\n' ? managed[1] - 1 : managed[1];
+  return [bodyStart, next >= 0 && next < end ? next : end];
 }
 const rowId = cells => { const id = cells[1]; return id && id !== 'ID' && !/^:?-+:?$/.test(id) ? id : null; };
 // 表格行 ID → 状态列（倒数第二个分隔单元）。待办数量以文档为准并与 state 合并；状态不一致单独报告。
@@ -220,8 +230,10 @@ async function inspect(project, options = {}) {
     else if (Math.abs(info.mtimeMs - file.mtimeMs) > 1) changed.push({ path: file.path, reason: 'mtime', size: info.size, mtimeMs: info.mtimeMs });
   }
   const known = { files: new Set((alignment.files || []).map(file => file.path)), directories: new Set((alignment.directories || []).map(item => item.path)) };
+  let checkedDirectories = 0;
   for (const item of alignment.directories || []) {
     if (Date.now() > deadline) break;
+    checkedDirectories++;
     const info = await lstat(path.join(project.root, item.path)).catch(error => {
       if (error.code === 'ENOENT') return null;
       errors.push({ path: item.path, code: error.code || 'IO', reason: 'unreadable-directory' });
@@ -243,13 +255,14 @@ async function inspect(project, options = {}) {
   const findings = new Set((alignment.findings || []).filter(item => item.status === 'pending').map(item => item.id));
   for (const [id, status] of findingRows) if (status === 'pending') findings.add(id);
   const mismatch = [...mismatches(decisionRows, recordedDecisions, DECISION_STATUS), ...mismatches(findingRows, recordedFindings, FINDING_STATUS)];
+  const incomplete = checked < (alignment.files || []).length || checkedDirectories < (alignment.directories || []).length || errors.length > 0;
   return {
     path: alignment.docPath,
     exists: true,
     docExists: doc !== null,
     // 读取失败与检查上限一样，都表示没有完成完整核对；可读部分仍按上面的结果报告。
-    incomplete: checked < (alignment.files || []).length || errors.length > 0,
-    stale: checked < (alignment.files || []).length || changed.length > 0 || missing.length > 0 || directoryChanged.length > 0 || errors.length > 0,
+    incomplete,
+    stale: incomplete || changed.length > 0 || missing.length > 0 || directoryChanged.length > 0,
     changed: changed.slice(0, CHECK_MAX_CHANGES),
     missing: missing.slice(0, CHECK_MAX_CHANGES),
     directoryChanged: directoryChanged.slice(0, CHECK_MAX_CHANGES),
@@ -278,12 +291,13 @@ function lineKey(line) {
 }
 
 function replaceSection(text, heading, line) {
-  const start = text.indexOf(heading);
-  if (start < 0) return `${text}${text.endsWith('\n') ? '' : '\n'}\n${heading}\n\n${line}\n`;
-  const bodyStart = start + heading.length;
-  // 小节在下一个标题或管理区结束标记处截止，取较早者；末节不能越过 END。
-  const ends = [text.indexOf('\n## ', bodyStart), text.indexOf('\n' + END, bodyStart)].filter(index => index >= 0);
-  const end = ends.length ? Math.min(...ends) : text.length;
+  const range = sectionRange(text, heading);
+  if (!range) {
+    const end = managedRange(text)[1];
+    const prefix = text.slice(0, end);
+    return `${prefix}${prefix.endsWith('\n') ? '' : '\n'}\n${heading}\n\n${line}\n${text.slice(end)}`;
+  }
+  const [bodyStart, end] = range;
   let body = text.slice(bodyStart, end).split('\n');
   const key = lineKey(line);
   const index = body.findIndex(item => item.trim() && lineKey(item) === key);
@@ -450,9 +464,10 @@ async function updateAlignment(directory, root, input, action) {
     if (action === 'apply') {
       if (typeof input.content !== 'string' || !input.content.trim()) fail('INPUT', '需要 content');
       const block = BEGIN + '\n' + input.content.trimEnd() + '\n' + END;
-      const a = output.indexOf(BEGIN), b = output.indexOf(END);
-      if ((a >= 0) !== (b >= 0) || (a >= 0 && b < a)) fail('CONFLICT', '对齐管理区不完整');
-      output = a >= 0 ? output.slice(0, a) + block + output.slice(b + END.length) : output + (output && !output.endsWith('\n') ? '\n' : '') + block + '\n';
+      const range = managedRange(output);
+      output = range ? output.slice(0, range[0] - BEGIN.length) + block + output.slice(range[1] + END.length) : output + (output && !output.endsWith('\n') ? '\n' : '') + block + '\n';
+    } else if (!managedRange(output)) {
+      output += (output && !output.endsWith('\n') ? '\n' : '') + BEGIN + '\n' + END + '\n';
     }
     const added = action === 'apply' ? unregisteredRows(output, project.alignment, decisions) : { decisions: [], findings: [], decided: [] };
     if (added.decided.length) {

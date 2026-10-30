@@ -32,6 +32,31 @@ test('F11 route 只决定门禁：三种合法分流保持原契约，用户指�
   assert.deepEqual(gated.result.missing, ['review:w1'], 'route=delegated 的审查门禁不因通道 change 消失');
 });
 
+test('既有 package 不能改 role 退出审查门禁，整批变更与 PASS 历史均回滚', async () => {
+  const f = await fixture();
+  await delegated(f);
+  await packages(f, [
+    { packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v1' },
+    { packageId: 'w2', role: 'worker', status: 'consumed', deliveredRef: 'v2' },
+    { packageId: 'r1', role: 'reviewer', status: 'dispatched' },
+  ], { validation });
+  const before = structuredClone(await taskOf(f));
+  for (const [packageId, role] of [['w1', 'reviewer'], ['r1', 'worker']]) {
+    const denied = await packages(f, [
+      { packageId: 'r2', role: 'reviewer', status: 'consumed', reviews: 'w2', reviewedRef: 'v2', verdict: 'PASS' },
+      { packageId, role, status: 'consumed' },
+    ]);
+    assert.equal(denied.result.accepted, false, JSON.stringify(denied.result));
+    assert.equal(denied.result.reason, 'PACKAGE');
+    assert.match(denied.result.message, /role/);
+    assert.deepEqual(await taskOf(f), before, '拒绝不能留下同批包、交付或 PASS 历史');
+  }
+  // 显式重申原角色和省略 role 的正常更新保持可用，w1 仍在审查门禁中。
+  assert.equal((await packages(f, [{ packageId: 'w1', role: 'worker', note: '结果已消费' }, { packageId: 'r1', status: 'canceled' }])).result.accepted, true);
+  const state = await readState(f.directory);
+  assert.deepEqual(gateReport(state, await taskOf(f), undefined, f.project).missing, ['review:w1', 'review:w2']);
+});
+
 test('F12 已有 PASS 审查的 worker 包不能改 canceled 退出门禁，原记录不变', async () => {
   const f = await gitFixture(['m1']);
   await delegated(f);
@@ -251,6 +276,48 @@ test('F12 同批新建接替包 canceled 不能借 supersedes 链退出既有 PA
   assert.deepEqual(await taskOf(f), before, '整批回滚，w1 不被接替');
   // 未审的新包仍可取消（例如启动失败），不因本修复被误伤。
   assert.equal((await packages(f, [{ packageId: 'w3', role: 'worker', status: 'canceled' }])).result.accepted, true);
+});
+
+test('同批两级 supersedes 按合并图检查 waived/canceled，与排列和审查事实来源无关', async () => {
+  const permutations = values => values.length <= 1 ? [values] : values.flatMap((value, index) => permutations(values.filter((_, i) => i !== index)).map(rest => [value, ...rest]));
+  for (const verdict of ['PASS', 'FIX', 'BLOCKED']) {
+    // PASS 历史禁止 canceled/waived；FIX/BLOCKED 只禁止 waived。
+    for (const status of verdict === 'PASS' ? ['waived', 'canceled'] : ['waived']) {
+      for (const sameBatchReview of [false, true]) {
+        const seed = [
+          { packageId: 'w2', role: 'worker', status: 'consumed', deliveredRef: 'v2', supersedes: 'w1' },
+          { packageId: 'w3', role: 'worker', status, supersedes: 'w2' },
+        ];
+        const reviewer = { packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', reviewedRef: 'v1', verdict };
+        if (sameBatchReview) seed.push(reviewer);
+        for (const items of permutations(seed)) {
+          const f = await fixture();
+          await delegated(f);
+          assert.equal((await packages(f, [{ packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v1' }, ...(sameBatchReview ? [] : [reviewer])], { validation })).result.accepted, true);
+          // 也覆盖只有单调历史、当前 reviewer 已改指的旧 PASS。
+          if (verdict === 'PASS' && !sameBatchReview) {
+            assert.equal((await packages(f, [{ packageId: 'other', role: 'worker', status: 'consumed', deliveredRef: 'other-v1' }, { packageId: 'r1', reviews: 'other' }])).result.accepted, true);
+          }
+          const before = structuredClone(await taskOf(f));
+          const denied = await packages(f, items);
+          assert.equal(denied.result.accepted, false, JSON.stringify({ verdict, status, sameBatchReview, items, result: denied.result }));
+          assert.equal(denied.result.reason, 'PACKAGE');
+          assert.match(denied.result.message, status === 'canceled' ? /PASS.*canceled/ : /审查.*waived/);
+          assert.deepEqual(await taskOf(f), before, '整批拒绝不能接替旧包或留下审查历史');
+        }
+      }
+    }
+  }
+  // 没有 PASS 的链仍可 canceled，没有审查结论的链仍可 waived。
+  for (const [verdict, status] of [['FIX', 'canceled'], [null, 'waived']]) {
+    const f = await fixture();
+    await delegated(f);
+    await packages(f, [{ packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v1' }, ...(verdict ? [{ packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', verdict }] : [])]);
+    assert.equal((await packages(f, [
+      { packageId: 'w2', role: 'worker', status: 'consumed', deliveredRef: 'v2', supersedes: 'w1' },
+      { packageId: 'w3', role: 'worker', status, supersedes: 'w2' },
+    ])).result.accepted, true);
+  }
 });
 
 test('F12 新包 supersedes 只在创建时声明；新包需要自己的 PASS 审查', async () => {

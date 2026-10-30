@@ -202,7 +202,7 @@ hook 在 SessionStart 和 UserPromptSubmit 返回的 context 中包含：
 }
 ```
 
-Lead 还会得到 `alignmentGuide` 路径。`exists=false` 表示尚未对齐；`stale=true` 表示索引中的文件大小、mtime 或所在目录变化，需要只重读变化文件和新增资料，并把已读来源用 `sources` 确认；未确认的来源会继续提示。`changed` 每项除 `path`、`reason` 外还带当前 `size` 和 `mtimeMs`，可直接作为 `sources` 快照。`pendingDecisions`/`pendingFindings` 以对齐文档中的表格为准（Lead 直接写表格也算），再与本机索引状态合并，因此绕过 `decide`/`suggest` 也不会漏掉待办。`mismatch` 列出表格状态与 decide 登记值不一致的行（`document` 是表格里的值，`index` 是登记值，`invalid: true` 表示表格里的值不是合法状态），多半是手改了表格：按用户的裁决重新 decide，decide 会把表格状态纠正为登记值。目录 mtime 变化时会重新列目录，只有出现未收录的候选资料（文档、脚本、工具链文件）才计入 `directoryChanged`；新增图片等其他文件或目录被删除不算。旧项目没有索引字段时按未对齐处理，不报错。hook 只读状态和对齐文档，不自动写项目文件。
+Lead 还会得到 `alignmentGuide` 路径。`exists=false` 表示尚未对齐；`stale=true` 表示索引中的文件大小、mtime、所在目录变化，或本次检查未完成（读取失败、超出检查上限）；`incomplete=true` 时先重试 `status` 确认未检查的来源，再只重读已发现的变化文件和新增资料，并把已读来源用 `sources` 确认；未确认的来源会继续提示。`changed` 每项除 `path`、`reason` 外还带当前 `size` 和 `mtimeMs`，可直接作为 `sources` 快照。`pendingDecisions`/`pendingFindings` 以对齐文档管理区内的表格为准（Lead 直接写管理区里的表格也算），再与本机索引状态合并，因此绕过 `decide`/`suggest` 也不会漏掉待办；管理区外的同名标题或表格属于用户正文，不参与解析。`mismatch` 列出表格状态与 decide 登记值不一致的行（`document` 是表格里的值，`index` 是登记值，`invalid: true` 表示表格里的值不是合法状态），多半是手改了表格：按用户的裁决重新 decide，decide 会把表格状态纠正为登记值。目录 mtime 变化时会重新列目录，只有出现未收录的候选资料（文档、脚本、工具链文件）才计入 `directoryChanged`；新增图片等其他文件或目录被删除不算。旧项目没有索引字段时按未对齐处理，不报错。hook 只读状态和对齐文档，不自动写项目文件。
 
 ## 边界
 

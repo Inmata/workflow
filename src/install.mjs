@@ -182,13 +182,72 @@ function removeOwned(config, record) {
   }
   return { config: result, conflicts, slots };
 }
+function addHandlers(config, handlers, slots = {}) {
+  config.hooks ||= {};
+  for (const [event, handler] of Object.entries(handlers)) {
+    config.hooks[event] ||= [];
+    const slot = slots[event];
+    if (slot === undefined) config.hooks[event].push({ hooks: [handler] });
+    else config.hooks[event].splice(slot, 0, { hooks: [handler] });
+  }
+  return JSON.stringify(config, null, 2) + '\n';
+}
+const textHash = text => text === null ? null : digest(text);
+function registerInstall(state, agent, record) {
+  state.installs[agent] = record;
+  if (agent === 'codex') state.install = record;
+}
+// prepared 只保存自有定义和前后指纹，不保存含其他插件/凭据的整份用户配置。
+// 重试按原意图续做：配置必须仍为 before/after，current 必须仍为原目标/新目标。
+async function finishPrepared(directory, state, save, record, agent) {
+  if (!record.currentRoot || !samePath(record.currentRoot, currentRoot(directory))) fail('RECOVERY', '安装事务没有可辨认的固定入口，保留记录待核对');
+  if (!await verifyRelease(record)) fail('INTEGRITY', '准备安装的发布副本被修改或缺失，保留现场');
+  const text = await readText(record.configFile);
+  const hash = textHash(text);
+  if (hash !== record.beforeHash && hash !== record.afterHash) fail('CONFLICT', '安装恢复时 hooks 配置不匹配前后指纹；保留用户配置与事务');
+  const checkEntry = async () => {
+    const entry = await inspectCurrent(directory, record);
+    const original = Object.hasOwn(record, 'previousCurrentTarget') && (
+      record.previousCurrentTarget === null ? entry.state === 'missing' : entry.state !== 'conflict' && entry.target && samePath(entry.target, record.previousCurrentTarget)
+    );
+    // 旧版 prepared 没有 previousCurrentTarget，不猜测其他自有目标。
+    // 切换时旧链接先被移到 aside；此时崩溃会留下 missing，可直接重建而不删除旧副本/aside。
+    if (!['verified', 'missing'].includes(entry.state) && !original) fail('CONFLICT', '安装恢复时 current 不匹配原入口或目标发布副本；保留现场');
+    return entry;
+  };
+  await checkEntry();
+  if (hash !== record.afterHash) {
+    const current = await readConfig(record.configFile);
+    if (current.text !== text) fail('CONFLICT', '安装恢复期间 hooks 配置已变化；保留用户配置');
+    const owned = record.previousOwned ? { ...record.previousOwned, events: record.previousOwned.events || record.events || hostFor(agent).events } : null;
+    const stripped = removeOwned(current.config, owned);
+    if (stripped.conflicts.length) fail('CONFLICT', '安装恢复时原自有 hook 不完整，保留配置与事务');
+    const after = addHandlers(stripped.config, record.handlers, stripped.slots);
+    if (digest(after) !== record.afterHash) fail('RECOVERY', '无法按原意图重建 hooks 配置，保留现场');
+    if (await readText(record.configFile) !== text) fail('CONFLICT', '安装恢复期间 hooks 配置已变化；保留用户配置');
+    await atomicWrite(record.configFile, after);
+  }
+  const entry = await checkEntry();
+  if (textHash(await readText(record.configFile)) !== record.afterHash) fail('CONFLICT', '安装确认前 hooks 配置已变化；保留事务');
+  if (entry.state !== 'verified') await pointCurrent(directory, record.releaseRoot);
+  record.status = 'installed';
+  registerInstall(state, agent, record);
+  await save();
+  return { status: 'installed', agent, version: record.version, releaseRoot: record.releaseRoot, currentRoot: record.currentRoot, configFile: record.configFile, changeId: record.changeId, requiresTrust: '请用实际宿主支持的 /hooks 审核当前定义；新会话验证，不自动修改信任记录' };
+}
 export async function install(directory, { userDir, sourceRoot = PRODUCT_ROOT, agent = 'codex' } = {}) {
   const host = hostFor(agent);
   userDir = path.resolve(userDir || host.defaultUserDir());
   return mutate(directory, async (state, save) => {
     const previous = installRecord(state, agent);
-    if (previous && !['installed', 'uninstalled'].includes(previous.status)) fail('RECOVERY', '安装事务尚未确认，先核对注册差异；不覆盖追溯记录');
     const configFile = path.join(userDir, host.configName);
+    if (previous?.status === 'prepared') {
+      if (previous.configFile !== configFile) fail('CONFIG', '已有另一用户目录的安装事务，先在原用户目录重试');
+      return finishPrepared(directory, state, save, previous, agent);
+    }
+    if (previous && !['installed', 'uninstalled'].includes(previous.status)) fail('RECOVERY', '安装事务尚未确认，先核对注册差异；不覆盖追溯记录');
+    const pendingHosts = AGENTS.filter(name => name !== agent && installRecord(state, name)?.status === 'prepared');
+    if (pendingHosts.length) fail('RECOVERY', `其他宿主安装事务尚未完成（${pendingHosts.join(',')}）；先重试该宿主安装，保留共享 current`);
     const current = await readConfig(configFile);
     const files = await inventory(sourceRoot);
     const packageInfo = JSON.parse(await readText(path.join(sourceRoot, 'package.json')));
@@ -236,50 +295,51 @@ export async function install(directory, { userDir, sourceRoot = PRODUCT_ROOT, a
       await mkdir(path.dirname(releaseRoot), { recursive: true });
       await rename(stagingRoot, releaseRoot);
     }
-    // 配置只认固定入口；releaseRoot 仅作完整性校验和回滚快照。
-    const link = await pointCurrent(directory, releaseRoot);
-    const next = stripped.config;
-    next.hooks ||= {};
-    const handlers = {};
-    for (const event of host.events) {
-      const handler = host.handler(link, directory, event);
-      handlers[event] = handler;
-      next.hooks[event] ||= [];
-      const slot = stripped.slots[event];
-      if (slot === undefined) next.hooks[event].push({ hooks: [handler] });
-      else next.hooks[event].splice(slot, 0, { hooks: [handler] });
-    }
-    const after = JSON.stringify(next, null, 2) + '\n';
+    // 配置只认固定入口；意图与状态先落盘，任何准备失败都不能提前切换共享 current。
+    const link = currentRoot(directory);
+    const handlers = Object.fromEntries(host.events.map(event => [event, host.handler(link, directory, event)]));
+    const after = addHandlers(stripped.config, handlers, stripped.slots);
     const changeId = id('install');
     const target = handlers[host.events[0]];
-    const record = { status: 'prepared', agent, events: host.events, changeId, version: packageInfo.version, releaseHash, releaseRoot, currentRoot: link, files, configFile, command: target.command, args: target.args ?? null, handlers, beforeHash: current.text === null ? null : digest(current.text), afterHash: digest(after), registeredAt: new Date().toISOString(), previousOwned: active ? { command: active.command, args: active.args ?? null, handlers: active.handlers } : null };
+    const record = { status: 'prepared', agent, events: host.events, changeId, version: packageInfo.version, releaseHash, releaseRoot, currentRoot: link, files, configFile, command: target.command, args: target.args ?? null, handlers, beforeHash: textHash(current.text), afterHash: digest(after), previousCurrentTarget: entry.target ?? null, registeredAt: new Date().toISOString(), previousOwned: active ? { command: active.command, args: active.args ?? null, handlers: active.handlers, events: active.events || host.events } : null };
     // Only owned definitions and fingerprints are backed up, never unrelated configuration or credentials.
     await writeJSON(path.join(directory, 'installation-changes', `${changeId}.json`), record);
-    state.installs[agent] = record;
-    if (agent === 'codex') state.install = record;
+    registerInstall(state, agent, record);
     await save();
-    if (await readText(configFile) !== current.text) fail('CONFLICT', '安装准备期间 hooks 配置已变化；保留用户配置');
-    await atomicWrite(configFile, after);
-    record.status = 'installed';
-    await save();
-    return { status: 'installed', agent, version: record.version, releaseRoot, currentRoot: link, configFile, changeId, requiresTrust: '请用实际宿主支持的 /hooks 审核当前定义；新会话验证，不自动修改信任记录' };
+    return finishPrepared(directory, state, save, record, agent);
   });
 }
 export async function uninstall(directory, { agent = 'codex' } = {}) {
   const host = hostFor(agent);
-  return mutate(directory, async state => {
+  return mutate(directory, async (state, save) => {
     const record = installRecord(state, agent);
     if (!record || record.status === 'uninstalled') return { status: 'not-installed' };
+    if (record.status === 'prepared') await finishPrepared(directory, state, save, record, agent);
     if (record.status !== 'installed') fail('RECOVERY', '安装事务尚未确认，需要先核对注册差异');
+    const finish = () => {
+      record.status = 'uninstalled';
+      record.uninstalledAt = new Date().toISOString();
+      delete record.uninstallIntent;
+      if (agent === 'codex') state.install = record;
+      return { status: 'uninstalled', releaseRetained: record.releaseRoot, reason: '发布副本和追溯记录保留，可通过系统回收站清理' };
+    };
+    // 撤销意图先落盘：配置移除成功后若最终状态保存失败，重试可按前后指纹识别已完成并收敛。
+    const intent = record.uninstallIntent;
+    if (intent?.configFile && samePath(intent.configFile, record.configFile)) {
+      const hash = textHash(await readText(record.configFile));
+      if (hash === intent.afterHash) return finish();
+      if (hash !== intent.beforeHash) fail('CONFLICT', '卸载重试时配置不匹配撤销前后指纹；保留用户配置与事务');
+      // 指纹仍是撤销前内容：上次尚未移除 hooks，按正常流程重新计算后继续。
+    }
     const current = await readConfig(record.configFile);
     const stripped = removeOwned(current.config, { ...record, events: record.events || host.events });
     if (stripped.conflicts.length) return { status: 'conflict', conflicts: stripped.conflicts, reason: '自有定义被用户修改；保留整个配置待核对' };
     if (await readText(record.configFile) !== current.text) fail('CONFLICT', '撤销期间用户修改了配置');
-    await atomicWrite(record.configFile, JSON.stringify(stripped.config, null, 2) + '\n');
-    record.status = 'uninstalled';
-    record.uninstalledAt = new Date().toISOString();
-    if (agent === 'codex') state.install = record;
-    return { status: 'uninstalled', releaseRetained: record.releaseRoot, reason: '发布副本和追溯记录保留，可通过系统回收站清理' };
+    const after = JSON.stringify(stripped.config, null, 2) + '\n';
+    record.uninstallIntent = { configFile: record.configFile, beforeHash: textHash(current.text), afterHash: digest(after), events: record.events || host.events };
+    await save();
+    await atomicWrite(record.configFile, after);
+    return finish();
   });
 }
 // 只读核对 Codex 的 Default 模式提问开关；不写用户配置。只认 [features] 段内的布尔赋值，其余写法报告 unknown。
@@ -299,18 +359,25 @@ export async function codexQuestionFeature(userDir = HOSTS.codex.defaultUserDir(
   const status = value === 'true' ? 'enabled' : value === 'false' || value === undefined ? 'disabled' : 'unknown';
   return { setting: 'default_mode_request_user_input', status, ...(status === 'enabled' ? {} : { note }) };
 }
-export async function doctor(directory, root, { agent = 'codex', userDir } = {}) {
+// 安装写入的是无 matcher 的 { hooks:[handler] }。分组 matcher 会把 hook 限制到部分工具/事件，
+// disableAllHooks 会整体停用；出现任一情况都不算真实注册（空 matcher 等价于全部，允许宿主归一化）。
+const groupRunsEveryEvent = group => !Object.hasOwn(group, 'matcher') || group.matcher === '' || group.matcher === null;
+export async function registrationStatus(record, agent = 'codex') {
   const host = hostFor(agent);
+  if (record?.status !== 'installed') return 'not-installed';
+  try {
+    const current = await readConfig(record.configFile);
+    if (current.config.disableAllHooks === true) return 'missing-or-modified';
+    const registered = (record.events || host.events).every(event => current.config.hooks?.[event]?.some(group => groupRunsEveryEvent(group) && group.hooks.some(handler => sameTarget(handler, record) && JSON.stringify(handler) === JSON.stringify(record.handlers[event]))));
+    return registered ? 'registered' : 'missing-or-modified';
+  } catch { return 'unreadable-or-unknown'; }
+}
+export async function doctor(directory, root, { agent = 'codex', userDir } = {}) {
+  hostFor(agent);
   const state = await readState(directory);
   const record = installRecord(state, agent);
-  let registered = false, configuration = 'not-installed';
-  if (record && record.status === 'installed') {
-    try {
-      const current = await readConfig(record.configFile);
-      registered = (record.events || host.events).every(event => current.config.hooks?.[event]?.some(group => group.hooks.some(handler => sameTarget(handler, record) && JSON.stringify(handler) === JSON.stringify(record.handlers[event]))));
-      configuration = registered ? 'registered' : 'missing-or-modified';
-    } catch { configuration = 'unreadable-or-unknown'; }
-  }
+  const configuration = await registrationStatus(record, agent);
+  const registered = configuration === 'registered';
   const actual = Object.entries(hostObservations(state, agent)).filter(([, observation]) => observation.source === 'callback').map(([event, observation]) => ({ event, at: observation.at }));
   const project = root ? await (await import('./projects.mjs')).resolveProject(state, root) : null;
   return {
