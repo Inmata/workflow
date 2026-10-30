@@ -239,12 +239,91 @@ function wasReviewed(task, item) {
   }
   return false;
 }
+// 只有 PASS 才让 worker 包“已通过审查”；FIX/BLOCKED 与取消而无结论的审查不算。
+function chainHasPass(task, item, passTargets) {
+  const packages = task.packages || {};
+  for (let current = item, hops = 0; current && hops <= MAX_PACKAGES; current = packages[current.supersedes], hops++) {
+    if (passTargets.has(current.packageId)) return true;
+  }
+  return false;
+}
+function passTargetsOf(task) {
+  return new Set(Object.values(task.packages || {}).filter(p => p.role === 'reviewer' && p.reviews && p.verdict === 'PASS').map(p => p.reviews));
+}
+// 只读诊断免审：只能在首次创建 worker 包时声明；用途、只读范围与非空理由缺一不可。
+// 结论在交付时写在 note 里，门禁只核对它非空，不证明进程真的没有写入（信任边界）。
+const DIAGNOSTIC_FIELDS = ['purpose', 'scope', 'reason'];
+function diagnosticText(value, label) {
+  if (typeof value !== 'string' || !value.trim() || value.length > 8192) fail('PACKAGE', `diagnostic 缺少或无效字段 ${label}`);
+  return value.trim();
+}
+function diagnosticInput(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail('PACKAGE', 'diagnostic 需为 {purpose, scope[], reason}');
+  const unknown = Object.keys(value).filter(key => !DIAGNOSTIC_FIELDS.includes(key));
+  if (unknown.length) fail('PACKAGE', `diagnostic 不支持字段 ${unknown.join('、')}`);
+  if (!Array.isArray(value.scope) || !value.scope.length || value.scope.length > 50) fail('PACKAGE', 'diagnostic.scope 需为 1-50 项项目内相对路径');
+  const scope = value.scope.map((item, index) => {
+    const relative = diagnosticText(item, `diagnostic.scope[${index}]`).replaceAll('\\', '/');
+    if (path.isAbsolute(relative) || /^[A-Za-z]:/.test(relative) || relative.split('/').includes('..')) fail('PACKAGE', `diagnostic.scope 须为项目内相对路径：${item}`);
+    return relative;
+  });
+  return { purpose: diagnosticText(value.purpose, 'diagnostic.purpose'), scope: [...new Set(scope)], reason: diagnosticText(value.reason, 'diagnostic.reason') };
+}
+// 整批预校验：取消/审查/诊断声明都在写入前判定，拒绝时本批不留下半成品记录。
+function validateBatch(task, items) {
+  const roles = new Map();
+  for (const [packageId, item] of Object.entries(task.packages || {})) roles.set(packageId, item.role);
+  for (const item of items) roles.set(item.packageId, item.role ?? roles.get(item.packageId));
+  const reviewerState = new Map();
+  for (const [packageId, item] of Object.entries(task.packages || {})) if (item.role === 'reviewer') reviewerState.set(packageId, { reviews: item.reviews, verdict: item.verdict });
+  for (const item of items) {
+    if (roles.get(item.packageId) !== 'reviewer') continue;
+    const previous = reviewerState.get(item.packageId) || {};
+    reviewerState.set(item.packageId, {
+      reviews: item.reviews !== undefined ? item.reviews : previous.reviews,
+      verdict: item.verdict !== undefined ? item.verdict : previous.verdict,
+    });
+  }
+  const passTargets = new Set([...reviewerState.values()].filter(state => state.verdict === 'PASS' && state.reviews).map(state => state.reviews));
+  const diagnostics = new Map();
+  for (const item of items) {
+    const previous = task.packages?.[item.packageId];
+    const role = roles.get(item.packageId);
+    if (role === 'reviewer') {
+      const next = { ...previous, ...item };
+      const verdict = next.verdict ?? null;
+      if (verdict && !next.reviews) fail('PACKAGE', `审查包 ${item.packageId} 给出 ${verdict} 结论时必须用 reviews 指向被审 worker 包`);
+      if (next.reviews !== undefined && next.reviews !== null) {
+        if (!roles.has(next.reviews)) fail('PACKAGE', `审查包 ${item.packageId} 的 reviews 指向未登记的工作包：${next.reviews}`);
+        if (roles.get(next.reviews) !== 'worker') fail('PACKAGE', `审查对象错误：reviews 须指向 worker 包，${next.reviews} 是 ${roles.get(next.reviews) || '未登记'}`);
+      }
+      if (verdict === 'PASS' && !next.reviewedRef) fail('PACKAGE', `PASS 审查包 ${item.packageId} 缺少 reviewedRef：PASS 必须绑定被审交付版本`);
+    }
+    if (role === 'worker' && item.status === 'canceled' && previous?.status !== 'canceled' && chainHasPass(task, previous, passTargets)) {
+      fail('PACKAGE', `工作包 ${item.packageId} 已有 PASS 审查，不能改 canceled 退出审查门禁：让审查对上最终交付版本，或用 supersedes 接替`);
+    }
+    if (item.diagnostic !== undefined) {
+      const parsed = diagnosticInput(item.diagnostic);
+      diagnostics.set(item, parsed);
+      if (previous) {
+        if (!previous.diagnostic || JSON.stringify(previous.diagnostic) !== JSON.stringify(parsed)) fail('PACKAGE', 'diagnostic 只能在首次创建包时声明，不能事后补挂或修改');
+      } else {
+        if (role !== 'worker') fail('PACKAGE', 'diagnostic 只能用于 worker 只读诊断包，不能用于审查包或实现包');
+        if (item.status !== 'dispatched') fail('PACKAGE', 'diagnostic 只能用于首次派发的只读诊断包，不能在建包时已交付或已终止');
+        if (item.deliveredRef !== undefined) fail('PACKAGE', 'diagnostic 只读诊断包不能在建包时带 deliveredRef；实现包需要正常审查');
+        if (item.supersedes !== undefined) fail('PACKAGE', 'diagnostic 不能接替已有工作包；接替实现包会绕过原审查');
+      }
+    }
+  }
+  return { diagnostics };
+}
 // 账本只在派发、消费结果、审查结论三个节点记录；批量 upsert，未给出的字段保持原值。
 export function upsertPackages(task, items, change = null) {
   if (!Array.isArray(items) || !items.length || items.length > 50) fail('PACKAGE', 'packages 需为 1-50 项数组');
   task.packages ||= {};
   const repairLimit = [];
   const parsed = items.map(packageInput);
+  const { diagnostics } = validateBatch(task, parsed);
   const reviewerFixes = batchReviewerFixes(parsed, task);
   const fixRequested = packageId => (reviewerFixes.get(packageId)?.size || 0) > 0;
   for (const item of parsed) {
@@ -259,6 +338,7 @@ export function upsertPackages(task, items, change = null) {
     for (const key of ['role', 'status', 'handle', 'channel', 'worktree', 'baseRef', 'deliveredRef', 'reviewedRef', 'reviews', 'verdict', 'dependsOn', 'note', 'supersedes']) {
       if (item[key] !== undefined) next[key] = item[key];
     }
+    if (item.diagnostic !== undefined) next.diagnostic = diagnostics.get(item);
     if (next.role !== 'reviewer' && (next.verdict || next.reviews || next.reviewedRef)) fail('PACKAGE', '只有 reviewer 包可带 verdict/reviews/reviewedRef');
     // 审过的 worker 包不能改标 waived 绕过审查；放弃用 canceled，返修用 supersedes 或原包重新派发。
     if (next.role === 'worker' && next.status === 'waived' && previous?.status !== 'waived' && wasReviewed(task, next)) fail('PACKAGE', `工作包 ${next.packageId} 已有审查结论，不能标 waived：让审查对上最终交付版本，或用 supersedes 接替，或 canceled 放弃`);
@@ -387,22 +467,33 @@ export function gateReport(state, task, finalRef, root, spec) {
     if (child.projectId === task.projectId && child.parentTaskId === task.taskId && child.lifecycle === 'active') missing.push(`child:${child.taskId}`);
   }
   const specResult = specMissing(state, task, finalRef, root, spec);
-  if (task.route !== 'delegated') return { missing: [...missing, ...specResult.missing], findings: specResult.findings };
+  if (task.route !== 'delegated') return { missing: [...missing, ...specResult.missing], findings: specResult.findings, diagnostic: [] };
   const packages = Object.values(task.packages || {});
   for (const item of packages) if (!TERMINAL_PACKAGE.includes(item.status)) missing.push(`terminal:${item.packageId}`);
-  for (const worker of packages.filter(item => item.role === 'worker' && !['canceled', 'waived'].includes(item.status) && !item.supersededBy)) {
+  const passTargets = passTargetsOf(task);
+  const diagnostic = [];
+  // 已 PASS 的 worker 包即使历史记录里被标成 canceled，也不能因此退出审查；未审取消照旧放行。
+  for (const worker of packages.filter(item => item.role === 'worker' && item.status !== 'waived' && !item.supersededBy)) {
+    if (worker.status === 'canceled' && !chainHasPass(task, worker, passTargets)) continue;
+    if (worker.diagnostic) {
+      // 只读诊断免审只按事先声明放行；交付结论必须写在 note 里，可定位但插件不验证内容真实性。
+      if (!worker.note?.trim()) missing.push(`diagnostic:${worker.packageId}`);
+      else diagnostic.push(worker.packageId);
+      continue;
+    }
     const passed = packages.some(item => item.role === 'reviewer' && item.reviews === worker.packageId && item.verdict === 'PASS' && !!item.reviewedRef && item.reviewedRef === worker.deliveredRef);
     if (!passed) missing.push(`review:${worker.packageId}`);
   }
   // 验证证据必须绑定集成后的最终版本；finalRef 缺省时以 validation.ref 为准。
   if (!task.validation || (finalRef && task.validation.ref !== finalRef)) missing.push('validation');
-  return { missing: [...missing, ...specResult.missing], findings: specResult.findings };
+  return { missing: [...missing, ...specResult.missing], findings: specResult.findings, diagnostic };
 }
 // 豁免可写完整条目（review:pkg-1）或整类步骤（review）；spec 漂移任何豁免都不抵扣。
 // 审过的 worker 包，审查缺项（未 PASS 或审的不是最终交付版本）也不抵扣：只能补审或用 supersedes 接替。
 // 预检过期（spec-check:stale）不属于“检查不了”，只能重试；类别 spec-check 的旧豁免也不能抵扣它。
 const reviewed = (task, entry) => entry.startsWith('review:') && wasReviewed(task, task.packages?.[entry.slice('review:'.length)]);
-const waived = (task, entry, waivers) => !(entry === 'spec' || entry.startsWith('spec:') || entry === 'spec-check:stale')
+// diagnostic:<id> 是只读诊断包的交付结论缺项：必须补结论，不能用 waiver 抵扣。
+const waived = (task, entry, waivers) => !(entry === 'spec' || entry.startsWith('spec:') || entry === 'spec-check:stale' || entry.startsWith('diagnostic:'))
   && !reviewed(task, entry) && waivers.some(w => w.step === entry || w.step === entry.split(':')[0]);
 // task-update：同任务显式改 goal 与 permissions。沿用同一身份/修订/回执与失败回滚；
 // 只改本机任务声明，不碰 route/channels/账本，也不改宿主全局配置。调用方须已有用户授权，插件只记录声明。
@@ -585,7 +676,8 @@ export function acceptSignal(state, payload, { root, spec } = {}) {
       if (missing.length) {
         const specText = report.findings.length ? `。spec 检查：${describeFindings(report.findings)}；更新 spec，或在内容提交附 Spec-OK 写明不需要更新的理由（需要追认既有历史时才用空提交）` : '';
         const reviewText = missing.some(entry => reviewed(task, entry)) ? '。已安排审查的包不能豁免审查缺项：让审查结论对上最终交付版本（reviewedRef=deliveredRef），或用 supersedes 接替' : '';
-        const error = new WorkflowError('GATE', `完成门禁未满足：${missing.join(', ')}${specText}${reviewText}`);
+        const diagnosticText = missing.some(entry => entry.startsWith('diagnostic:')) ? '。只读诊断包需要交付可定位结论：在 packages 的 note 写明结论与证据；该缺项不能用 waiver 抵扣' : '';
+        const error = new WorkflowError('GATE', `完成门禁未满足：${missing.join(', ')}${specText}${reviewText}${diagnosticText}`);
         error.missing = missing;
         if (report.findings.length) error.findings = report.findings;
         throw error;

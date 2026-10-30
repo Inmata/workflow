@@ -118,7 +118,7 @@ test('supersedes：在途旧包记为 canceled；目标不存在、异角色、�
   ]) assert.equal((await packages(f, [item])).result.reason, 'PACKAGE', JSON.stringify(item));
 });
 
-test('已安排审查的 worker 包：审查缺项不能豁免、不能改标 waived；canceled 仍可放弃，从未审查的包照常豁免', async () => {
+test('已安排审查的 worker 包：审查缺项不能豁免、不能改标 waived；PASS 后不能取消；从未审查的包照常豁免', async () => {
   const f = await gitFixture(['m1']);
   await delegated(f);
   await packages(f, [{ packageId: 'w1', role: 'worker', status: 'consumed', deliveredRef: 'v2' }, { packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', reviewedRef: 'v1', verdict: 'PASS' }], { validation });
@@ -129,7 +129,9 @@ test('已安排审查的 worker 包：审查缺项不能豁免、不能改标 wa
   }
   assert.equal((await packages(f, [{ packageId: 'w1', status: 'waived' }])).result.reason, 'PACKAGE');
   assert.match((await event(f, 'Stop')).reason, /review:w1/);
-  await packages(f, [{ packageId: 'w1', status: 'canceled' }]);
+  // 已有 PASS 结论的 worker 包不能再改 canceled 退出审查门禁；先补审对上最终交付版本。
+  assert.equal((await packages(f, [{ packageId: 'w1', status: 'canceled' }])).result.reason, 'PACKAGE');
+  await packages(f, [{ packageId: 'r1', status: 'consumed', reviewedRef: 'v2', verdict: 'PASS' }]);
   assert.equal((await emit(f, { action: 'task-end', finalRef: 'm1' })).result.accepted, true);
 
   const g = await gitFixture(['m1']);

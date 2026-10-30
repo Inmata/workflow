@@ -6,7 +6,7 @@ import { mutate, readState } from '../src/store.mjs';
 import { buildSignal } from '../src/signal.mjs';
 import { sessionKey } from '../src/protocol.mjs';
 import { resolveProject } from '../src/projects.mjs';
-import { cli, emit, entry, event, fixture, start } from './helpers.mjs';
+import { cli, emit, entry, event, fixture, gitFixture, start } from './helpers.mjs';
 
 // 便捷子命令：CLI 只读状态拼 payload，交给 PostToolUse 接受；返回 CLI 结果与 hook 回执。
 function build(f, action, args = [], session = f) {
@@ -493,4 +493,64 @@ test('计划交付核对沿用已声明的通道，只对真实新增的角色�
   assert.match(blocked.reason, /已有明确安排直接沿用.*Worker 通道 codeg:claude_code.*Reviewer 通道 codeg:codex/);
   assert.match(blocked.reason, /只有计划里真实新增的角色或通道且尚无明确安排时/);
   assert.doesNotMatch(blocked.reason, /不需要询问 Worker/);
+});
+
+test('F13 真实 PostToolUse 回执逐类定位拒绝内容，修正后接受；CLI 成功退出不等于 accepted', async () => {
+  const f = await gitFixture(['m1']);
+  await emit(f, { action: 'task-start', goal: '回执反例', route: 'delegated', permissions: { mode: 'write', allowedPaths: ['README.md'] } });
+  await accept(f, 'packages', ['--id', 'w1', '--package', 'w1', '--role', 'worker', '--status', 'consumed', '--ref', 'v1']);
+
+  // 缺少 PASS 审查的 reviewedRef：CLI 退出码为 0（accept 断言），但回执明确拒绝。
+  const noRef = await accept(f, 'packages', ['--id', 'r1-missing', '--package', 'r1', '--role', 'reviewer', '--status', 'consumed', '--reviews', 'w1', '--verdict', 'PASS']);
+  assert.equal(noRef.receipt.accepted, false, JSON.stringify(noRef.receipt));
+  assert.equal(noRef.receipt.reason, 'PACKAGE');
+  assert.match(noRef.receipt.message, /reviewedRef/);
+  const fixed = await accept(f, 'packages', ['--id', 'r1-fixed', '--package', 'r1', '--role', 'reviewer', '--status', 'consumed', '--reviews', 'w1', '--verdict', 'PASS', '--ref', 'v1']);
+  assert.equal(fixed.receipt.accepted, true, JSON.stringify(fixed.receipt));
+
+  // 审查对象未登记、或指向 reviewer 包，都给出可定位 PACKAGE；不会模糊成功。
+  const ghost = await accept(f, 'packages', ['--id', 'r2-ghost', '--package', 'r2', '--role', 'reviewer', '--status', 'consumed', '--reviews', 'ghost', '--verdict', 'PASS', '--ref', 'v1']);
+  assert.equal(ghost.receipt.reason, 'PACKAGE');
+  assert.match(ghost.receipt.message, /ghost/);
+  const wrongObject = await accept(f, 'packages', ['--id', 'r3-wrong', '--package', 'r3', '--role', 'reviewer', '--status', 'consumed', '--reviews', 'r1', '--verdict', 'PASS', '--ref', 'v1']);
+  assert.equal(wrongObject.receipt.reason, 'PACKAGE');
+  assert.match(wrongObject.receipt.message, /worker/);
+
+  // 同 signalId、同正文重试命中回执；同 ID 改正文继续拒绝。
+  const first = await accept(f, 'packages', ['--id', 'idem-note', '--package', 'w1', '--note', '交付说明']);
+  assert.equal(first.receipt.accepted, true, JSON.stringify(first.receipt));
+  const repeated = await accept(f, 'packages', ['--id', 'idem-note', '--package', 'w1', '--note', '交付说明']);
+  assert.equal(repeated.receipt.replayed, true, JSON.stringify(repeated.receipt));
+  const changed = await accept(f, 'packages', ['--id', 'idem-note', '--package', 'w1', '--note', '换了正文']);
+  assert.equal(changed.receipt.reason, 'SIGNAL_ID');
+
+  // 组合命令不接收；同一 payload 改为直接独立调用后接受。
+  const run = build(f, 'packages', ['--id', 'composed', '--package', 'w1', '--note', '组合命令']);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const composedCommand = `node "${entry}" signal packages --session ${f.sessionId} --turn ${f.turnId} --id composed --package w1 --note 组合命令 && echo ok`;
+  const composed = await event(f, 'PostToolUse', { tool_name: 'Bash', tool_input: { command: composedCommand }, tool_response: { output: run.stdout } });
+  assert.match(composed.hookSpecificOutput.additionalContext, /未接受/);
+  const directCommand = `node "${entry}" signal packages --session ${f.sessionId} --turn ${f.turnId} --id composed --package w1 --note 组合命令`;
+  const direct = await event(f, 'PostToolUse', { tool_name: 'Bash', tool_input: { command: directCommand }, tool_response: { output: run.stdout } });
+  const directReceipt = JSON.parse(direct.hookSpecificOutput.additionalContext.slice('workflow 回执：'.length));
+  assert.equal(directReceipt.accepted, true, JSON.stringify(directReceipt));
+
+  // 审查错配：reviewedRef 对不上新的 deliveredRef，task-end 回执列出 review:w1；补审最终版本后接受。
+  await accept(f, 'packages', ['--id', 'w1-v2', '--package', 'w1', '--status', 'consumed', '--ref', 'v2']);
+  const mismatch = await accept(f, 'task-end', ['--id', 'end-mismatch', '--final-ref', 'm1', '--evidence', 'npm test 通过']);
+  assert.equal(mismatch.receipt.accepted, false, JSON.stringify(mismatch.receipt));
+  assert.deepEqual(mismatch.receipt.missing, ['review:w1']);
+  await accept(f, 'packages', ['--id', 'r1-v2', '--package', 'r1', '--status', 'consumed', '--reviews', 'w1', '--ref', 'v2']);
+  const ended = await accept(f, 'task-end', ['--id', 'end-fixed', '--final-ref', 'm1', '--evidence', 'npm test 通过']);
+  assert.equal(ended.receipt.accepted, true, JSON.stringify(ended.receipt));
+
+  // 角色错误：非法 role-claim 返回 ROLE，修正为 worker 后接受；worker 会话不能再发业务信号。
+  const worker = { sessionId: 'worker-session', turnId: 'worker-turn' };
+  await event({ ...f, ...worker }, 'UserPromptSubmit');
+  const badRole = await accept(f, 'role-claim', ['--id', 'claim-bad', '--role', 'lead', '--package', 'w1', '--task', f.taskId], worker);
+  assert.equal(badRole.receipt.reason, 'ROLE');
+  const claimed = await accept(f, 'role-claim', ['--id', 'claim-ok', '--role', 'worker', '--package', 'w1', '--task', f.taskId], worker);
+  assert.equal(claimed.receipt.accepted, true, JSON.stringify(claimed.receipt));
+  const forbidden = await accept(f, 'packages', ['--id', 'worker-pkg', '--package', 'w1', '--status', 'dispatched', '--task', f.taskId], worker);
+  assert.equal(forbidden.receipt.reason, 'ROLE');
 });

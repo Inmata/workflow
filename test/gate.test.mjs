@@ -411,7 +411,7 @@ test('同一批把审查从 FIX 更正为 PASS 并重派，计数与数组顺序
     await packages(f, [{ packageId: 'w1', role: 'worker', status: 'dispatched' }]);
     await packages(f, [{ packageId: 'w1', status: 'failed' }]);
     await packages(f, [{ packageId: 'r1', role: 'reviewer', status: 'consumed', reviews: 'w1', verdict: 'FIX' }]);
-    const pass = { packageId: 'r1', verdict: 'PASS' };
+    const pass = { packageId: 'r1', verdict: 'PASS', reviewedRef: 'v1' };
     const redispatch = { packageId: 'w1', status: 'dispatched' };
     await packages(f, passFirst ? [pass, redispatch] : [redispatch, pass]);
     assert.equal((await taskOf()).packages.w1.attempts, 0, `同包重派 passFirst=${passFirst}`);

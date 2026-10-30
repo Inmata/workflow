@@ -15,8 +15,8 @@ class CheckError extends Error {
   constructor(reason, detail) { super(reason); this.reason = reason; this.detail = detail; }
 }
 // 不经 shell、参数逐个传入；路径按字面匹配，文件名里的 * ? 不会被当成通配。
-// deadline 为整次检查的总预算（可选）：每次调用只拿剩余时间，预算耗尽就不再发起新的 Git 调用，
-// 避免多个 10 秒超时累计吞掉宿主回执。单次调用仍受 GIT_TIMEOUT 限制。
+// deadline 为 Git 调用的共享截止时间（可选）：每次调用只拿剩余时间，预算耗尽就不再发起新的 Git 调用。
+// 同步文件读取不检查也无法中断该截止时间，其耗时同样消耗剩余量；单次 Git 调用仍受 GIT_TIMEOUT 限制。
 function git(root, args, { input, allowFail = false, deadline = null } = {}) {
   let timeout = GIT_TIMEOUT;
   if (deadline !== null) {
@@ -184,7 +184,8 @@ export function verifySpecBinding(root, binding, ref = null) {
 // 显式 ref 默认没有可跳过的“无 spec”分支：先解析 ref，非 Git 目录或 ref 无效一律按读取失败报错。
 // skipNonGitNoSpec 供任务门禁使用：检查根不在 Git 工作树内且本地没有 .spec 时没有版本可查，
 // 按无 spec 跳过；Git 内的无效 ref、或非 Git 但存在 .spec 仍按读取失败报错。CLI 不开启。
-// budgetMs 限制整次检查的总时长（Hook 用它保证在宿主回执窗口内返回）；缺省保持每次调用独立 10 秒上限。
+// budgetMs 是预检内 Git 调用的共享截止时间，不是整次检查或 Hook 的硬总时长：
+// 同步文件快照不可中断、耗时同样从剩余预算中扣除，锁内 ref 复核另有独立预算；缺省保持每次调用独立 10 秒上限。
 export function checkSpecs(root, options = {}) {
   return runSpecCheck(root, options).report;
 }

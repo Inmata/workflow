@@ -88,7 +88,7 @@ node '<本次hook提供的bin/workflow.mjs>' signal packages --session <sessionI
 node '<本次hook提供的bin/workflow.mjs>' signal task-end --session <sessionId> --turn <turnId> --id end-1 --final-ref <交付提交> --evidence "npm test 250/250 通过" --evidence "npm run check 0 错误"
 ```
 
-CLI 只读当前状态补齐 projectId、ticket、epoch 和 revision，输出信号，由当前 PostToolUse 接受；字段参数见[协议](design/protocol.md#信号)。便捷参数一次只表达一个工作包：`--ref` 对 worker 记 `deliveredRef`、对 reviewer 记 `reviewedRef`，新包需要同时给 `--role`；单包便捷字段必须配 `--package`，否则直接返回 INPUT，不会静默丢弃。task-end 的 `validation.ref` 缺省取 `--final-ref`，`--evidence` 可重复。一次消费并派下一阶段等**同批多个包**、`change`、`waivers` 以及 disposition 等深层结构仍写进 UTF-8 JSON 文件，用 `--input` 附上（文件只放业务字段，不放身份字段）：
+CLI 只读当前状态补齐 projectId、ticket、epoch 和 revision，输出信号，由当前 PostToolUse 接受；字段参数见[协议](design/protocol.md#信号)。便捷参数一次只表达一个工作包：`--ref` 对 worker 记 `deliveredRef`、对 reviewer 记 `reviewedRef`，新包需要同时给 `--role`；单包便捷字段必须配 `--package`，否则直接返回 INPUT，不会静默丢弃。task-end 的 `validation.ref` 缺省取 `--final-ref`，`--evidence` 可重复。一次消费并派下一阶段等**同批多个包**、`change`、`waivers`、`diagnostic` 以及 disposition 等深层结构仍写进 UTF-8 JSON 文件，用 `--input` 附上（文件只放业务字段，不放身份字段）：
 
 ```powershell
 node "<入口>" signal packages --session <sessionId> --turn <turnId> --id pkg-batch-1 --input "<同批 packages/change JSON文件>"
@@ -120,7 +120,7 @@ node "<本次hook提供的bin/workflow.mjs>" signal --input "<任务JSON文件>"
 
 使用独立直接 shell 调用，当前支持 node/实际 Node 路径加本插件绝对入口；不串接其他 shell 命令（包括前置 `cd`；组合命令只得到“须单独直接调用”的提示，不更新状态）。PowerShell 中文 JSON 用 UTF-8 文件加 --input，不通过 5.1 原生文本管道；--base64 仅作兼容，长串可能被宿主脱敏成占位符而失效。signal 只输出 workflow_signal，当前 PostToolUse 接受回执才表示状态更新；拒绝时用 context 重读 identity/revision，不换 ID 绕过。权限系统或分类器拒绝命令时同样不换写法重试，向用户说明未记录的步骤。
 
-task-start 必须显式声明 route（CLI `--route`，完整 payload 的 `route`）：`operation-only` 用于无经验回执要求的例行操作，`lead-direct` 用于 Lead 自己实施，`delegated` 用于分工并核对包终态、审查与 validation。新任务漏填或值非法返回 `ROUTE`，不建立任务；已存在任务续接可省略 route；旧版本留下、记录中没有 route 的历史任务照常续接，也可在接续时补声明一次，声明后不可改（返回 `ROUTE`）。非 operation-only 的 lead-direct、delegated 与历史无 route 任务照常做 spec 检查。
+task-start 必须显式声明 route（CLI `--route`，完整 payload 的 `route`）：`operation-only` 用于无经验回执要求的例行操作，`lead-direct` 用于 Lead 自己实施，`delegated` 用于分工并核对包终态、审查与 validation。新任务漏填或值非法返回 `ROUTE`，不建立任务；已存在任务续接可省略 route；旧版本留下、记录中没有 route 的历史任务照常续接，也可在接续时补声明一次，声明后不可改（返回 `ROUTE`）。非 operation-only 的 lead-direct、delegated 与历史无 route 任务照常做 spec 检查。route 只决定门禁与检查范围，不是任务复杂度认证：用户明确要求 Worker/Reviewer 时，不能改用 `operation-only` 或 `lead-direct` 消除已要求的分工。
 
 `action=phase` 声明 executing/operation-only/waiting-user/delivering；delivering 加 deliveryId，可同时提交 disposition。普通查看、指定提交 push、明确快进 pull 用 operation-only，默认零 Worker/Reviewer；低风险单点 Lead 实施，是否独立审查按行为与失败代价决定。结构化提问工具由 hook 自动记 waiting-user；普通文本反问和未识别工具先发 phase waiting-user。
 
@@ -157,7 +157,9 @@ node "<入口>" signal task-update ... --id update-3 --paths docs/new.md --paths
 
 Lead 的活动任务结束回合时，Stop 会挡一次（等待用户、本回合已挡过时不挡）：有在途工作包时要求继续阻塞等待结果（`wait_ms: 0`），或向用户说明为什么暂停（在途包全是 `builtin:` 通道时，宿主会通知结果，只要求说明在等什么）；没有在途包而未发 task-end 时给出缺项，按提示补齐后发 task-end，或向用户说明还没完成的部分。计划模式下，仅本回合显式 task-start/phase 才核对计划交付：一次列明分包与各包所用通道，已声明的 `channels`/包通道直接沿用，Lead 直接执行的任务不问 Worker，只有真实新增的角色或通道才请用户确认；历史 `plans` 和普通解释、讨论不因 `mode=plan` 单独挡，也不落到通用门禁阻挡。
 
-用户指定了各角色用哪个智能体时，task-start 加 `"channels": {"worker": "codeg:claude_code", "reviewer": "codeg:codex"}`，每个工作包填 `channel`。与声明不一致，或 delegated 任务的 worker 包由 Lead 实施（`channel: "lead"` 或 `handle: "lead-direct"`），须在同一 packages 信号附 `change` 列出该包，否则回执 `CHANNEL`。换新 packageId 返修时新包带 `"supersedes": "<旧包>"`，已交付或审查要求修订的轮次累计（同一交付轮次只计一次，同一轮迟到的交付引用或 FIX 不重复累计）、旧包自动收尾；从未产出的启动失败重派不增加返修。已有审查结论的 worker 包（含它接替过的旧包），审查缺项不能用 waivers 豁免，也不能改标 waived：重新送审最终交付版本，或用 supersedes 接替、canceled 放弃。`task show` 显示 `channels`。
+用户指定了各角色用哪个智能体时，task-start 加 `"channels": {"worker": "codeg:claude_code", "reviewer": "codeg:codex"}`，每个工作包填 `channel`。与声明不一致，或 delegated 任务的 worker 包由 Lead 实施（`channel: "lead"` 或 `handle: "lead-direct"`），须在同一 packages 信号附 `change` 列出该包，否则回执 `CHANNEL`；不能先声明错误通道，再以实际执行与声明一致为由通过。换新 packageId 返修时新包带 `"supersedes": "<旧包>"`，只能在创建时声明；已交付或审查要求修订的轮次累计（同一交付轮次只计一次，同一轮迟到的交付引用或 FIX 不重复累计）、旧包自动收尾；从未产出的启动失败重派不增加返修。同包返修再次交付后，旧 `reviewedRef` 不再匹配新的 `deliveredRef`，必须重新送审。已有审查结论的 worker 包（含它接替过的旧包），审查缺项不能用 waivers 豁免，也不能改标 waived；已 PASS 的包也不能改 canceled（返回 `PACKAGE`）：重新送审最终交付版本，或用 supersedes 接替。只有从未审查的包可以取消。`task show` 显示 `channels` 与 `diagnostic`。
+
+只读诊断包（不产生项目写入的调查、复现或资料核对）可在**首次创建**时声明免审，避免为简单诊断重复派 Reviewer：同一 packages 信号给新包带 `"diagnostic": {"purpose": "核对 README 与发布说明是否一致", "scope": ["README.md", "docs/usage.md"], "reason": "只读比对，不修改文件"}`，包须为 `dispatched` 的 worker，不能带 `deliveredRef` 或 `supersedes`。实现包、审查包、事后补声明或修改声明、空理由、空/绝对/含 `..` 的范围都返回 `PACKAGE`。交付时在 `note` 写可定位结论与证据，例如 `"note": "结论：一致；证据：README.md 第 1 行、docs/usage.md"`；门禁缺结论会列 `diagnostic:<id>`，不能用 waiver 抵扣。声明只表示事先约定与信任，不证明进程实际未写；历史未声明包仍要求审查。
 
 ### spec 检查
 

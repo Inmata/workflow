@@ -15,9 +15,9 @@
 ## 要点
 
 1. 开始前核对实际工作区、分支和用户未提交改动；已有确认计划直接沿用。
-2. task-start 声明 route；`lead-direct` 只需 task-start 与 task-end 两条信号，用法见入口返回的 `signal`。同一任务需要显式改 goal 或增/减权限范围（如 plan→write、追加/收缩 allowedPaths）时用 `task-update`，不必结束重开：只有本任务有效 Lead 能改，宿主只读/计划权限仍优先，插件只记录声明、不替代用户授权。派发、消费和审查结论按[协作](../references/delegation.md)记账：单个包用 packages 便捷参数（`--package`、`--status`、`--ref`，审查结果加 `--verdict`、`--reviews`），同批多个包或 `change` 用 `--input`。结构化提问由 hook 自动记 waiting-user；文本提问先发 phase waiting-user（见[提问路径](../workflow.md#提问路径)）。
-3. 指定验证方法、通过条件和执行环境，仓库必检项纳入；无需测试时说明理由，空清单不是豁免。按[验证约定](../references/validation.md)复用有效证据，避免先完整重查或全测再交审查。难点尽早验证可行性。是否独立审查按行为及失败代价判断，不按行数或文件数机械触发；关键行为即使只改一行也安排必要审查，已审对象变化时复核相关差异。
-4. task-end 前：项目有 `.spec` 时按 spec 检查处理发现（task-end 自带权威检查，见下节）；按计划实施时回写进度；交付说明写明文档影响。
+2. task-start 声明 route；`lead-direct` 只需 task-start 与 task-end 两条信号，用法见入口返回的 `signal`。route 只决定门禁与检查范围，不是任务复杂度认证：用户明确要求 Worker/Reviewer 时，不能改用 `operation-only` 或 `lead-direct` 消除该分工；用户指定通道后，偏离须先说明并在同一 packages 信号用 `change` 记录。同一任务需要显式改 goal 或增/减权限范围（如 plan→write、追加/收缩 allowedPaths）时用 `task-update`，不必结束重开：只有本任务有效 Lead 能改，宿主只读/计划权限仍优先，插件只记录声明、不替代用户授权。派发、消费和审查结论按[协作](../references/delegation.md)记账：单个包用 packages 便捷参数（`--package`、`--status`、`--ref`，审查结果加 `--verdict`、`--reviews`），同批多个包或 `change` 用 `--input`。结构化提问由 hook 自动记 waiting-user；文本提问先发 phase waiting-user（见[提问路径](../workflow.md#提问路径)）。
+3. 指定验证方法、通过条件和执行环境，仓库必检项纳入；无需测试时说明理由，空清单不是豁免。按[验证约定](../references/validation.md)复用有效证据，避免先完整重查或全测再交审查。难点尽早验证可行性。是否独立审查按行为及失败代价判断，不按行数或文件数机械触发；关键行为即使只改一行也安排必要审查，已审对象变化时复核相关差异。只读诊断包可在首次建包时用 `diagnostic` 声明免审（用途、项目内只读范围、非空理由），交付 `note` 必须写可定位结论；实现包和事后补声明不适用，声明不证明进程实际未写。
+4. task-end 前：项目有 `.spec` 时按 spec 检查处理发现（task-end 自带权威检查，见下节）；按计划实施时回写进度；交付说明写明文档影响。已 PASS 的 worker 包不能改 canceled 退出门禁；同包返修要重新送审最终版本，换新包只能在创建时声明 `supersedes`。`canceled` 只表示放弃该包改动，不证明集成结果不含这些改动。
 5. 任务开始或范围变化时检索相关经验。收到有据候选后按[学习指引](../learning.md)保存短材料，后台分批复盘；不在每轮收尾强制合并或制造经验。当前任务必要的项目事实仍按[知识原则](../workflow.md#知识)更新，不让不同 worktree 争写共享资料。不要把事务成功当正文正确性审查。当前目标已包含文档修订且证据唯一时，可直接修断链、笔误和事实同步并简报；做法冲突、需求取舍和批准验收变化仍交用户。
 6. 及时汇报用户可见变化、必要证据、依赖、未完成项和下一步；复杂阶段按[报告参考](../references/reports.md)展开。对照规则或计划逐条说明“已满足”时，每条标明已验证（附证据）还是推断；没核实的写待核实。结果足够即交回，不为更多确定感找新工作。人工结果按用户实际反馈记录，未反馈仍待验；提交/发布只执行已明确范围。
 

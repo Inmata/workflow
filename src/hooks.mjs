@@ -165,8 +165,9 @@ function isComposedSignal(event) {
 // 启动、解析和落盘余量，预算耗尽时保守放行，不越过宿主上限。
 const LOCK_BUDGET = { lifecycle: 700, normal: 1500 };
 const lockBudget = name => LIFECYCLE_EVENTS.includes(name) ? LOCK_BUDGET.lifecycle : LOCK_BUDGET.normal;
-// task-end/Stop 的 spec 检查在状态锁外预检；整次检查共用一个预算，
-// 保证 Git 慢或卡住时 Hook 仍能在宿主 10 秒回执窗口内返回。
+// task-end/Stop 的 spec 检查在状态锁外预检；4 秒是从预检开始计算的 Git 调用共享截止时间，
+// 不保证整个 Hook 在宿主 10 秒回执窗口内返回：同步快照读取不可中断且同样消耗截止时间，
+// 锁内 ref 复核另按独立预算计时，预检之外的启动、解析与状态写入也占时间。
 const SPEC_CHECK_BUDGET_MS = 4000;
 // 与 protocol.identifier 相同的字面形状；非法 ref 会在信号校验处被拒，不先拿去查 Git。
 const SPEC_REF = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/;
