@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, readFile, readdir, stat, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { capture, feedback, maturityFor, putItem, readEntries, readItems, renderEntry, reviseKnowledge, selectKnowledge } from '../src/learning.mjs';
 import { projectContext } from '../src/context.mjs';
 import { learningConfig, setLearningConfig, setLearningEnabled, projectFor } from '../src/learning-config.mjs';
@@ -128,6 +128,77 @@ test('P11 复用已解析项目时仍随知识内容变化重新解析', async (
   assert.deepEqual((await selectKnowledge(f.directory, f.project, { text: 'beta', paths: [] }, { project })).selected.map(item => item.id), ['K-reuse']);
   assert.equal((await selectKnowledge(f.directory, f.project, { text: 'alpha', paths: [] }, { project })).selected.length, 0);
 });
+test('F04 知识索引缓存按 size 与 mtime 失效：大小变了或只改时间戳都会重新解析', async () => {
+  const f = await fixture();
+  const folder = path.join(f.project, '.workflow', 'knowledge');
+  await mkdir(folder, { recursive: true });
+  const value = {
+    schemaVersion: 1, id: 'K-cache', status: 'active', type: 'method', maturity: 'verified', importance: 'normal',
+    title: '索引缓存边界', summary: 'alpha 检索词', conditions: '通用',
+    evidence: [{ kind: 'success', verified: true, incidentId: 'incident-cache', summary: '合成证据' }],
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const file = path.join(folder, 'K-cache.md');
+  const project = await projectFor(f.directory, f.project);
+  await writeFile(file, renderEntry(value));
+  assert.deepEqual((await selectKnowledge(f.directory, f.project, { text: 'alpha', paths: [] }, { project })).selected.map(item => item.id), ['K-cache']);
+
+  // 等长不同内容 + 时间戳推进：size 不变，只能靠 mtime 失效。
+  const first = await stat(file);
+  const later = new Date('2026-01-01T00:00:01.000Z');
+  await utimes(file, later, later);
+  await writeFile(file, renderEntry({ ...value, summary: 'gamma 检索词' }));
+  await utimes(file, later, later);
+  const second = await stat(file);
+  assert.equal(second.size, first.size);
+  assert.equal(second.mtimeMs, later.getTime());
+  assert.deepEqual((await selectKnowledge(f.directory, f.project, { text: 'gamma', paths: [] }, { project })).selected.map(item => item.id), ['K-cache']);
+  assert.equal((await selectKnowledge(f.directory, f.project, { text: 'alpha', paths: [] }, { project })).selected.length, 0);
+
+  // 大小不同 + 时间戳保持：只能靠 size 失效。
+  await writeFile(file, renderEntry({ ...value, summary: 'delta 检索词，内容更长' }));
+  await utimes(file, later, later);
+  const third = await stat(file);
+  assert.notEqual(third.size, second.size);
+  assert.equal(third.mtimeMs, second.mtimeMs);
+  assert.deepEqual((await selectKnowledge(f.directory, f.project, { text: 'delta', paths: [] }, { project })).selected.map(item => item.id), ['K-cache']);
+  assert.equal((await selectKnowledge(f.directory, f.project, { text: 'gamma', paths: [] }, { project })).selected.length, 0);
+});
+
+test('F04 已接受边界：等长内容且时间戳不变时沿用缓存，召回仍是旧正文', async () => {
+  const f = await fixture();
+  const folder = path.join(f.project, '.workflow', 'knowledge');
+  await mkdir(folder, { recursive: true });
+  const value = {
+    schemaVersion: 1, id: 'K-stale', status: 'active', type: 'method', maturity: 'verified', importance: 'normal',
+    title: '索引缓存边界', summary: 'alpha 检索词', conditions: '通用',
+    evidence: [{ kind: 'success', verified: true, incidentId: 'incident-stale', summary: '合成证据' }],
+    createdAt: '2026-01-01T00:00:00.000Z',
+  };
+  const file = path.join(folder, 'K-stale.md');
+  const fixed = new Date('2026-01-01T00:00:00.000Z');
+  const project = await projectFor(f.directory, f.project);
+  await writeFile(file, renderEntry(value));
+  await utimes(file, fixed, fixed);
+  const before = await stat(file);
+  assert.deepEqual((await selectKnowledge(f.directory, f.project, { text: 'alpha', paths: [] }, { project })).selected.map(item => item.id), ['K-stale']);
+
+  // 等长替换并把时间戳原样设回：签名不变，缓存继续提供旧正文。
+  await writeFile(file, renderEntry({ ...value, summary: 'gamma 检索词' }));
+  await utimes(file, fixed, fixed);
+  const after = await stat(file);
+  assert.equal(after.size, before.size);
+  assert.equal(after.mtimeMs, fixed.getTime());
+  assert.deepEqual((await selectKnowledge(f.directory, f.project, { text: 'alpha', paths: [] }, { project })).selected.map(item => item.id), ['K-stale']);
+  assert.equal((await selectKnowledge(f.directory, f.project, { text: 'gamma', paths: [] }, { project })).selected.length, 0);
+
+  // 只要时间戳一变（内容未变），缓存立刻失效并读到新正文。
+  const touched = new Date(fixed.getTime() + 1000);
+  await utimes(file, touched, touched);
+  assert.deepEqual((await selectKnowledge(f.directory, f.project, { text: 'gamma', paths: [] }, { project })).selected.map(item => item.id), ['K-stale']);
+  assert.equal((await selectKnowledge(f.directory, f.project, { text: 'alpha', paths: [] }, { project })).selected.length, 0);
+});
+
 test('P11 知识目录链为链接时不读取外部条目', async () => {
   const f = await fixture();
   const outside = path.join(f.area, 'outside-knowledge');

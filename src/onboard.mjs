@@ -56,7 +56,7 @@ export async function learningDoctor(directory, project, { root, execute = runPr
 async function installProblems(directory, state) {
   const problems = [];
   const records = HOSTS.map(agent => [agent, installRecord(state, agent)]).filter(([, record]) => record?.status === 'installed');
-  const reinstall = agent => `node "${slash(path.join(PRODUCT_ROOT, 'bin', 'workflow.mjs'))}" install --agent ${agent}`;
+  const reinstall = agent => command(['install', '--agent', agent], { stateDir: directory, cli: path.join(PRODUCT_ROOT, 'bin', 'workflow.mjs') });
   if (!records.length) problems.push({ code: 'NOT_INSTALLED', message: '没有任何宿主安装本插件，接入后 hook 不会触发。在插件仓库目录执行安装（按实际使用的宿主选一条或两条）。', commands: HOSTS.map(reinstall) });
   for (const [agent, record] of records) {
     const integrity = await releaseIntegrity(directory, record);
@@ -109,12 +109,18 @@ async function currentLearning(directory, projectId) {
   return registeredLearning(project);
 }
 // 一步接入：核心检查全部通过才写入；可选学习预检单独报告，未请求启用时只提示，不阻断核心接入。
+// 核心检查未通过时不读取也不执行个人/项目配置指定的执行器，避免用未获批的配置先跑进程。
 export async function onboardProject(directory, root, options = {}) {
   root = await canonical(root);
   const state = await readState(directory);
   const install = options.allowUninstalled ? [] : await installProblems(directory, state);
   const binding = await bindingProblems(directory, state, root);
+  const problems = [...install, ...binding.problems];
   const learningRequested = Boolean(options.enableLearning) && !options.skipLearning;
+  if (problems.length) {
+    const learning = options.skipLearning ? learningResult(null) : { status: 'not-run', requested: learningRequested, enabled: false, reason: 'core-blocked' };
+    return { status: 'blocked', root, written: false, problems, learning, warnings: [] };
+  }
   const learning = options.skipLearning ? null : await learningDoctor(directory, { projectId: binding.previous?.projectId, knowledgeRoot: root }, { root, execute: options.execute });
   const learningReady = Boolean(learning && learning.status === 'capabilities-verified');
   const learningCommands = [
@@ -122,8 +128,6 @@ export async function onboardProject(directory, root, options = {}) {
     command(['project', 'onboard', '--root', root, '--enable-learning'], { stateDir: directory }),
   ];
   const report = extra => learningResult(learning, { requested: learningRequested, ...extra });
-  const problems = [...install, ...binding.problems];
-  if (problems.length) return { status: 'blocked', root, written: false, problems, learning: report({ enabled: false }), warnings: learning?.warnings || [] };
   const enabled = await enableProject(directory, root, { coexistenceMode: options.coexistenceMode });
   const scanned = await scanAlignment(directory, root);
   if (options.skipLearning) await setLearningEnabled(directory, root, false);

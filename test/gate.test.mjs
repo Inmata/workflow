@@ -2,12 +2,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import child from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { emptyState, readState } from '../src/store.mjs';
-import { acceptSignal, openTurn, taskKey } from '../src/protocol.mjs';
+import { emptyState, mutate, readState } from '../src/store.mjs';
+import { acceptSignal, gateReport, openTurn, stop, taskKey } from '../src/protocol.mjs';
 import { codexQuestionFeature, doctor } from '../src/install.mjs';
 import { attachWorktree } from '../src/projects.mjs';
-import { cli, emit, event, fixture, git, gitFixture, start, temporary } from './helpers.mjs';
+import { checkSpecs, precheckSpecs, verifySpecBinding } from '../src/spec.mjs';
+import { cli, emit, event, fixture, git, gitFixture, identity, start, temporary } from './helpers.mjs';
 
 const delegated = (f, extra = {}) => emit(f, { action: 'task-start', goal: '分工任务', route: 'delegated', permissions: { mode: 'write', allowedPaths: ['README.md'] }, ...extra });
 const packages = (f, items, extra = {}) => emit(f, { action: 'packages', packages: items, ...extra });
@@ -39,8 +42,8 @@ test('报告内存实验（synthetic）：父任务有活动子任务时 task-en
   const child = openTurn(state, project, 'child', 't1');
   const base = s => ({ schemaVersion: 1, projectId: 'p1', sessionId: s.sessionId, turnId: 't1', ticket: s.ticket, interruptEpoch: 0 });
   const permissions = { mode: 'write', allowedPaths: [] };
-  acceptSignal(state, { ...base(lead), expectedRevision: lead.revision, taskId: 'parent', signalId: 's1', action: 'task-start', goal: '父', permissions });
-  acceptSignal(state, { ...base(child), expectedRevision: child.revision, taskId: 'sub', signalId: 's2', action: 'task-start', goal: '子', parentTaskId: 'parent', permissions });
+  acceptSignal(state, { ...base(lead), expectedRevision: lead.revision, taskId: 'parent', signalId: 's1', action: 'task-start', goal: '父', route: 'lead-direct', permissions });
+  acceptSignal(state, { ...base(child), expectedRevision: child.revision, taskId: 'sub', signalId: 's2', action: 'task-start', goal: '子', parentTaskId: 'parent', route: 'lead-direct', permissions });
   assert.throws(() => acceptSignal(state, { ...base(lead), expectedRevision: lead.revision, taskId: 'parent', signalId: 's3', action: 'task-end' }), error => error.code === 'GATE' && error.missing.includes('child:sub'));
   assert.equal(state.tasks[taskKey('p1', 'parent')].lifecycle, 'active');
 });
@@ -82,16 +85,55 @@ test('delegated 记录齐全时接受，验证绑定最终版本', async () => {
   assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
 });
 
-test('lead-direct、operation-only 与无 route 旧任务照常结束；未声明 route 带 warning', async () => {
-  for (const route of ['lead-direct', 'operation-only', undefined]) {
+test('新任务必须显式合法 route；三种合法分流照常建立，漏填或非法值在 task-start 拒绝且不留任务', async () => {
+  for (const route of ['lead-direct', 'operation-only', 'delegated']) {
     const f = await fixture();
-    await emit(f, { action: 'task-start', goal: '轻量路径', permissions: { mode: 'write', allowedPaths: [] }, ...(route ? { route } : {}) });
-    const ended = await emit(f, { action: 'task-end' });
-    assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
-    assert.equal(ended.result.warning, route ? undefined : 'route-missing');
+    const started = await emit(f, { action: 'task-start', goal: '轻量路径', route, permissions: { mode: 'write', allowedPaths: [] } });
+    assert.equal(started.result.accepted, true, `${route}: ${JSON.stringify(started.result)}`);
+    assert.equal((await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)].route, route);
   }
+  for (const route of [undefined, null, '', 'auto']) {
+    const f = await fixture();
+    const started = await emit(f, { action: 'task-start', goal: '轻量路径', permissions: { mode: 'write', allowedPaths: [] }, ...(route === undefined ? {} : { route }) });
+    assert.equal(started.result.accepted, false, String(route));
+    assert.equal(started.result.reason, 'ROUTE', `${String(route)}: ${started.result.message}`);
+    assert.equal((await readState(f.directory)).tasks[taskKey(f.projectId, f.taskId)], undefined);
+  }
+});
+
+test('历史任务（无 route 记录）可识别续接；接续可补声明，声明前结束只给 route-missing', async () => {
   const f = await fixture();
-  assert.equal((await emit(f, { action: 'task-start', goal: 'x', route: 'auto', permissions: { mode: 'write', allowedPaths: [] } })).result.reason, 'ROUTE');
+  await emit(f, { action: 'task-start', goal: '历史任务', route: 'operation-only', permissions: { mode: 'write', allowedPaths: [] } });
+  const key = taskKey(f.projectId, f.taskId);
+  // 模拟旧版本写出的任务记录：字段不存在，而不是新任务漏填。
+  await mutate(f.directory, async state => { delete state.tasks[key].route; });
+  const continued = await emit(f, { action: 'task-start' });
+  assert.equal(continued.result.accepted, true, JSON.stringify(continued.result));
+  assert.equal(continued.result.kept.goal, '历史任务');
+  const ended = await emit(f, { action: 'task-end' });
+  assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
+  assert.equal(ended.result.warning, 'route-missing');
+
+  // 另一个历史任务可在接续时补声明一次；声明后同历史版本一样不可更改。
+  const g = await fixture();
+  await emit(g, { action: 'task-start', goal: '历史补声明', route: 'operation-only', permissions: { mode: 'write', allowedPaths: [] } });
+  const gKey = taskKey(g.projectId, g.taskId);
+  await mutate(g.directory, async state => { delete state.tasks[gKey].route; });
+  assert.equal((await emit(g, { action: 'task-start', route: 'lead-direct' })).result.accepted, true);
+  assert.equal((await readState(g.directory)).tasks[gKey].route, 'lead-direct');
+  assert.equal((await emit(g, { action: 'task-start', route: 'operation-only' })).result.reason, 'ROUTE');
+
+  // 历史任务补声明 delegated 后，结束按 delegated 门禁核对。
+  const h = await fixture();
+  await emit(h, { action: 'task-start', goal: '历史分工', route: 'operation-only', permissions: { mode: 'write', allowedPaths: [] } });
+  const hKey = taskKey(h.projectId, h.taskId);
+  await mutate(h.directory, async state => { delete state.tasks[hKey].route; });
+  const declared = await emit(h, { action: 'task-start', route: 'delegated' });
+  assert.equal(declared.result.accepted, true, JSON.stringify(declared.result));
+  assert.equal((await readState(h.directory)).tasks[hKey].route, 'delegated');
+  const blocked = await emit(h, { action: 'task-end' });
+  assert.equal(blocked.result.accepted, false);
+  assert.deepEqual(blocked.result.missing, ['validation']);
 });
 
 test('packages 批量 upsert 幂等，返修自增 attempts 并在超过两轮时提示', async () => {
@@ -562,7 +604,7 @@ test('计划会话的对齐提示只起草不写入', async () => {
 
 test('Codex Plan 协作模式报 permission_mode=default 时，按任务声明的 plan 权限提示', async () => {
   const f = await fixture();
-  assert.equal((await emit(f, { action: 'task-start', goal: '计划', permissions: { mode: 'plan', allowedPaths: [] } })).result.accepted, true);
+  assert.equal((await emit(f, { action: 'task-start', goal: '计划', route: 'lead-direct', permissions: { mode: 'plan', allowedPaths: [] } })).result.accepted, true);
   const output = await event(f, 'SessionStart', { source: 'compact', permission_mode: 'default' });
   assert.ok(output.hookSpecificOutput.additionalContext.includes('当前为计划模式'));
 });
@@ -630,10 +672,17 @@ test('会话结束挂起的分工任务，新会话入口仍附账本并标出 s
   assert.doesNotMatch(context.instruction, /在途/);
 });
 
-test('spec 漂移进入门禁：lead-direct 与无 route 都检查，operation-only 不检查；被拒时状态整体回滚', async () => {
-  for (const route of ['lead-direct', undefined, 'operation-only']) {
+test('spec 漂移进入门禁：lead-direct 与历史无 route 都检查，operation-only 不检查；被拒时状态整体回滚', async () => {
+  for (const route of ['lead-direct', 'legacy', 'operation-only']) {
     const f = await specProject();
-    await emit(f, { action: 'task-start', goal: '改搜索', permissions: { mode: 'write', allowedPaths: [] }, ...(route ? { route } : {}) });
+    if (route === 'legacy') {
+      await emit(f, { action: 'task-start', goal: '改搜索', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+      const key = taskKey(f.projectId, f.taskId);
+      // 旧版本留下的无 route 任务：续接后仍按非 operation-only 检查 spec。
+      await mutate(f.directory, async state => { delete state.tasks[key].route; });
+    } else {
+      await emit(f, { action: 'task-start', goal: '改搜索', route, permissions: { mode: 'write', allowedPaths: [] } });
+    }
     await driftCommit(f);
     const ended = await emit(f, { action: 'task-end', validation: { ref: 'HEAD', evidence: ['npm test'] } });
     if (route === 'operation-only') { assert.equal(ended.result.accepted, true, JSON.stringify(ended.result)); continue; }
@@ -690,6 +739,17 @@ test('计划基线使用当前 worktree：计划只在附加 worktree 时仍提�
   assert.equal(ended.result.accepted, true, JSON.stringify(ended.result));
   assert.deepEqual(ended.result.planUnchanged, ['docs/plan.md']);
 });
+test('F05 Stop 按当前 worktree 的 HEAD 检查 spec：附加 worktree 漂移会挡，主树干净也不漏', async () => {
+  const f = await specProject();
+  const w = await worktreeOf(f, 'wt-stop-drift');
+  await emit(w, { action: 'task-start', goal: '改搜索', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  await writeFile(path.join(w.project, 'src', 'search.mjs'), 'export const v = 4;\n');
+  git(w.project, ['commit', '-q', '-am', 'change in worktree']);
+  assert.equal(git(f.project, ['status', '--porcelain']), '');
+  const blocked = await event(w, 'Stop');
+  assert.equal(blocked.decision, 'block', JSON.stringify(blocked));
+  assert.match(blocked.reason, /spec:search/);
+});
 
 test('spec 缺项不能豁免（类别和完整条目都返回 WAIVER），Spec-OK 空提交放行后结束', async () => {
   const f = await specProject();
@@ -742,6 +802,224 @@ test('非 Git 且无 .spec 的接入项目：带 finalRef 收尾不新增 spec-c
   const blocked = await emit(g, { action: 'task-end', finalRef: 'v1' });
   assert.deepEqual(blocked.result.missing, ['spec-check:git']);
 });
+
+// F05：锁外预检的结果只能在 root/ref/任务都匹配时复用；不匹配按 stale 处理，绝不当成“通过”。
+async function driftedTask() {
+  const f = await specProject();
+  await emit(f, { action: 'task-start', goal: '改搜索', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  await driftCommit(f);
+  const state = await readState(f.directory);
+  const session = Object.values(state.sessions).find(item => item.projectId === f.projectId && item.sessionId === f.sessionId);
+  return { f, state, session, task: state.tasks[taskKey(f.projectId, f.taskId)] };
+}
+test('F05 锁外 spec 预检按 root/ref/任务绑定：不匹配或伪造 payload 都不当作通过', async () => {
+  const { f, state, session, task } = await driftedTask();
+  const root = f.project;
+  const matching = { root, ref: null, projectId: f.projectId, taskId: task.taskId, report: checkSpecs(root, { skipNonGitNoSpec: true }) };
+  // 命中绑定的预检报告照常列出真实漂移。
+  assert.deepEqual(gateReport(state, task, undefined, root, matching).missing, ['spec:search']);
+  // root、ref、任务、项目或不带报告的“跳过”标记都不匹配时，不能用旧报告或一份通过报告放行。
+  const passing = { ok: true, ref: 'HEAD', findings: [] };
+  const mismatched = [
+    { ...matching, root: path.join(f.area, 'other-root'), report: passing },
+    { ...matching, ref: 'other-ref', report: passing },
+    { ...matching, taskId: 'other-task', report: passing },
+    { ...matching, taskId: undefined, report: passing },
+    { ...matching, projectId: 'other-project', report: passing },
+    { ...matching, projectId: undefined, report: passing },
+    { skipped: true },
+  ];
+  for (const spec of mismatched) assert.deepEqual(gateReport(state, task, undefined, root, spec).missing, ['spec-check:stale'], JSON.stringify(spec));
+  // payload 夹带 spec/specReport 不参与门禁；直接调用未传预检结果时走调用内的同步检查。
+  const payload = {
+    schemaVersion: 1, projectId: f.projectId, sessionId: f.sessionId, turnId: session.turnId, taskId: task.taskId,
+    ticket: session.ticket, interruptEpoch: session.interruptEpoch, expectedRevision: session.revision,
+    signalId: 'signal-forged-spec', action: 'task-end', spec: passing, specReport: passing,
+  };
+  assert.throws(() => acceptSignal(state, payload, { root }), error => error.code === 'GATE' && error.missing.includes('spec:search'));
+});
+test('F05 Stop 预检按会话快照绑定：回合、票据或修订变化后不复用旧 spec 结果', async () => {
+  const { f, state, session, task } = await driftedTask();
+  const project = state.projects[f.projectId];
+  const root = f.project;
+  const scope = { projectId: f.projectId, sessionId: f.sessionId, turnId: session.turnId, ticket: session.ticket, taskId: task.taskId, revision: session.revision };
+  const spec = { root, ref: null, projectId: f.projectId, taskId: task.taskId, report: checkSpecs(root, { skipNonGitNoSpec: true }), scope };
+  const matched = stop(state, project, { ...session }, {}, { root, spec });
+  assert.equal(matched.decision, 'block');
+  assert.match(matched.reason, /spec:search/);
+  // 预检后会话回合/票据/修订或 worktree 变化：旧快照不再代表当前 Stop，不能把旧发现当成当前结果。
+  const changedSessions = [{ revision: session.revision + 1 }, { turnId: 'turn-other' }, { ticket: 'ticket-other' }];
+  for (const change of changedSessions) {
+    const stale = stop(state, project, { ...session, ...change, stopBlockedTurn: undefined }, {}, { root, spec });
+    assert.equal(stale.decision, 'block', JSON.stringify(change));
+    assert.doesNotMatch(stale.reason, /spec:search/, JSON.stringify(change));
+    assert.match(stale.reason, /仍为 active/);
+  }
+  const otherRoot = stop(state, project, { ...session, stopBlockedTurn: undefined }, {}, { root: path.join(f.area, 'other-root'), spec });
+  assert.equal(otherRoot.decision, 'block');
+  assert.doesNotMatch(otherRoot.reason, /spec:search/);
+});
+
+// 预检记录：报告与 binding 一起从锁外生成，scope 绑定当前会话/任务快照。
+async function precheckRecord(f, { ref } = {}) {
+  const state = await readState(f.directory);
+  const session = Object.values(state.sessions).find(item => item.projectId === f.projectId && item.sessionId === f.sessionId);
+  const task = state.tasks[taskKey(f.projectId, f.taskId)];
+  const precheck = precheckSpecs(f.project, { ref, skipNonGitNoSpec: true });
+  const scope = { projectId: f.projectId, sessionId: f.sessionId, turnId: session.turnId, ticket: session.ticket, taskId: task.taskId, revision: session.revision };
+  return { state, session, task, spec: { root: f.project, ref: ref ?? null, projectId: f.projectId, taskId: task.taskId, report: precheck.report, binding: precheck.binding, scope } };
+}
+const gateRejects = (state, payload, spec, missing) => {
+  try {
+    acceptSignal(structuredClone(state), payload, { root: spec.root, spec });
+  } catch (error) {
+    assert.equal(error.code, 'GATE', error.message);
+    assert.deepEqual(error.missing, missing, error.message);
+    return;
+  }
+  assert.fail('应拒绝过期预检');
+};
+
+test('F05 预检绑定实际提交与 HEAD 工作区：干净后改受管代码不再放行，过期不可豁免', async () => {
+  const f = await specProject();
+  await emit(f, { action: 'task-start', goal: '改搜索', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  const { state, session, spec } = await precheckRecord(f);
+  assert.equal(spec.report.ok, true);
+  assert.ok(spec.binding, '干净报告必须带检查对象绑定');
+  // 干净预检后才改动受管代码：当前工作区会得到 uncommitted-drift，旧报告不能复用。
+  await writeFile(path.join(f.project, 'src', 'search.mjs'), 'export const v = 99;\n');
+  const payload = { ...await identity(f), taskId: f.taskId, signalId: 'end-stale-clean', action: 'task-end' };
+  gateRejects(state, payload, spec, ['spec-check:stale']);
+  // 类别豁免和历史条目都不能抵扣过期；显式写占用条目直接返回 WAIVER。
+  gateRejects(state, { ...payload, signalId: 'end-waived-stale', waivers: [{ step: 'spec-check', reason: '先放行' }] }, spec, ['spec-check:stale']);
+  assert.throws(() => acceptSignal(structuredClone(state), { ...payload, signalId: 'end-waiver-entry', waivers: [{ step: 'spec-check:stale', reason: '过期' }] }, { root: f.project, spec }), error => error.code === 'WAIVER');
+  // Stop 不能因为过滤 spec-check 就报“已无缺项”，要明确无法确认。
+  const project = state.projects[f.projectId];
+  const stopped = stop(structuredClone(state), project, { ...session }, {}, { root: f.project, spec });
+  assert.equal(stopped.decision, 'block');
+  assert.match(stopped.reason, /spec 检查无法确认/);
+  assert.match(stopped.reason, /spec-check:stale/);
+  assert.doesNotMatch(stopped.reason, /门禁已无缺项/);
+  // 会话快照变化同样降级为过期，而不是复用旧报告。
+  const changed = stop(structuredClone(state), project, { ...session, revision: session.revision + 1 }, {}, { root: f.project, spec });
+  assert.match(changed.reason, /spec 检查无法确认/);
+  // 按当前工作区重新预检：真实漂移仍然照常列出（不是 stale），恢复后再预检才放行。
+  const dirty = await precheckRecord(f);
+  assert.deepEqual(dirty.spec.report.findings.map(item => item.kind), ['uncommitted-drift']);
+  gateRejects(dirty.state, { ...payload, signalId: 'end-fresh-dirty' }, dirty.spec, ['spec:search']);
+  await writeFile(path.join(f.project, 'src', 'search.mjs'), 'export const v = 1;\n');
+  const fresh = await precheckRecord(f);
+  assert.equal(acceptSignal(structuredClone(fresh.state), { ...payload, signalId: 'end-fresh-clean' }, { root: f.project, spec: fresh.spec }).accepted, true);
+});
+
+test('F05 预检绑定目标提交：HEAD 移动或分支 ref 移动后旧报告作废，固定 OID 仍有效', async () => {
+  const f = await specProject();
+  await emit(f, { action: 'task-start', goal: '改搜索', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  const head = await precheckRecord(f);
+  const branch = await precheckRecord(f, { ref: 'main' });
+  const oid = git(f.project, ['rev-parse', 'HEAD']);
+  const pinned = await precheckRecord(f, { ref: oid });
+  const payload = { ...await identity(f), taskId: f.taskId, signalId: 'end-head-moved', action: 'task-end' };
+  // 空提交也会移动 HEAD：旧报告检查的不是当前提交。
+  git(f.project, ['commit', '-q', '--allow-empty', '-m', 'noop']);
+  gateRejects(head.state, { ...payload, signalId: 'end-head-moved-head' }, head.spec, ['spec-check:stale']);
+  // 分支 ref 指向新提交后，按标签复用同样过期。
+  gateRejects(branch.state, { ...payload, finalRef: 'main', signalId: 'end-head-moved-branch' }, branch.spec, ['spec-check:stale']);
+  // 完整 OID 不可移动，检查对象仍是同一提交，可以复用。
+  const accepted = acceptSignal(structuredClone(pinned.state), { ...payload, finalRef: oid, signalId: 'end-pinned-oid' }, { root: f.project, spec: pinned.spec });
+  assert.equal(accepted.accepted, true, JSON.stringify(accepted));
+});
+
+test('F05 task-end 预检绑定会话与任务快照：回合、票据、任务或修订变化后不复用', async () => {
+  const f = await specProject();
+  await emit(f, { action: 'task-start', goal: '改搜索', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  const { state, session, spec } = await precheckRecord(f);
+  const payload = { ...await identity(f), taskId: f.taskId, signalId: 'end-scope', action: 'task-end' };
+  const changes = [
+    { sessionId: 'session-other' }, { turnId: 'turn-other' }, { ticket: 'ticket-other' },
+    { taskId: 'task-other' }, { revision: session.revision + 1 }, { projectId: 'project-other' },
+  ];
+  for (const scope of changes) {
+    gateRejects(state, { ...payload, signalId: `end-scope-${Object.keys(scope)[0]}` }, { ...spec, scope: { ...spec.scope, ...scope } }, ['spec-check:stale']);
+  }
+  // 没有 scope 的预检（旧调用方）同样不能当作当前结果。
+  gateRejects(state, { ...payload, signalId: 'end-scope-missing' }, { ...spec, scope: undefined }, ['spec-check:stale']);
+  // 快照一致时照常放行。
+  assert.equal(acceptSignal(structuredClone(state), { ...payload, signalId: 'end-scope-fresh' }, { root: f.project, spec }).accepted, true);
+});
+
+test('F05 binding 复核本身：提交、受管文件、spec 清单与索引变化都判过期', async () => {
+  const f = await specProject();
+  const precheck = precheckSpecs(f.project, { skipNonGitNoSpec: true });
+  assert.equal(precheck.report.ok, true);
+  assert.equal(verifySpecBinding(f.project, precheck.binding, null), true);
+  // 受管代码改动。
+  await writeFile(path.join(f.project, 'src', 'search.mjs'), 'export const v = 5;\n');
+  assert.equal(verifySpecBinding(f.project, precheck.binding, null), false);
+  await writeFile(path.join(f.project, 'src', 'search.mjs'), 'export const v = 1;\n');
+  assert.equal(verifySpecBinding(f.project, precheck.binding, null), true);
+  // spec 正文改动（code 清单不变也会影响是否抑制 uncommitted-drift）。
+  await writeFile(path.join(f.project, '.spec', 'search', 'spec.md'), '---\ntitle: 搜索\ncode:\n  - src/search.mjs\n---\n# 搜索 v2\n');
+  assert.equal(verifySpecBinding(f.project, precheck.binding, null), false);
+  await writeFile(path.join(f.project, '.spec', 'search', 'spec.md'), '---\ntitle: 搜索\ncode:\n  - src/search.mjs\n---\n# 搜索\n');
+  assert.equal(verifySpecBinding(f.project, precheck.binding, null), true);
+  // 暂存改动（工作区内容不变）由索引快照发现；索引被改写后即使恢复内容也不再复用旧绑定。
+  await writeFile(path.join(f.project, 'README.md'), '# 项目\n暂存改动\n');
+  git(f.project, ['add', 'README.md']);
+  assert.equal(verifySpecBinding(f.project, precheck.binding, null), false);
+  git(f.project, ['reset', '-q', 'HEAD', 'README.md']);
+  await writeFile(path.join(f.project, 'README.md'), '# 项目\n原始内容\n');
+  assert.equal(verifySpecBinding(f.project, precheck.binding, null), false);
+  // HEAD 移动与可移动 ref：按新状态重新预检后再改动。
+  const fresh = precheckSpecs(f.project, { skipNonGitNoSpec: true });
+  assert.equal(verifySpecBinding(f.project, fresh.binding, null), true);
+  const head = git(f.project, ['rev-parse', 'HEAD']);
+  const byBranch = precheckSpecs(f.project, { ref: 'main', skipNonGitNoSpec: true });
+  assert.equal(verifySpecBinding(f.project, byBranch.binding, 'main'), true);
+  git(f.project, ['commit', '-q', '--allow-empty', '-m', 'noop']);
+  assert.equal(verifySpecBinding(f.project, fresh.binding, null), false);
+  assert.equal(verifySpecBinding(f.project, byBranch.binding, 'main'), false);
+  assert.equal(verifySpecBinding(f.project, byBranch.binding, head), false, '标签复核必须使用同一标签');
+});
+
+// F05 定向反例：status 返回后另一个会话把 spec 暂存回干净，索引随即变化。
+// 报告是拿旧索引的 dirty 结果算出的；不能配上新索引放行，只能按不可豁免的 stale 拒绝。
+test('F05 预检 status 后索引被改写：通过报告不复用，门禁按不可豁免 stale 拒绝', async () => {
+  const f = await specProject();
+  await emit(f, { action: 'task-start', goal: '索引竞态', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: [] } });
+  const specPath = '.spec/search/spec.md';
+  const original = '---\ntitle: 搜索\ncode:\n  - src/search.mjs\n---\n# 搜索\n';
+  await writeFile(path.join(f.project, 'src', 'search.mjs'), 'export const v = 99;\n');
+  await writeFile(path.join(f.project, specPath), `${original}staged edit\n`);
+  git(f.project, ['add', specPath]);
+  await writeFile(path.join(f.project, specPath), original);
+  const real = child.spawnSync;
+  let staged = false;
+  child.spawnSync = (command, args = [], options) => {
+    const result = real(command, args, options);
+    if (!staged && command === 'git' && Array.isArray(args) && args.includes('status')) {
+      staged = true;
+      git(f.project, ['add', specPath]);
+    }
+    return result;
+  };
+  let record;
+  try {
+    syncBuiltinESMExports();
+    record = await precheckRecord(f);
+  } finally {
+    child.spawnSync = real;
+    syncBuiltinESMExports();
+  }
+  assert.equal(staged, true, '竞争样本应在 status 之后改写索引');
+  assert.equal(record.spec.report.ok, true, '旧报告按 status 看到的 dirty 结果放行');
+  assert.equal(verifySpecBinding(f.project, record.spec.binding, null), false, '索引已变，旧报告不能复核通过');
+  const payload = { ...await identity(f), taskId: f.taskId, signalId: 'end-index-race', action: 'task-end' };
+  gateRejects(record.state, payload, record.spec, ['spec-check:stale']);
+  gateRejects(record.state, { ...payload, signalId: 'end-index-race-waived', waivers: [{ step: 'spec-check', reason: '先放行' }] }, record.spec, ['spec-check:stale']);
+  assert.deepEqual(checkSpecs(f.project, { skipNonGitNoSpec: true }).findings.map(item => item.kind), ['uncommitted-drift'], '当前工作区实际是未提交漂移');
+});
+
 
 test('delegated 门禁同时列出 spec 缺项；task show 显示 spec 发现与变更条数', async () => {
   const f = await specProject();
@@ -874,6 +1152,6 @@ test('关联计划软提醒：计划未改时 Stop 与 task-end 回执提醒回�
 
   const h = await fixture();
   for (const plans of [['../outside.md'], ['C:/x.md'], [], 'docs/plan.md']) {
-    assert.equal((await emit(h, { action: 'task-start', goal: 'x', plans, permissions: { mode: 'write', allowedPaths: [] } })).result.reason, 'PLAN');
+    assert.equal((await emit(h, { action: 'task-start', goal: 'x', route: 'lead-direct', plans, permissions: { mode: 'write', allowedPaths: [] } })).result.reason, 'PLAN');
   }
 });

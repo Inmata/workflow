@@ -70,7 +70,7 @@ test('Claude StopFailure 挂起任务，新回合显式恢复后可结束', asyn
 test('PowerShell 直接调用可识别；stderr、普通输出和组合命令不误识别', async () => {
   const f = await fixture({ claude: true });
   const node = process.execPath.replaceAll('\\', '/');
-  const payload = { ...await identity(f), taskId: f.taskId, signalId: 'powershell-start', action: 'task-start', goal: 'PowerShell 链路', permissions: { mode: 'write', allowedPaths: ['README.md'] } };
+  const payload = { ...await identity(f), taskId: f.taskId, signalId: 'powershell-start', action: 'task-start', goal: 'PowerShell 链路', route: 'lead-direct', permissions: { mode: 'write', allowedPaths: ['README.md'] } };
   const encoded = Buffer.from(JSON.stringify(payload)).toString('base64');
   const accepted = await claudeEvent(f, 'PostToolUse', {
     tool_name: 'PowerShell', tool_input: { command: `& "${node}" "${entry}" signal --base64 ${encoded}` },

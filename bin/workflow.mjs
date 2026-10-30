@@ -6,7 +6,7 @@ import { identity, resolveProject } from '../src/projects.mjs';
 import { getContext } from '../src/context.mjs';
 import { handleHook, HOSTS as AGENTS } from '../src/hooks.mjs';
 import { gateReport, taskKey, unchangedPlans } from '../src/protocol.mjs';
-import { cliPath } from '../src/entry.mjs';
+import { cliPath, transportArguments } from '../src/entry.mjs';
 
 const allowed = new Set(['state-dir', 'user-dir', 'root', 'project', 'role', 'session', 'input', 'base64', 'agent', 'owner', 'coexistence-mode', 'transaction', 'pending', 'max-files', 'skip-learning', 'enable-learning', 'help']);
 // 重复给出的证据字段收集为数组；其他参数重复仍视为错误。
@@ -118,7 +118,8 @@ async function specCheckRoot(directory, root) {
   return current?.gitRoot || actual;
 }
 async function main() {
-  const { options, commands } = argumentsFor(process.argv.slice(2));
+  // 只还原 command() 生成命令携带的传输参数；直接输入的 workflow-arg64: 文本保持原样。
+  const { options, commands } = argumentsFor(transportArguments(process.argv.slice(2)));
   const [command, action, subaction] = commands;
   if (options.help || !command) return help;
   const positional = (command === 'project' && action === 'align') || (command === 'learning' && ['config', 'schedule'].includes(action)) ? 3 : ['project', 'knowledge', 'pending', 'learning', 'task', 'spec', 'signal'].includes(command) ? 2 : 1;

@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { link, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import fs, { link, lstat, mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { alignmentStatus, applyAlignment, classify, decideAlignment, scanAlignment, suggestAlignment } from '../src/alignment.mjs';
 import { getContext } from '../src/context.mjs';
+import { recoverTransaction } from '../src/knowledge.mjs';
 import { readState, digest } from '../src/store.mjs';
 import { cli, event, fixture, identity, start } from './helpers.mjs';
 
@@ -397,6 +399,89 @@ test('新增来源超过检查上限时不登记并保留 stale', async () => {
   assert.equal(status.incomplete, false);
   assert.equal(status.stale, true);
   assert.ok(status.directoryChanged.includes('docs'), JSON.stringify(status));
+});
+
+test('F06 未应用的对齐事务在下一入口可见，并能按恢复命令辨认', async t => {
+  const f = await fixture();
+  await documents(f.project, { 'docs/PRODUCT.md': '# 产品\n' });
+  await scanAlignment(f.directory, f.project);
+  await start(f, { mode: 'write', allowedPaths: ['docs/WORKFLOW-ALIGNMENT.md'] });
+  // 快照目录名被文件占用：事务先持久化为 prepared，但准备文件写不进去，最终 pending。
+  await writeFile(path.join(f.directory, 'transactions'), '故意占用目录名称');
+  const first = await applyAlignment(f.directory, f.project, { ...await identity(f), baseline: null, content: '# 项目对齐\n' });
+  assert.equal(first.status, 'pending');
+  const txId = first.transactionId;
+  assert.equal((await readState(f.directory)).transactions[txId].status, 'pending');
+  // 下一回合入口必须能看到该事务与可执行的恢复步骤，而不是只在上一轮聊天里出现。
+  f.turnId = 'turn-2';
+  const output = await event(f, 'UserPromptSubmit');
+  const injected = JSON.parse(output.hookSpecificOutput.additionalContext.slice('workflow 入口：'.length));
+  assert.equal(injected.pending.length, 1, JSON.stringify(injected.pending));
+  assert.equal(injected.pending[0].transactionId, txId);
+  assert.match(injected.pending[0].reason, /knowledge recover --transaction/);
+  // 移除占用后先辨认事务（不自动写正文），重写成功后待办关闭。
+  await rename(path.join(f.directory, 'transactions'), path.join(f.area, 'transactions-blocked'));
+  const recovered = await recoverTransaction(f.directory, txId, f.project);
+  assert.equal(recovered.status, 'pending');
+  assert.equal(recovered.automaticWrites, 0);
+  const second = await applyAlignment(f.directory, f.project, { ...await identity(f), baseline: null, content: '# 项目对齐\n' });
+  assert.equal(second.status, 'applied');
+  assert.equal((await getContext(f.directory, f.project, 'lead', f.sessionId)).pending.length, 0);
+  t.diagnostic(`未应用事务 ${txId} 返回 status=pending；下一回合 pending=${injected.pending.length}，reason 含 knowledge recover；重写后待办关闭`);
+});
+
+test('F07 目录读取失败给出诊断，不冒充没有变化', async t => {
+  const f = await fixture();
+  await documents(f.project, { 'docs/a.md': '原始\n', 'docs/WORKFLOW-ALIGNMENT.md': '# 对齐\n' });
+  await scanAlignment(f.directory, f.project);
+  // 只新增目录内容，所有已索引文件不变：读取失败不能被当成“没有新资料”。
+  await writeFile(path.join(f.project, 'docs', 'new.md'), '新增资料\n');
+  const docs = path.resolve(f.project, 'docs');
+  const original = fs.readdir;
+  const injected = t.mock.method(fs, 'readdir', async (target, options) => {
+    if (path.resolve(target) === docs) throw Object.assign(new Error('拒绝访问'), { code: 'EACCES' });
+    return original(target, options);
+  });
+  syncBuiltinESMExports();
+  try {
+    const status = await alignmentStatus(f.directory, f.project);
+    assert.equal(status.stale, true, JSON.stringify(status));
+    assert.equal(status.incomplete, true, JSON.stringify(status));
+    assert.ok(status.errors?.some(item => item.path === 'docs' && item.code === 'EACCES'), JSON.stringify(status));
+    const context = await getContext(f.directory, f.project, 'lead', f.sessionId);
+    assert.ok(context.alignment.errors.some(item => item.path === 'docs' && item.code === 'EACCES'), JSON.stringify(context.alignment));
+    assert.match(context.instruction, /读取失败/);
+    t.diagnostic(`readdir(docs)=EACCES：stale=${status.stale}, incomplete=${status.incomplete}, errors=${JSON.stringify(status.errors)}`);
+  } finally {
+    injected.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
+
+test('F07 文件读取失败不冒充已删除，可读变化仍照常报告', async t => {
+  const f = await fixture();
+  await documents(f.project, { 'docs/a.md': '原始\n' });
+  await scanAlignment(f.directory, f.project);
+  await writeFile(path.join(f.project, 'README.md'), '# 项目\n已变更\n');
+  await writeFile(path.join(f.project, 'docs', 'a.md'), '内容变长，大小不同\n');
+  const readme = path.resolve(f.project, 'README.md');
+  const original = fs.lstat;
+  const injected = t.mock.method(fs, 'lstat', async target => {
+    if (path.resolve(target) === readme) throw Object.assign(new Error('拒绝访问'), { code: 'EACCES' });
+    return original(target);
+  });
+  syncBuiltinESMExports();
+  try {
+    const status = await alignmentStatus(f.directory, f.project);
+    assert.equal(status.stale, true, JSON.stringify(status));
+    assert.ok(!status.missing.some(item => item.path === 'README.md'), JSON.stringify(status));
+    assert.ok(status.errors?.some(item => item.path === 'README.md' && item.code === 'EACCES'), JSON.stringify(status));
+    assert.ok(status.changed.some(item => item.path === 'docs/a.md' && item.reason === 'size'), JSON.stringify(status));
+    t.diagnostic(`lstat(README.md)=EACCES：missing=${JSON.stringify(status.missing)}, errors=${JSON.stringify(status.errors)}, changed=${JSON.stringify(status.changed)}`);
+  } finally {
+    injected.mock.restore();
+    syncBuiltinESMExports();
+  }
 });
 
 async function snapshot(project, relative) {

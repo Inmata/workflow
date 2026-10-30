@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { readFileSync } from 'node:fs';
-import { deferredLifecycleEvents, digest, fail, id, lifecycleEvents, lifecycleScope, readDeferredLifecycleNote, SCHEMA_VERSION, WorkflowError } from './store.mjs';
-import { checkSpecs, describeFindings } from './spec.mjs';
+import { deferredLifecycleEvents, digest, fail, id, lifecycleEvents, lifecycleScope, readDeferredLifecycleNote, samePath, SCHEMA_VERSION, WorkflowError } from './store.mjs';
+import { checkSpecs, describeFindings, verifySpecBinding } from './spec.mjs';
 
 export const PHASES = ['unknown', 'operation-only', 'executing', 'waiting-user', 'delivering'];
 export const ROUTES = ['operation-only', 'lead-direct', 'delegated'];
@@ -123,7 +123,9 @@ function waiverInput(value) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) fail('WAIVER', '豁免需为 {step, reason}');
     const step = textField(item.step, 'waiver.step');
     // spec 漂移只能更新 spec 或做 Spec-OK 空提交消除，让“不用改 spec”的判断留在 git 历史里；spec-check（没法检查）可豁免。
+    // 预检过期不是“检查不了”而是“没有按当前对象检查”，只能重试，不能豁免。
     if (step === 'spec' || step.startsWith('spec:')) fail('WAIVER', 'spec 漂移不能豁免：更新 spec，或在内容提交附 Spec-OK 写明理由；需要追认既有历史时才用空提交');
+    if (step === 'spec-check:stale') fail('WAIVER', 'spec 预检已过期，不能豁免：重试 task-end 或 Stop，让当前提交与工作区重新检查');
     return { step, reason: textField(item.reason, 'waiver.reason') };
   });
 }
@@ -336,28 +338,56 @@ export function unchangedPlans(state, task, root) {
 }
 const planReminder = paths => `关联计划 ${paths.join('、')} 自任务开始后没有改动：按 Lead 指引回写本任务完成的条目、偏离和剩余事项；确实不需要回写时在交付说明里写明理由。计划已全部完成时提议归档。`;
 // 门禁只核对 Lead 声明记录的一致性；插件看不到 Worker 真实产出，不证明审查或测试真实发生。
-export function gateMissing(state, task, finalRef, root) {
-  return gateReport(state, task, finalRef, root).missing;
+export function gateMissing(state, task, finalRef, root, spec) {
+  return gateReport(state, task, finalRef, root, spec).missing;
 }
 // spec 检查对 lead-direct、delegated 和未声明 route 的旧任务都生效；项目没有 .spec 时跳过。
 // root 是 resolveProject 给出的当前 worktree，而不是 project.root，避免附加 worktree 的 drift 被主树漏掉。
-function specMissing(state, task, finalRef, root) {
+// spec 是生产 Hook 在状态锁外预检的内部结果 {root, ref, projectId, taskId, report, binding, scope?}：
+// - 省略（undefined）：直接调用协议函数的路径，保持在此调用内同步检查；
+// - 提供但 root/ref/任务/项目不匹配，或只有 skipped 标记：按 spec-check:stale 处理，绝不复用旧结果；
+// - 匹配且报告可能放行（ok:true）：binding 必须复核通过——目标提交 OID 与 HEAD 工作区仍是预检时的对象；
+//   没有 binding、ref 已移动、受管文件或索引已变化都按过期处理。已带发现的报告本来就会挡下门禁，保守复用。
+// - 匹配：使用该报告，不再发起 Git 调用。
+const staleSpec = { missing: ['spec-check:stale'], findings: [] };
+function selectSpec(spec, root, ref, task) {
+  if (spec === undefined) return null;
+  const matches = spec?.report && root && spec.root && samePath(spec.root, root)
+    && (spec.ref ?? null) === (ref ?? null)
+    && spec.projectId === task.projectId
+    && spec.taskId === task.taskId;
+  if (!matches) return undefined;
+  if (spec.report.ok === true && !verifySpecBinding(root, spec.binding, ref ?? null)) return undefined;
+  return spec.report;
+}
+// task-end 的锁外预检还绑定会话/任务快照：回合、票据、任务或修订变化后不得复用。
+// 省略 spec（直接调用协议函数）仍走调用内同步检查。
+function freshPrecheck(spec, project, session) {
+  if (spec === undefined) return true;
+  const scope = spec?.scope;
+  return !!scope && scope.projectId === project.projectId && scope.sessionId === session.sessionId
+    && scope.turnId === session.turnId && scope.ticket === session.ticket
+    && scope.taskId === session.taskId && scope.revision === session.revision;
+}
+function specMissing(state, task, finalRef, root, spec) {
   root ||= state.projects[task.projectId]?.root;
   if (task.route === 'operation-only' || !root) return { missing: [], findings: [] };
   // 门禁是日常收尾路径：非 Git 且没有 .spec 的接入项目没有版本可查，维持原有“无 spec”跳过；
   // 显式 finalRef 在 Git 内无效、或非 Git 但存在 .spec 时仍报 spec-check:git。
-  const report = checkSpecs(root, { ref: finalRef || undefined, skipNonGitNoSpec: true });
+  const selected = selectSpec(spec, root, finalRef, task);
+  if (selected === undefined) return staleSpec;
+  const report = selected ?? checkSpecs(root, { ref: finalRef || undefined, skipNonGitNoSpec: true });
   const missing = [...new Set(report.findings.map(f => `spec:${f.id}`))];
   if (report.error) missing.push(`spec-check:${report.error}`);
   return { missing, findings: report.findings };
 }
-export function gateReport(state, task, finalRef, root) {
+export function gateReport(state, task, finalRef, root, spec) {
   const missing = [];
   for (const child of Object.values(state.tasks)) {
     if (child.projectId === task.projectId && child.parentTaskId === task.taskId && child.lifecycle === 'active') missing.push(`child:${child.taskId}`);
   }
-  const spec = specMissing(state, task, finalRef, root);
-  if (task.route !== 'delegated') return { missing: [...missing, ...spec.missing], findings: spec.findings };
+  const specResult = specMissing(state, task, finalRef, root, spec);
+  if (task.route !== 'delegated') return { missing: [...missing, ...specResult.missing], findings: specResult.findings };
   const packages = Object.values(task.packages || {});
   for (const item of packages) if (!TERMINAL_PACKAGE.includes(item.status)) missing.push(`terminal:${item.packageId}`);
   for (const worker of packages.filter(item => item.role === 'worker' && !['canceled', 'waived'].includes(item.status) && !item.supersededBy)) {
@@ -366,12 +396,14 @@ export function gateReport(state, task, finalRef, root) {
   }
   // 验证证据必须绑定集成后的最终版本；finalRef 缺省时以 validation.ref 为准。
   if (!task.validation || (finalRef && task.validation.ref !== finalRef)) missing.push('validation');
-  return { missing: [...missing, ...spec.missing], findings: spec.findings };
+  return { missing: [...missing, ...specResult.missing], findings: specResult.findings };
 }
 // 豁免可写完整条目（review:pkg-1）或整类步骤（review）；spec 漂移任何豁免都不抵扣。
 // 审过的 worker 包，审查缺项（未 PASS 或审的不是最终交付版本）也不抵扣：只能补审或用 supersedes 接替。
+// 预检过期（spec-check:stale）不属于“检查不了”，只能重试；类别 spec-check 的旧豁免也不能抵扣它。
 const reviewed = (task, entry) => entry.startsWith('review:') && wasReviewed(task, task.packages?.[entry.slice('review:'.length)]);
-const waived = (task, entry, waivers) => !(entry === 'spec' || entry.startsWith('spec:')) && !reviewed(task, entry) && waivers.some(w => w.step === entry || w.step === entry.split(':')[0]);
+const waived = (task, entry, waivers) => !(entry === 'spec' || entry.startsWith('spec:') || entry === 'spec-check:stale')
+  && !reviewed(task, entry) && waivers.some(w => w.step === entry || w.step === entry.split(':')[0]);
 // task-update：同任务显式改 goal 与 permissions。沿用同一身份/修订/回执与失败回滚；
 // 只改本机任务声明，不碰 route/channels/账本，也不改宿主全局配置。调用方须已有用户授权，插件只记录声明。
 function updateTask(payload, task, session) {
@@ -446,7 +478,9 @@ function updateTask(payload, task, session) {
   };
 }
 // options.root 只接受入口用 resolveProject 核对过的当前 worktree；payload 里的路径不参与检查根选择。
-export function acceptSignal(state, payload, { root } = {}) {
+// 本函数就地修改 state，且可能在门禁拒绝前已写入部分字段（例如 task.validation）。协议函数不自行回滚；
+// 调用方必须提供事务边界：生产 Hook 在调用前克隆，捕获错误后整体恢复再返回拒绝回执。
+export function acceptSignal(state, payload, { root, spec } = {}) {
   identifier(payload?.signalId, 'signalId');
   const initial = currentIdentity(state, payload, { replay: true, requireTask: false });
   const receipt = initial.session.receipts[payload.signalId];
@@ -476,6 +510,8 @@ export function acceptSignal(state, payload, { root } = {}) {
       if (previous?.lifecycle === 'active') fail('TASK', '先明确结束当前任务，不能更换 ID 重置预算');
     }
     if (!task) {
+      // 新任务必须显式声明分流，避免漏填时静默绕过 delegated 门禁；旧任务没有 route 字段时按续接兼容。
+      if (payload.route === undefined) fail('ROUTE', '新任务必须显式声明 route（operation-only、lead-direct 或 delegated）');
       // 新任务三项必填，缺哪项直接点名；mode 写在顶层而非 permissions 里也指出来。
       if (typeof payload.goal !== 'string' || !payload.goal.trim()) fail('INPUT', '新任务缺少 goal（一句话目标，顶层字段）；完整格式：{action:"task-start", taskId, goal, route, permissions:{mode:"write|read-only|plan", allowedPaths:[...]}}');
       textField(payload.goal, 'goal');
@@ -542,7 +578,9 @@ export function acceptSignal(state, payload, { root } = {}) {
       if (payload.validation !== undefined) task.validation = validationInput(payload.validation);
       if (payload.finalRef !== undefined) identifier(payload.finalRef, 'finalRef');
       const waivers = [...(task.waivers || []), ...(payload.waivers === undefined ? [] : waiverInput(payload.waivers))];
-      const report = gateReport(state, task, payload.finalRef, root);
+      // 预检的会话/任务快照不匹配时降级为不可复用；门禁随后按 spec-check:stale 处理，不拿旧报告放行。
+      const checkedSpec = freshPrecheck(spec, project, session) ? spec : {};
+      const report = gateReport(state, task, payload.finalRef, root, checkedSpec);
       const missing = report.missing.filter(entry => !waived(task, entry, waivers));
       if (missing.length) {
         const specText = report.findings.length ? `。spec 检查：${describeFindings(report.findings)}；更新 spec，或在内容提交附 Spec-OK 写明不需要更新的理由（需要追认既有历史时才用空提交）` : '';
@@ -602,7 +640,7 @@ function planDeliveryReason(task) {
 }
 // 回合结束核对：Lead 没发 task-end 就收尾时，按门禁算一次缺项并挡下一轮。只读任务状态，只在 session 上记“本回合已挡”。
 // 经验采集独立于业务交付；Stop 从不启动复盘或要求补写经验。
-export function stop(state, project, session, event = {}, { root } = {}) {
+export function stop(state, project, session, event = {}, { root, spec } = {}) {
   if (!session || session.role || session.interrupted) return {};
   if (event.stop_hook_active === true || session.stopBlockedTurn === session.turnId) return {};
   // 提问等待用户、本回合声明为纯操作时不核对。
@@ -633,15 +671,33 @@ export function stop(state, project, session, event = {}, { root } = {}) {
   }
   // 计划模式的普通讨论：计划阶段无法实施，不落到通用“门禁缺项/仍为 active”阻挡，以免打断讨论。
   if (planning && !planDelivery) return {};
+  // 锁外预检按会话快照绑定；回合、票据、任务或会话修订变化后，旧报告不再代表当前 Stop。
+  // 没有绑定快照的预检同样不可复用；这里只降级为“不可验证”，不把旧结果当成当前结果，也绝不在锁内补跑慢 Git。
+  let checkedSpec = spec;
+  if (spec !== undefined) {
+    const s = spec?.scope;
+    const fresh = s && s.projectId === project.projectId && s.sessionId === session.sessionId && s.turnId === session.turnId
+      && s.ticket === session.ticket && s.taskId === session.taskId && s.revision === session.revision;
+    if (!fresh) checkedSpec = {};
+  }
   let missing;
+  let unconfirmed = [];
   try {
-    // 没法检查（git 失败、浅克隆）不算缺项；其余照常核对。
-    missing = gateMissing(state, task, undefined, root).filter(entry => !entry.startsWith('spec-check:') && !waived(task, entry, task.waivers || []));
+    // 没法检查（git 失败、浅克隆、预检过期）不并入可豁免的缺项；但也不能当作“已通过”。
+    const report = gateReport(state, task, undefined, root, checkedSpec);
+    unconfirmed = report.missing.filter(entry => entry.startsWith('spec-check:'));
+    missing = report.missing.filter(entry => !entry.startsWith('spec-check:') && !waived(task, entry, task.waivers || []));
   } catch { return {}; }
   session.stopBlockedTurn = session.turnId;
+  // 过期或检查失败时明确说“无法确认”，不能因为过滤了 spec-check 就报“门禁无缺项”。
+  const specNote = unconfirmed.length
+    ? `spec 检查无法确认（${unconfirmed.join(', ')}）：预检结果已过期或本次没有可用的检查结果；重试 Stop 或 task-end 会按当前提交与工作区重新检查，不能当作已通过。`
+    : '';
   const reason = missing.length
-    ? `workflow 回合结束核对：任务 ${task.taskId} 仍为 active，门禁缺项 ${missing.join(', ')}。二选一：补齐后发 task-end；或者向用户说明哪些还没完成、下一步是什么。不要只回复“已完成”。`
-    : `workflow 回合结束核对：任务 ${task.taskId} 门禁已无缺项但仍为 active。工作已完成就发 task-end 结束任务；还没完成就向用户说明剩余事项。`;
+    ? `workflow 回合结束核对：任务 ${task.taskId} 仍为 active，门禁缺项 ${missing.join(', ')}。${specNote}二选一：补齐后发 task-end；或者向用户说明哪些还没完成、下一步是什么。不要只回复“已完成”。`
+    : unconfirmed.length
+      ? `workflow 回合结束核对：任务 ${task.taskId} 仍为 active，门禁其余条目已齐，但${specNote}重新检查通过后再发 task-end 或结束回合。`
+      : `workflow 回合结束核对：任务 ${task.taskId} 门禁已无缺项但仍为 active。工作已完成就发 task-end 结束任务；还没完成就向用户说明剩余事项。`;
   // 计划提醒附在已有的一次阻挡里，本身不新增阻挡。
   let stale = [];
   try { stale = unchangedPlans(state, task, root); } catch {}

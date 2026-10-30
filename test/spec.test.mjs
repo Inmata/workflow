@@ -2,8 +2,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import child from 'node:child_process';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
-import { checkSpecs, codeList } from '../src/spec.mjs';
+import { checkSpecs, codeList, precheckSpecs, verifySpecBinding } from '../src/spec.mjs';
 import { cli, git, temporary } from './helpers.mjs';
 
 const spec = (code, body = '说明') => `---\ntitle: t\ncode:\n${code.map(c => `  - ${c}`).join('\n')}\nrelated:\n  - docs/x.md\n---\n# t\n${body}\n`;
@@ -200,6 +202,80 @@ test('frontmatter 解析：块列表、行内列表、引号与注释；其他�
   assert.deepEqual(codeList('---\nhue: 3\ncode:\n  - "src/a b.mjs"\n  - ./src/c.mjs # 注释\nrelated:\n  - docs/x.md\n---\n'), ['src/a b.mjs', 'src/c.mjs']);
   assert.deepEqual(codeList('---\ncode: [src/a.mjs, \'src/b.mjs\']\n---\n'), ['src/a.mjs', 'src/b.mjs']);
   assert.deepEqual(codeList('# 没有 frontmatter\ncode:\n  - a\n'), []);
+});
+
+test('检查预算耗尽时不再发起 Git 调用：返回 error:git 并在 detail 说明预算', async () => {
+  const root = await repo();
+  // budgetMs=0 时 deadline 已过：第一次需要 Git 的调用前就失败，不会退回逐个 10 秒超时。
+  const result = checkSpecs(root, { budgetMs: 0 });
+  assert.equal(result.ok, false);
+  assert.equal(result.error, 'git');
+  assert.match(result.detail, /预算/);
+  // 没有 .spec 的快速跳过仍不启动 Git，不因预算为 0 改变 no-spec 语义。
+  const plain = await temporary('spec-plain-budget-');
+  assert.deepEqual(checkSpecs(plain, { budgetMs: 0 }), { ok: true, ref: 'HEAD', skipped: 'no-spec', findings: [] });
+});
+
+test('预检绑定检查对象：干净报告可复核，受管文件、提交或 ref 变化后失效；无 spec 跳过同样复核', async () => {
+  const root = await repo();
+  // checkSpecs 的公开输出形状不变；预检才额外返回 binding。
+  assert.deepEqual(checkSpecs(root), { ok: true, ref: 'HEAD', findings: [] });
+  const precheck = precheckSpecs(root);
+  assert.deepEqual(precheck.report, { ok: true, ref: 'HEAD', findings: [] });
+  assert.equal(verifySpecBinding(root, precheck.binding, null), true);
+  assert.equal(verifySpecBinding(root, undefined, null), false, '没有绑定的通过报告不能复用');
+  await put(root, 'src/a.mjs', 'dirty\n');
+  assert.equal(verifySpecBinding(root, precheck.binding, null), false);
+  await put(root, 'src/a.mjs', 'a1\n');
+  assert.equal(verifySpecBinding(root, precheck.binding, null), true);
+  // 显式 ref 固定成 OID 后按标签复核；提交移动即失效，完整 OID 仍有效。
+  const oid = git(root, ['rev-parse', 'HEAD']);
+  const byRef = precheckSpecs(root, { ref: 'main' });
+  const byOid = precheckSpecs(root, { ref: oid });
+  await commit(root, { 'notes.txt': 'n\n' }, 'move main');
+  assert.equal(verifySpecBinding(root, byRef.binding, 'main'), false);
+  assert.equal(verifySpecBinding(root, byOid.binding, oid), true);
+  // 没有 .spec 的快速跳过只在该条件仍成立时有效。
+  const plain = await temporary('spec-bind-plain-');
+  const empty = precheckSpecs(plain);
+  assert.equal(empty.report.skipped, 'no-spec');
+  assert.equal(verifySpecBinding(plain, empty.binding, null), true);
+  await put(plain, '.spec/a/spec.md', spec(['x.mjs']));
+  assert.equal(verifySpecBinding(plain, empty.binding, null), false);
+});
+
+// 反例：受管代码已改，spec 的暂存内容与工作区不同（status 里两者都 dirty，旧检查据此通过）；
+// status 返回后另一个会话把 spec 暂存回干净，旧实现到此时才取索引快照，于是把新索引配上旧通过结果。
+test('索引竞态：status 之后索引被另一个会话改写时，旧通过报告不能复核通过', async () => {
+  const root = await repo();
+  const specPath = '.spec/a/spec.md';
+  const original = spec(['src/a.mjs', 'src/shared.mjs']);
+  await put(root, 'src/a.mjs', 'dirty\n');
+  await put(root, specPath, `${original}staged edit\n`);
+  git(root, ['add', specPath]);
+  await put(root, specPath, original);
+  const real = child.spawnSync;
+  let staged = false;
+  child.spawnSync = (command, args = [], options) => {
+    const result = real(command, args, options);
+    if (!staged && command === 'git' && Array.isArray(args) && args.includes('status')) {
+      staged = true;
+      git(root, ['add', specPath]);
+    }
+    return result;
+  };
+  let precheck;
+  try {
+    syncBuiltinESMExports();
+    precheck = precheckSpecs(root);
+  } finally {
+    child.spawnSync = real;
+    syncBuiltinESMExports();
+  }
+  assert.equal(staged, true, '竞争样本应在 status 之后改写索引');
+  assert.equal(precheck.report.ok, true, '旧报告按 status 看到的 dirty 结果放行');
+  assert.equal(verifySpecBinding(root, precheck.binding, null), false, '索引已变，旧报告不能复核通过');
+  assert.deepEqual(kinds(checkSpecs(root)), ['a:src/a.mjs:uncommitted-drift'], '当前工作区实际是未提交漂移');
 });
 
 test('spec check 命令：有漂移退出码 1 并输出 findings；--ref 指定版本', async () => {

@@ -2,6 +2,7 @@ import path from 'node:path';
 import { archiveLifecycleEvents, canonical, digest, id, mutate, observeHost, readState, recordLifecycleEvent, samePath, within } from './store.mjs';
 import { acceptSignal, consumeLifecycleEvents, interrupt, LIFECYCLE_EVENTS, openTurn, pendingFor, sessionKey, stop, taskKey, TERMINAL_PACKAGE } from './protocol.mjs';
 import { resolveProject } from './projects.mjs';
+import { precheckSpecs } from './spec.mjs';
 import { projectContext, readOptionalContext, signalUsage } from './context.mjs';
 import { PRODUCT_ROOT, PRODUCT_VERSION } from './entry.mjs';
 
@@ -74,17 +75,57 @@ function extractSignals(response, depth = 0) {
 }
 function shellTokens(command) {
   // Deliberately accept one direct invocation only; shell composition requires a future verified adapter.
-  if (typeof command !== 'string' || /[;|&`\r\n$<>]/.test(command)) return null;
+  // 按 PowerShell 引号规则切分：单引号内全是字面量，内部单引号用连续两个单引号表示；
+  // 双引号内 $ 与反引号仍会展开/转义；引号外的 ; | & ` $ < > ( ) 和换行属于组合、重定向或表达式语法。
+  // 圆括号在引号外是 PowerShell 表达式/子表达式：参数会先执行再传入，不能当作已核对字面值。
+  if (typeof command !== 'string' || command.includes('\0')) return null;
   const tokens = [];
-  const token = /\s*(?:"([^"\r\n]*)"|'([^'\r\n]*)'|([^\s"']+))/gy;
   let cursor = 0;
   while (cursor < command.length) {
-    if (!command.slice(cursor).trim()) break;
-    token.lastIndex = cursor;
-    const match = token.exec(command);
-    if (!match) return null;
-    tokens.push(match[1] ?? match[2] ?? match[3]);
-    cursor = token.lastIndex;
+    while (cursor < command.length && /\s/.test(command[cursor])) {
+      // 引号外的换行在 PowerShell 中等同于命令分隔，不能当作普通 token 分隔符放行。
+      if (command[cursor] === '\r' || command[cursor] === '\n') return null;
+      cursor++;
+    }
+    if (cursor >= command.length) break;
+    let value = '', started = false;
+    // 空白只在引号外结束当前 token；引号内的空白属于同一个参数。
+    while (cursor < command.length && !/\s/.test(command[cursor])) {
+      const char = command[cursor];
+      if (char === "'") {
+        started = true;
+        cursor++;
+        let closed = false;
+        while (cursor < command.length) {
+          if (command[cursor] !== "'") { value += command[cursor++]; continue; }
+          if (command[cursor + 1] === "'") { value += "'"; cursor += 2; continue; }
+          cursor++;
+          closed = true;
+          break;
+        }
+        if (!closed) return null;
+      } else if (char === '"') {
+        started = true;
+        cursor++;
+        let closed = false;
+        while (cursor < command.length) {
+          const inner = command[cursor];
+          if (inner === '"') { cursor++; closed = true; break; }
+          // 双引号内的 $ 变量/子表达式与反引号转义不能当作已核对字面值。
+          if (inner === '$' || inner === '`') return null;
+          value += inner;
+          cursor++;
+        }
+        if (!closed) return null;
+      } else {
+        if (/[;|&`$<>\r\n()]/.test(char)) return null;
+        value += char;
+        cursor++;
+        started = true;
+      }
+    }
+    if (!started) return null;
+    tokens.push(value);
   }
   return tokens;
 }
@@ -123,6 +164,11 @@ function isComposedSignal(event) {
 // 启动、解析和落盘余量，预算耗尽时保守放行，不越过宿主上限。
 const LOCK_BUDGET = { lifecycle: 700, normal: 1500 };
 const lockBudget = name => LIFECYCLE_EVENTS.includes(name) ? LOCK_BUDGET.lifecycle : LOCK_BUDGET.normal;
+// task-end/Stop 的 spec 检查在状态锁外预检；整次检查共用一个预算，
+// 保证 Git 慢或卡住时 Hook 仍能在宿主 10 秒回执窗口内返回。
+const SPEC_CHECK_BUDGET_MS = 4000;
+// 与 protocol.identifier 相同的字面形状；非法 ref 会在信号校验处被拒，不先拿去查 Git。
+const SPEC_REF = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,199}$/;
 // 入口拿不到身份时的唯一提示：不冒充入口成功，也不创建猜测身份。
 const identityHint = 'workflow 本回合未建立入口身份（缺少宿主回合标识或会话未登记）：已保守放行；下一次 SessionStart/UserPromptSubmit 会重新建立，业务任务和票据不在此处猜测。';
 export async function handleHook(directory, event, options = {}) {
@@ -162,6 +208,42 @@ export async function handleHook(directory, event, options = {}) {
     }
     // 委派状态查询只读核对账本，不写状态：每次等待都落盘会放大锁竞争。
     if (name === 'PostToolUse' && delegationStatus) return delegationHint(existing, initial.project, event, turnId);
+    // 信号载荷是纯解析，提前取出供锁外预检和锁内接受共用；真正的身份/正文校验仍在锁内协议层。
+    const signalPayloads = signalInvocation ? extractSignals(event.tool_response) : [];
+    // spec 的 Git 检查在状态锁外预检：慢 Git 只占本次 Hook 自己的等待，不阻塞其他会话的短锁预算。
+    // 预检把检查对象（提交 OID 与 HEAD 工作区快照）固定进 binding；锁内只复核该绑定，不重跑慢 Git。
+    // 预检跳过时留下 skipped 标记，生产路径不会在锁内补跑 Git；直接调用协议函数仍走原有同步检查。
+    let specCheck = { skipped: true };
+    if (name === 'Stop') {
+      const observed = existing.sessions[sessionKey(initial.project.projectId, event.session_id)];
+      const task = observed?.taskId ? existing.tasks[taskKey(initial.project.projectId, observed.taskId)] : null;
+      const needed = observed && !observed.role && !observed.interrupted
+        && !['waiting-user', 'operation-only'].includes(observed.phase)
+        && !(event.stop_hook_active === true || observed.stopBlockedTurn === observed.turnId)
+        && task?.lifecycle === 'active' && task.route !== 'operation-only';
+      if (needed) {
+        const precheck = precheckSpecs(initial.worktree, { skipNonGitNoSpec: true, budgetMs: SPEC_CHECK_BUDGET_MS });
+        specCheck = {
+          root: initial.worktree, ref: null, projectId: initial.project.projectId, taskId: task.taskId,
+          report: precheck.report, binding: precheck.binding,
+          scope: { projectId: initial.project.projectId, sessionId: event.session_id, turnId: observed.turnId, ticket: observed.ticket, taskId: task.taskId, revision: observed.revision },
+        };
+      }
+    } else if (signalPayloads.length === 1 && signalPayloads[0]?.action === 'task-end') {
+      const payload = signalPayloads[0];
+      const observed = existing.sessions[sessionKey(initial.project.projectId, event.session_id)];
+      const task = observed?.taskId ? existing.tasks[taskKey(initial.project.projectId, observed.taskId)] : null;
+      const ref = payload.finalRef;
+      const validRef = ref === undefined || (typeof ref === 'string' && SPEC_REF.test(ref));
+      if (observed && !observed.role && task?.lifecycle === 'active' && task.route !== 'operation-only' && validRef) {
+        const precheck = precheckSpecs(initial.worktree, { ref: ref || undefined, skipNonGitNoSpec: true, budgetMs: SPEC_CHECK_BUDGET_MS });
+        specCheck = {
+          root: initial.worktree, ref: ref ?? null, projectId: initial.project.projectId, taskId: task.taskId,
+          report: precheck.report, binding: precheck.binding,
+          scope: { projectId: initial.project.projectId, sessionId: event.session_id, turnId: observed.turnId, ticket: observed.ticket, taskId: task.taskId, revision: observed.revision },
+        };
+      }
+    }
     if (LIFECYCLE_EVENTS.includes(name)) {
       // 结束事件先独立原子落盘：状态锁被短暂占用或进程随后退出时，事件仍能在下一次入口被消费。
       // 只绑定宿主给出的可信回合；缺失时留空，让消费端按关联不足处理，不拿当前会话回合推断归属。
@@ -239,13 +321,12 @@ export async function handleHook(directory, event, options = {}) {
           return contextOutput(name, `workflow 未接受：signal 须单独直接调用，本次命令含组合、变量或不是本插件入口。${usage.rule} 请用当前 identity 按此格式重发：${usage.command}（兼容写法 ${usage.fallback}）`);
         }
         if (!signalInvocation) return {};
-        const signals = extractSignals(event.tool_response);
-        if (signals.length !== 1) return contextOutput(name, 'workflow 未接受：输出未包含唯一的本插件信号');
-        const payload = signals[0];
+        if (signalPayloads.length !== 1) return contextOutput(name, 'workflow 未接受：输出未包含唯一的本插件信号');
+        const payload = signalPayloads[0];
         if (payload?.sessionId !== event.session_id || payload.projectId !== project.projectId || payload.turnId !== session.turnId) return contextOutput(name, 'workflow 未接受：信号不属于当前宿主会话/项目/回合');
         const before = structuredClone(state);
         let result;
-        try { result = acceptSignal(state, payload, { root: resolved.worktree }); }
+        try { result = acceptSignal(state, payload, { root: resolved.worktree, spec: specCheck }); }
         catch (error) {
           // A rejected signal must not persist a partially changed phase or candidate disposition.
           for (const key of Object.keys(state)) delete state[key];
@@ -257,7 +338,7 @@ export async function handleHook(directory, event, options = {}) {
         return contextOutput(name, `workflow 回执：${JSON.stringify(result)}`);
       }
       if (name === 'Stop') {
-        const output = stop(state, project, session, event, { root: resolved.worktree });
+        const output = stop(state, project, session, event, { root: resolved.worktree, spec: specCheck });
         // The budget must be durable before returning a continuation decision.
         await save();
         return output;

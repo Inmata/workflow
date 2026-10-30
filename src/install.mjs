@@ -2,7 +2,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { copyFile, lstat, mkdir, readdir, readFile, readlink, realpath, rename, rm, symlink, unlink } from 'node:fs/promises';
 import { atomicWrite, digest, fail, hostObservations, id, mutate, readState, readText, samePath, within, writeJSON } from './store.mjs';
-import { PRODUCT_ROOT } from './context.mjs';
+import { PRODUCT_ROOT } from './entry.mjs';
 import { CLAUDE_EVENTS, EVENTS, HOSTS as HOST_NAMES } from './hooks.mjs';
 
 export const RELEASE_PATHS = [

@@ -37,17 +37,20 @@ const signal = extra => {
   assert.equal(receipt.accepted, true, JSON.stringify(receipt));
   return receipt;
 };
-signal({ action: 'task-start', goal: '隔离样例补齐有证据项目经验', permissions: { mode: 'write', allowedPaths: ['LESSONS.md'] } });
+signal({ action: 'task-start', route: 'lead-direct', goal: '隔离样例补齐有证据项目经验', permissions: { mode: 'write', allowedPaths: ['LESSONS.md'] } });
 const baseline = invoke(['knowledge', 'inspect', '--project', project, '--path', 'LESSONS.md']);
 const candidate = { id: 'demo-finding', taskId: 'demo-task', workPackage: 'demo', conditions: '当前合成样例', finding: '演示条目需明确条件', recommendation: '资料写明条件与证据', evidence: ['synthetic:demo-input'] };
 const transaction = invoke(['knowledge', 'apply'], { ...context().identity, candidates: [candidate], changes: [{ path: 'LESSONS.md', baseline: baseline.fingerprint, content: '# 样例经验\n仅用于当前合成场景；参考 synthetic:demo-input。\n', responsibility: '样例经验', reason: '验证完整知识事务', evidence: candidate.evidence, candidateIds: [candidate.id] }] });
 assert.equal(transaction.status, 'applied');
 signal({ action: 'phase', phase: 'delivering', deliveryId: 'demo-delivery', disposition: { status: 'updated', transactionIds: [transaction.transactionId] } });
-assert.deepEqual(hook('Stop'), {});
+const blocked = hook('Stop');
+assert.equal(blocked.decision, 'block');
+assert.match(blocked.reason, /任务 demo-task 门禁已无缺项但仍为 active/);
 signal({ action: 'task-end' });
+assert.deepEqual(hook('Stop'), {});
 assert.equal(invoke(['project', 'disable', '--root', project]).status, 'disabled');
 assert.equal(invoke(['uninstall', '--agent', 'codex']).status, 'uninstalled');
-const result = { status: 'passed', mode: 'synthetic-isolated-cli', area, projectId: binding.projectId, transactionId: transaction.transactionId, installedRelease: installation.releaseRoot, stages: ['临时发布安装', '显式绑定', '入口注入', '真实CLI信号及回执', '知识快照与事务', '交付Stop放行', '任务结束', '停用与撤销'], realACP: 'not-tested', realUserConfigChanged: false };
+const result = { status: 'passed', mode: 'synthetic-isolated-cli', area, projectId: binding.projectId, transactionId: transaction.transactionId, installedRelease: installation.releaseRoot, stages: ['临时发布安装', '显式绑定', '入口注入', '真实CLI信号及回执', '知识快照与事务', '交付首次Stop拦截', '任务结束', '结束后Stop放行', '停用与撤销'], realACP: 'not-tested', realUserConfigChanged: false };
 await writeFile(path.join(area, 'result.json'), JSON.stringify(result, null, 2) + '\n');
 process.stdout.write(JSON.stringify(result) + '\n');
 } finally {

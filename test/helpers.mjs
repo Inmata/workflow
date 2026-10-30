@@ -83,12 +83,12 @@ export async function claudeEmit(f, value) {
   return { payload, result: JSON.parse(text.slice('workflow 回执：'.length)) };
 }
 export async function claudeStart(f, permissions = { mode: 'write', allowedPaths: ['README.md', 'LESSONS.md', 'docs/说明.md'] }) {
-  const result = await claudeEmit(f, { action: 'task-start', goal: 'Claude 隔离验证任务', permissions });
+  const result = await claudeEmit(f, { action: 'task-start', goal: 'Claude 隔离验证任务', route: 'lead-direct', permissions });
   assert.equal(result.result.accepted, true, JSON.stringify(result));
   return result;
 }
 export async function start(f, permissions = { mode: 'write', allowedPaths: ['README.md', 'LESSONS.md', 'docs/说明.md'] }) {
-  const result = await emit(f, { action: 'task-start', goal: '隔离验证任务', permissions });
+  const result = await emit(f, { action: 'task-start', goal: '隔离验证任务', route: 'lead-direct', permissions });
   assert.equal(result.result.accepted, true, JSON.stringify(result));
   return result;
 }

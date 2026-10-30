@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { lstat, readdir } from 'node:fs/promises';
 import { canonical, digest, fail, mutate, readState, readText, samePath } from './store.mjs';
-import { authorizeWrite } from './knowledge.mjs';
+import { authorizeWrite, reconcileTransactions } from './knowledge.mjs';
+import { pendingFor } from './protocol.mjs';
 import { document, safeDocument, writeDocuments } from './documents.mjs';
 import { command } from './entry.mjs';
 
@@ -163,22 +164,34 @@ function mismatches(rows, recorded, allowed) {
   return output;
 }
 // 目录 mtime 只说明有增删或改名；重新列目录，只有出现未收录的候选资料才算过期。
+// 读取失败单独返回错误码：不能当成“没有新资料”，也不能中断其余目录的检查。
 async function addedEntries(root, item, known, docPath) {
   const relative = item.path === '.' ? '' : item.path;
   const depth = relative ? relative.split('/').length : 0;
-  const entries = await readdir(path.join(root, relative), { withFileTypes: true }).catch(() => []);
+  let entries;
+  try { entries = await readdir(path.join(root, relative), { withFileTypes: true }); }
+  catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return { found: false, error: null };
+    return { found: false, error: error.code || 'IO' };
+  }
+  let failure = null;
   for (const entry of entries) {
     const child = relative ? `${relative}/${entry.name}` : entry.name;
-    if (entry.isFile() && candidate(entry.name) && child !== docPath && !known.files.has(child)) return true;
+    if (entry.isFile() && candidate(entry.name) && child !== docPath && !known.files.has(child)) return { found: true, error: failure };
     if (entry.isDirectory() && !SKIP_DIRS.has(entry.name) && depth < MAX_DEPTH && !known.directories.has(child)) {
       const ignore = new Set(known.files);
       if (docPath) ignore.add(docPath);
       const output = { files: [], directories: [], skipped: [], limit: 2, truncated: false, ignore };
-      await walk(root, child, depth + 1, output).catch(() => {});
-      if (output.files.length > 0) return true;
+      try { await walk(root, child, depth + 1, output); }
+      catch (error) {
+        if (error.code === 'ENOENT') continue;
+        failure ||= error.code || 'IO';
+        continue;
+      }
+      if (output.files.length > 0) return { found: true, error: failure };
     }
   }
-  return false;
+  return { found: false, error: failure };
 }
 
 async function inspect(project, options = {}) {
@@ -189,11 +202,18 @@ async function inspect(project, options = {}) {
   const changed = [];
   const missing = [];
   const directoryChanged = [];
+  const errors = [];
   let checked = 0;
   for (const file of alignment.files || []) {
     if (checked >= CHECK_MAX_FILES || Date.now() > deadline) break;
     checked++;
-    const info = await lstat(path.join(project.root, file.path)).catch(() => null);
+    // 只有 ENOENT 才是“已删除”；权限、占用等读取失败进入 errors，不能冒充删除。
+    const info = await lstat(path.join(project.root, file.path)).catch(error => {
+      if (error.code === 'ENOENT') return null;
+      errors.push({ path: file.path, code: error.code || 'IO', reason: 'unreadable' });
+      return undefined;
+    });
+    if (info === undefined) continue;
     if (!info) { missing.push({ path: file.path, reason: 'deleted' }); continue; }
     if (info.isSymbolicLink()) changed.push({ path: file.path, reason: 'link', size: info.size, mtimeMs: info.mtimeMs });
     else if (info.size !== file.size) changed.push({ path: file.path, reason: 'size', size: info.size, mtimeMs: info.mtimeMs });
@@ -202,10 +222,17 @@ async function inspect(project, options = {}) {
   const known = { files: new Set((alignment.files || []).map(file => file.path)), directories: new Set((alignment.directories || []).map(item => item.path)) };
   for (const item of alignment.directories || []) {
     if (Date.now() > deadline) break;
-    const info = await lstat(path.join(project.root, item.path)).catch(() => null);
+    const info = await lstat(path.join(project.root, item.path)).catch(error => {
+      if (error.code === 'ENOENT') return null;
+      errors.push({ path: item.path, code: error.code || 'IO', reason: 'unreadable-directory' });
+      return undefined;
+    });
+    if (info === undefined) continue;
     // 目录整体消失时，其中文件已计入 missing；这里只记录出现新资料的目录。
     if (!info || Math.abs(info.mtimeMs - item.mtimeMs) <= 1) continue;
-    if (await addedEntries(project.root, item, known, alignment.docPath)) directoryChanged.push(item.path);
+    const added = await addedEntries(project.root, item, known, alignment.docPath);
+    if (added.error) errors.push({ path: item.path, code: added.error, reason: 'unreadable-directory' });
+    if (added.found) directoryChanged.push(item.path);
   }
   const doc = await readText(path.join(project.root, alignment.docPath));
   const decisionRows = rowStatuses(doc, DECISION_HEADING), findingRows = rowStatuses(doc, FINDING_HEADING);
@@ -220,11 +247,13 @@ async function inspect(project, options = {}) {
     path: alignment.docPath,
     exists: true,
     docExists: doc !== null,
-    incomplete: checked < (alignment.files || []).length,
-    stale: checked < (alignment.files || []).length || changed.length > 0 || missing.length > 0 || directoryChanged.length > 0,
+    // 读取失败与检查上限一样，都表示没有完成完整核对；可读部分仍按上面的结果报告。
+    incomplete: checked < (alignment.files || []).length || errors.length > 0,
+    stale: checked < (alignment.files || []).length || changed.length > 0 || missing.length > 0 || directoryChanged.length > 0 || errors.length > 0,
     changed: changed.slice(0, CHECK_MAX_CHANGES),
     missing: missing.slice(0, CHECK_MAX_CHANGES),
     directoryChanged: directoryChanged.slice(0, CHECK_MAX_CHANGES),
+    errors: errors.slice(0, CHECK_MAX_CHANGES),
     pendingDecisions: decisions.size,
     pendingFindings: findings.size,
     mismatch: mismatch.slice(0, CHECK_MAX_CHANGES),
@@ -279,7 +308,9 @@ async function refreshDirectoryAt(alignment, target, parent) {
     files: new Set((alignment.files || []).map(file => file.path)),
     directories: new Set((alignment.directories || []).map(item => item.path)),
   };
-  if (await addedEntries(target, { path: parent }, known, alignment.docPath)) return false;
+  const added = await addedEntries(target, { path: parent }, known, alignment.docPath);
+  // 读取失败时不能刷新目录基线，否则会把看不到的新资料永久算作已确认。
+  if (added.error || added.found) return false;
   const entry = (alignment.directories || []).find(item => item.path === parent);
   if (entry) entry.mtimeMs = info.mtimeMs;
   else alignment.directories = [...(alignment.directories || []), { path: parent, mtimeMs: info.mtimeMs }];
@@ -445,9 +476,14 @@ async function updateAlignment(directory, root, input, action) {
       output = replaceSection(output, '## 结构建议', '| ' + [item.id, item.problem, item.location || '未定位', item.recommendation || '未给出', 'pending'].join(' | ') + ' |');
     }
     const tx = await writeDocuments(directory, state, save, project, [{ path: relative, baseline: input.baseline, content: output, reason: '项目对齐 ' + action, responsibility: 'Lead', evidence: input.evidence || ['task:' + task.taskId] }], { taskId: task.taskId, sessionId: session.sessionId });
+    // 与知识写入共用对账：成功重写后关闭同一事务的待办；未应用的事务必须留下可恢复入口。
+    reconcileTransactions(state, project.projectId, task.taskId);
     session.revision++;
     session.revisionReason = '项目对齐 ' + action;
-    if (tx.status !== 'applied') return { status: tx.status, transactionId: tx.transactionId, files: tx.files };
+    if (tx.status !== 'applied') {
+      const pending = pendingFor(state, project.projectId, task.taskId, `项目对齐写入尚未完整应用（${tx.status}）；先用 knowledge recover --transaction ${tx.transactionId} 辨认结果，再按提示重试 apply`, 'knowledge-pending', { transactionId: tx.transactionId });
+      return { status: tx.status, transactionId: tx.transactionId, files: tx.files, pendingId: pending.pendingId };
+    }
     const alignment = project.alignment;
     alignment.docPath = relative; alignment.docFingerprint = digest(output);
     const dm = new Map((alignment.decisions || []).map(i => [i.id, i]));

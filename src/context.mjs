@@ -1,17 +1,16 @@
 import { fail, readState } from './store.mjs';
-import { PRODUCT_VERSION, cliPath, command, docPath } from './entry.mjs';
+import { PRODUCT_VERSION, cliPath, command, docPath, shellValue } from './entry.mjs';
 import { sessionKey, taskKey } from './protocol.mjs';
 import { resolveProject } from './projects.mjs';
 import { inspectAlignment } from './alignment.mjs';
 import { selectKnowledge } from './learning.mjs';
 
-export { PRODUCT_ROOT } from './entry.mjs';
 // 信号只认单条直接调用；给出可照抄的模板，避免代理自拼变量、cd 或 && 组合导致信号被丢弃。
 // 推荐子命令写法：身份字段由 CLI 从本机状态补齐，一次调用即可，不必先写临时 JSON 文件。
 // 完整 payload 用 --input；base64 长串会被宿主的密钥脱敏改写成占位符，信号随之变成无效 JSON。
 export function signalUsage(cli = cliPath()) {
-  const entry = cli.replaceAll('\\', '/');
-  const head = `node "${entry}" signal`;
+  // 入口路径按当前 shell 的字面量规则书写；PowerShell 双引号会展开 $HOME 与 $(...)。
+  const head = `node ${shellValue(cli)} signal`;
   const who = '--session <identity.sessionId> --turn <identity.turnId> --id <新 signalId>';
   return {
     command: `${head} <action> ${who} [字段参数]`,
@@ -48,6 +47,12 @@ function alignmentAction(alignment) {
   if (!alignment.exists) return '项目尚未对齐：先读 alignmentGuide，按协议做只读扫描并把结论写入对齐文件；差异按提问路径询问用户，不擅自实施。';
   if (!alignment.docExists) return '项目对齐索引已建立但文档缺失：按协议生成对齐文件，差异按提问路径询问用户，不擅自实施。';
   if (alignment.mismatch?.length) return `对齐文档表格与本机索引不一致（${alignment.mismatch.map(m => m.id + ':' + m.document + '/' + m.index).join('、')}）：不要手改表格，按 alignmentGuide 用 decide 重新登记。`;
+  if (alignment.errors?.length) {
+    const codes = [...new Set(alignment.errors.map(item => item.code))].join('、');
+    const changes = alignment.changed.length + alignment.missing.length + alignment.directoryChanged.length;
+    const rest = [changes ? `${changes} 项可读变化` : '', alignment.pendingDecisions ? `${alignment.pendingDecisions} 项待裁决` : '', alignment.pendingFindings ? `${alignment.pendingFindings} 项结构建议` : ''].filter(Boolean);
+    return `项目对齐索引有 ${alignment.errors.length} 项读取失败（${codes}）：这些位置未确认是否变化，检查不完整；修复访问后重试 status。${rest.length ? `其余可读部分：${rest.join('、')}。` : ''}`;
+  }
   if (alignment.stale) return `项目对齐索引已过期（${alignment.changed.length + alignment.missing.length + alignment.directoryChanged.length} 项变化）：只重读变化文件和新增资料，再用 apply/decide/suggest 的 sources 带上读取时快照确认已读来源；未确认来源仍会提示，不重新全量扫描。`;
   if (alignment.pendingDecisions || alignment.pendingFindings) return `项目对齐还有 ${alignment.pendingDecisions} 项待裁决、${alignment.pendingFindings} 项结构建议；按提问路径向用户确认，可跨回合裁决；用户批准的结构建议在当回合直接执行修改，再用 decide 登记 accepted-change。`;
   return '';

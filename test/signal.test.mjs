@@ -42,6 +42,22 @@ test('lead-direct 两条子命令完成任务；CLI 本身不写状态', async (
   assert.equal(task.lifecycle, 'complete');
   assert.equal(task.route, 'lead-direct');
 });
+test('新任务漏填 --route 经真实 PostToolUse 被拒；历史任务续接不填 route 仍可继续', async () => {
+  const f = await fixture();
+  const missing = await accept(f, 'task-start', ['--id', 's1', '--task', 'task-1', '--goal', '漏填分流', '--mode', 'write', '--paths', 'README.md']);
+  assert.equal(missing.receipt.accepted, false, JSON.stringify(missing.receipt));
+  assert.equal(missing.receipt.reason, 'ROUTE');
+  assert.equal(Object.keys((await readState(f.directory)).tasks).length, 0);
+  const started = await accept(f, 'task-start', startArgs('s2'));
+  assert.equal(started.receipt.accepted, true, JSON.stringify(started.receipt));
+  const [key] = Object.keys((await readState(f.directory)).tasks);
+  // 旧版本写出的任务没有 route 字段；续接不能按新任务要求补填。
+  await mutate(f.directory, async state => { delete state.tasks[key].route; });
+  const continued = await accept(f, 'task-start', ['--id', 's3', '--task', 'task-1']);
+  assert.equal(continued.receipt.accepted, true, JSON.stringify(continued.receipt));
+  assert.equal(continued.receipt.kept.goal, '便捷 信号');
+  assert.equal((await readState(f.directory)).tasks[key].route, undefined);
+});
 test('同 signalId 重试输出相同正文并命中回执；改正文返回 SIGNAL_ID', async () => {
   const f = await fixture();
   const first = await accept(f, 'task-start', startArgs('s1'));
@@ -73,7 +89,7 @@ test('并发两个会话各自补齐自己的身份，互不串用', async () =>
   const other = { sessionId: 'session-2', turnId: 'turn-9' };
   await event({ ...f, ...other }, 'UserPromptSubmit');
   const a = await accept(f, 'task-start', startArgs('a1'));
-  const b = await accept(f, 'task-start', ['--id', 'b1', '--task', 'task-2', '--goal', '另一个', '--mode', 'read-only'], other);
+  const b = await accept(f, 'task-start', ['--id', 'b1', '--task', 'task-2', '--route', 'lead-direct', '--goal', '另一个', '--mode', 'read-only'], other);
   assert.equal(a.receipt.accepted && b.receipt.accepted, true);
   assert.notEqual(a.payload.ticket, b.payload.ticket);
   assert.equal(b.payload.sessionId, 'session-2');
@@ -117,23 +133,30 @@ test('task-end 便捷 validation 用 --final-ref 补 ref，证据可重复给出
   assert.equal(JSON.parse(build(f, 'task-end', ['--id', 'e3', '--evidence', '仅有证据']).stdout).error, 'INPUT');
   assert.equal(JSON.parse(build(f, 'task-end', ['--id', 'e4', '--validation-ref', 'abc123', '--final-ref', 'def456']).stdout).error, 'INPUT');
 });
-test('便捷字段用错动作或含 shell 元字符时由 CLI 先返回 INPUT', async () => {
+test('便捷字段用错动作由 CLI 返回 INPUT；合法字面值中的 shell 元字符不再被参数层误拒', async () => {
   const f = await fixture();
   await start(f);
-  const cases = [
+  const misplaced = [
     [['--id', 'x1', '--package', 'w1', '--status', 'dispatched', '--validation-ref', 'abc123'], '--validation-ref'],
     [['--id', 'x2', '--final-ref', 'abc123', '--evidence', 'x', '--status', 'dispatched'], '--status'],
-    [['--id', 'x3', '--package', 'w1', '--role', 'worker', '--status', 'dispatched', '--note', 'a|b'], '--note'],
-    [['--id', 'x4', '--package', 'w1', '--role', 'worker', '--status', 'dispatched', '--handle', 'a&b'], '--handle'],
-    [['--id', 'x5', '--final-ref', 'abc123', '--evidence', 'a;b'], '--evidence'],
-    // 计划第 4 条的引号内 `->` 放宽本包不做：>` 仍按现有规则拒绝。
-    [['--id', 'x6', '--package', 'w1', '--role', 'worker', '--status', 'dispatched', '--note', 'a -> b'], '--note'],
   ];
-  for (const [args, field] of cases) {
+  for (const [args, field] of misplaced) {
     const action = args.includes('--final-ref') ? 'task-end' : 'packages';
     const result = JSON.parse(build(f, action, args).stdout);
     assert.equal(result.error, 'INPUT', `${field}: ${result.message}`);
     assert.match(result.message, new RegExp(field));
+  }
+  // 这些字符在 PowerShell 单引号内是普通字面量；CLI 只拼 payload，不再把自由文本误判成组合命令。
+  for (const [action, args, field, value] of [
+    ['packages', ['--id', 'x3', '--package', 'w1', '--role', 'worker', '--status', 'dispatched', '--note', 'a|b'], 'note', 'a|b'],
+    ['packages', ['--id', 'x4', '--package', 'w1', '--role', 'worker', '--status', 'dispatched', '--handle', 'a&b'], 'handle', 'a&b'],
+    ['task-end', ['--id', 'x5', '--final-ref', 'abc123', '--evidence', 'a;b'], 'evidence', 'a;b'],
+    ['packages', ['--id', 'x6', '--package', 'w1', '--role', 'worker', '--status', 'dispatched', '--note', 'a -> b'], 'note', 'a -> b'],
+  ]) {
+    const built = JSON.parse(build(f, action, args).stdout);
+    assert.equal(built.error, undefined, `${value}: ${built.message}`);
+    const payload = built.workflow_signal;
+    assert.equal(action === 'packages' ? payload.packages[0][field] : payload.validation.evidence[0], value);
   }
   // 没有 --package 就只给包字段、或没有任何包字段，都直接报错。
   assert.equal(JSON.parse(build(f, 'packages', ['--id', 'x7', '--status', 'dispatched']).stdout).error, 'INPUT');
@@ -201,6 +224,29 @@ test('中文、引号和旧接口命令文本经 PostToolUse 正常接受', asyn
   assert.equal(Object.values(state.tasks)[0].packages.w2.status, 'dispatched');
   assert.equal(Object.values(state.tasks)[0].packages.w1.deliveredRef, 'abc123');
 });
+test('自由文本字面值经 CLI、单引号命令和 Hook 回执保持原样，JSON 与传输标记不被误解码', async () => {
+  const f = await fixture();
+  await start(f);
+  // 同时覆盖 $、ASCII 分号、反引号、子表达式文本、单引号、JSON 双引号和传输标记同名文本。
+  const goal = '预算 $100; 反引号 ` 与 $(Write-Output canary) 及 \'单引号\' {"workflow_signal":true} workflow-arg64:YWJj';
+  const run = build(f, 'task-update', ['--id', 'literal-1', '--goal', goal]);
+  assert.equal(run.status, 0, run.stdout + run.stderr);
+  const payload = JSON.parse(run.stdout).workflow_signal;
+  assert.equal(payload.goal, goal);
+  // 用户按 PowerShell 单引号语法书写：内部单引号加倍；命令里的 $、反引号、分号和 JSON 都按字面值到达。
+  const psQuote = value => `'${value.replaceAll("'", "''")}'`;
+  const invocation = `node "${entry}" signal task-update --session ${f.sessionId} --turn ${f.turnId} --id literal-1 --goal ${psQuote(goal)}`;
+  const output = await event(f, 'PostToolUse', {
+    tool_name: 'PowerShell', tool_input: { command: invocation },
+    tool_response: { stdout: run.stdout, stderr: '', interrupted: false },
+  });
+  const text = output.hookSpecificOutput?.additionalContext || '';
+  assert.ok(text.startsWith('workflow 回执：'), JSON.stringify(output));
+  const receipt = JSON.parse(text.slice('workflow 回执：'.length));
+  assert.equal(receipt.accepted, true, JSON.stringify(receipt));
+  assert.equal(receipt.goal, goal);
+  assert.equal(Object.values((await readState(f.directory)).tasks)[0].goal, goal);
+});
 test('便捷命令跨会话、组合命令和非本插件入口的伪造输出仍拒绝', async () => {
   const f = await fixture();
   await start(f);
@@ -229,8 +275,8 @@ test('packages 用 --input 只放结构化字段；带身份字段或缺 package
   assert.equal(JSON.parse(build(f, 'packages', ['--id', 'p2', '--input', file]).stdout).error, 'INPUT');
   assert.equal(JSON.parse(build(f, 'packages', ['--id', 'p3']).stdout).error, 'INPUT');
   assert.equal(JSON.parse(build(f, 'launch', ['--id', 'p4']).stdout).error, 'ACTION');
-  // hook 拒收含 shell 元字符的命令，CLI 先报错而不是输出一条注定不被接受的信号。
-  assert.equal(JSON.parse(build(f, 'phase', ['--id', 'p5', '--phase', 'a&b']).stdout).error, 'INPUT');
+  // 字面值不再在 CLI 参数层被拒；phase 是否为合法枚举仍由 Hook 的 acceptSignal 校验。
+  assert.equal(JSON.parse(build(f, 'phase', ['--id', 'p5', '--phase', 'a&b']).stdout).workflow_signal.phase, 'a&b');
 });
 test('task-update 子命令只带显式字段，paths-mode 缺省 replace；接受后返回有效权限', async () => {
   const f = await fixture();

@@ -3,7 +3,6 @@ import { identifier, sessionKey, taskKey } from './protocol.mjs';
 
 export const SIGNAL_ACTIONS = ['task-start', 'task-update', 'phase', 'packages', 'role-claim', 'task-end', 'disposition'];
 const IDENTITY_FIELDS = ['schemaVersion', 'projectId', 'sessionId', 'turnId', 'ticket', 'interruptEpoch', 'expectedRevision', 'signalId', 'action'];
-const FIELD_OPTIONS = ['task', 'goal', 'route', 'mode', 'paths', 'paths-mode', 'plans', 'channels', 'parent', 'phase', 'delivery', 'role', 'package', 'final-ref', 'status', 'handle', 'channel', 'ref', 'depends-on', 'supersedes', 'verdict', 'reviews', 'base-ref', 'note', 'worktree', 'validation-ref', 'evidence'];
 // 单个工作包的便捷字段；同批多个包、change 等深层结构仍用 --input。
 const PACKAGE_OPTIONS = ['status', 'channel', 'handle', 'ref', 'depends-on', 'supersedes', 'verdict', 'reviews', 'base-ref', 'note', 'worktree'];
 // --package 与 --role 只属于 packages/role-claim；给错动作同样报错，不能静默丢弃。
@@ -87,9 +86,8 @@ export function buildSignal(state, resolved, action, options, extra = {}) {
   // role-claim 的 taskId 只作标识（委派子会话此时还没有自己的任务）；没给 --task 时按工作包派生。
   const fallbackTask = session.taskId || (action === 'role-claim' ? `claim-${options.package || options.role || 'role'}` : undefined);
   const taskId = identifier(options.task || fallbackTask, '--task');
-  // hook 只认单条直接调用，命令里出现这些字符（引号内也算）整条信号不被接受；在这里先拒，免得白跑一轮。
-  const unsafe = FIELD_OPTIONS.filter(key => values(options[key]).some(value => typeof value === 'string' && /[;|&`$<>\r\n]/.test(value))).map(key => `--${key}`);
-  if (unsafe.length) fail('INPUT', `${unsafe.join('、')} 含 ; | & $ < > 或反引号、换行，hook 不会接受这条命令；改写文字，或把字段写进 JSON 文件用 --input 传`);
+  // 字段值是单个 CLI 参数，Hook 是否接受由它解析真实命令行时的引号状态决定；
+  // 这里不能只看字面字符就拒绝，否则 PowerShell 单引号内合法传值的自由文本会被误伤。
   // 新便捷字段只在对应动作生效；给错动作直接报错，避免看起来成功却没有写入。
   // task-update 自己会按公共选项清单报 UNSUPPORTED，这里不抢先改变它的错误码。
   if (action !== 'packages' && action !== 'task-update') {

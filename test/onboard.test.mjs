@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { mkdir, readFile, readdir, writeFile, lstat } from 'node:fs/promises';
+import { cp, copyFile, mkdir, readFile, readdir, writeFile, lstat } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
 import { install } from '../src/install.mjs';
 import { onboardProject, removeProject, learningDoctor } from '../src/onboard.mjs';
 import { alignmentStatus, applyAlignment, decideAlignment, suggestAlignment } from '../src/alignment.mjs';
@@ -11,7 +12,19 @@ import { setLearningEnabled } from '../src/learning-config.mjs';
 import { digest, mutate, readState } from '../src/store.mjs';
 import { BEGIN } from '../src/projects.mjs';
 import { sessionKey } from '../src/protocol.mjs';
-import { cli, entry, fixture, event, identity, start, temporary } from './helpers.mjs';
+import { command, PRODUCT_ROOT } from '../src/entry.mjs';
+import { cli, entry, fixture, event, identity, root, start, temporary } from './helpers.mjs';
+
+const slash = value => value.replaceAll('\\', '/');
+const winQuote = value => `'${value.replaceAll("'", "''")}'`;
+// 真实宿主里的两个 PowerShell 都验证；测试独立探测，不冒充已验证。
+function discoverShell(name) {
+  if (process.platform !== 'win32') return null;
+  const probe = spawnSync(name, ['-NoProfile', '-NonInteractive', '-Command', '$PSVersionTable.PSVersion.ToString()'], { encoding: 'utf8', windowsHide: true, timeout: 15000 });
+  if (probe.error || probe.status !== 0) return null;
+  return { command: name, version: probe.stdout.trim() };
+}
+const REAL_SHELLS = ['powershell.exe', 'pwsh.exe'].map(discoverShell).filter(Boolean);
 
 const CLAUDE_HELP = ['--bare', '--setting-sources', '--settings', '--strict-mcp-config', '--tools', '--json-schema', '--output-format', '--no-session-persistence', '--include-hook-events'].join('\n');
 // 假的 Claude CLI 与 schtasks：只回答能力核对和任务注册，不调用模型。
@@ -40,20 +53,60 @@ async function environment({ installed = true, settings = true } = {}) {
   return { area, directory, project, sessionId: 'session-1', turnId: 'turn-1', taskId: 'task-align' };
 }
 
-test('onboard 核心预检不过时一次列出全部问题且不写入，学习问题单独报告', async () => {
+test('onboard 核心预检不过时一次列出全部问题且不写入，也不预检执行器', async () => {
   const f = await environment({ installed: false });
   await writeFile(path.join(f.project, 'AGENTS.md'), `# 约定\n${BEGIN}\n复制来的管理区\n<!-- workflow:end -->\n`);
-  const result = await onboardProject(f.directory, f.project, { execute: async () => ({ code: 1, stdout: '', stderr: '' }) });
+  const calls = [];
+  const result = await onboardProject(f.directory, f.project, { execute: async (...args) => { calls.push(args); return { code: 1, stdout: '', stderr: '' }; } });
   assert.equal(result.status, 'blocked');
   assert.equal(result.written, false);
   assert.deepEqual(result.problems.map(p => p.code).sort(), ['AGENTS', 'NOT_INSTALLED']);
-  assert.equal(result.learning.status, 'failed');
+  assert.deepEqual(calls, [], '核心接入被阻断时不得调用执行器');
+  assert.equal(result.learning.status, 'not-run');
+  assert.equal(result.learning.reason, 'core-blocked');
   assert.equal(result.learning.requested, false);
   assert.equal(result.learning.enabled, false);
   assert.ok(result.problems.every(p => p.message));
   assert.ok(result.problems.find(p => p.code === 'NOT_INSTALLED').commands.every(c => c.startsWith('node ')));
   assert.deepEqual(Object.keys((await readState(f.directory)).projects), []);
   assert.ok((await readFile(path.join(f.project, 'AGENTS.md'), 'utf8')).includes('复制来的管理区'));
+});
+
+test('核心接入被阻断时不预检项目配置指定的执行器；--enable-learning 只记录请求', async () => {
+  const f = await environment();
+  await writeFile(path.join(f.project, 'AGENTS.md'), `# 约定\n${BEGIN}\n复制来的管理区\n<!-- workflow:end -->\n`);
+  await mkdir(path.join(f.project, '.workflow'), { recursive: true });
+  await writeFile(path.join(f.project, '.workflow', 'config.json'), JSON.stringify({ executor: 'codex', executorPath: path.join(f.area, 'review-canary.exe') }));
+  const calls = [];
+  const execute = async (...args) => { calls.push(args); throw new Error('核心接入失败时不应执行执行器'); };
+  const implicit = await onboardProject(f.directory, f.project, { execute });
+  assert.equal(implicit.status, 'blocked');
+  assert.equal(implicit.written, false);
+  assert.equal(implicit.learning.status, 'not-run');
+  assert.equal(implicit.learning.reason, 'core-blocked');
+  assert.equal(implicit.learning.requested, false);
+  assert.deepEqual(calls, []);
+  const explicit = await onboardProject(f.directory, f.project, { enableLearning: true, execute });
+  assert.equal(explicit.status, 'blocked');
+  assert.equal(explicit.learning.status, 'not-run');
+  assert.equal(explicit.learning.requested, true);
+  assert.deepEqual(calls, []);
+  const skipped = await onboardProject(f.directory, f.project, { skipLearning: true, execute });
+  assert.equal(skipped.status, 'blocked');
+  assert.deepEqual(skipped.learning, { status: 'skipped', requested: false });
+  assert.deepEqual(calls, []);
+});
+
+test('核心检查通过后仍按个人与项目配置选择执行器预检', async () => {
+  const f = await environment();
+  await mkdir(path.join(f.project, '.workflow'), { recursive: true });
+  await writeFile(path.join(f.project, '.workflow', 'config.json'), JSON.stringify({ claudePath: 'project-claude' }));
+  const calls = [];
+  const result = await onboardProject(f.directory, f.project, { execute: fakeExecute(calls) });
+  assert.equal(result.status, 'onboarded', JSON.stringify(result));
+  assert.equal(result.learning.status, 'capabilities-verified');
+  assert.ok(calls.length > 0);
+  assert.ok(calls.every(call => call[0] === 'project-claude'), JSON.stringify(calls));
 });
 
 test('未请求启用学习时，学习预检失败只提示且核心接入仍完成', async () => {
@@ -324,7 +377,7 @@ test('插件在会话中途升级时提示开新会话；旧发布副本的入�
   await mkdir(old, { recursive: true });
   await writeFile(path.join(old, 'workflow.mjs'), '');
   f.turnId = 'turn-2';
-  const payload = { ...await identity(f), taskId: f.taskId, signalId: 'signal-old-entry', action: 'task-start', goal: '旧入口', permissions: { mode: 'read-only', allowedPaths: [] } };
+  const payload = { ...await identity(f), taskId: f.taskId, signalId: 'signal-old-entry', action: 'task-start', goal: '旧入口', route: 'lead-direct', permissions: { mode: 'read-only', allowedPaths: [] } };
   const accepted = await handleHook(f.directory, { hook_event_name: 'PostToolUse', cwd: f.project, session_id: f.sessionId, turn_id: f.turnId, tool_name: 'Bash', tool_input: { command: `node "${path.join(old, 'workflow.mjs')}" signal --base64 e30=` }, tool_response: { output: JSON.stringify({ workflow_signal: payload }) } }, { synthetic: true, entry });
   assert.ok(accepted.hookSpecificOutput.additionalContext.startsWith('workflow 回执：{"accepted":true'), JSON.stringify(accepted));
 });
@@ -360,4 +413,44 @@ test('apply 自动登记表格里新的 pending 行；未登记却写了裁决�
   const text = await readFile(doc, 'utf8');
   await assert.rejects(applyAlignment(f.directory, f.project, { ...await identity(f), baseline: await baseline(), content: '# 对齐\n' + table('待裁决差异', [['D1', 'pending'], ['D2', 'accepted-project']]) }), error => error.code === 'INPUT' && error.message.includes('D2（表格写的是 accepted-project）') && error.message.includes('project align decide'));
   assert.equal(await readFile(doc, 'utf8'), text, '拒绝时不写文档');
+});
+
+test('未安装时的安装修复命令由 command() 生成，不再手写 PowerShell 双引号', async () => {
+  const f = await environment({ installed: false });
+  const result = await onboardProject(f.directory, f.project, { skipLearning: true });
+  assert.equal(result.status, 'blocked', JSON.stringify(result));
+  const problem = result.problems.find(item => item.code === 'NOT_INSTALLED');
+  assert.ok(problem, JSON.stringify(result.problems));
+  const cliPath = path.join(PRODUCT_ROOT, 'bin', 'workflow.mjs');
+  const expected = ['codex', 'claude'].map(agent => command(['install', '--agent', agent], { stateDir: f.directory, cli: cliPath }));
+  assert.deepEqual(problem.commands, expected);
+  if (process.platform === 'win32') assert.ok(problem.commands.every(text => !text.includes(`"${slash(cliPath)}"`)), JSON.stringify(problem.commands));
+});
+
+test('插件路径含 $HOME 与 $(...) 时，安装修复命令在真实 PowerShell 中按字面值执行', { skip: process.platform !== 'win32' || !REAL_SHELLS.length ? '需要真实 PowerShell' : false }, async t => {
+  const area = await temporary('onboard-special-');
+  const canary = path.join(area, 'canary-q-w-b.txt');
+  const specialRoot = path.join(area, 'plugin $HOME $(Set-Content canary-q-w-b.txt x)');
+  await cp(path.join(root, 'bin'), path.join(specialRoot, 'bin'), { recursive: true });
+  await cp(path.join(root, 'src'), path.join(specialRoot, 'src'), { recursive: true });
+  await copyFile(path.join(root, 'package.json'), path.join(specialRoot, 'package.json'));
+  const project = path.join(area, 'project'), state = path.join(area, 'state');
+  await mkdir(project, { recursive: true });
+  // 用副本入口生成真实修复命令：PRODUCT_ROOT 因此就是含特殊字符的插件路径。
+  const generated = spawnSync(process.execPath, [path.join(specialRoot, 'bin', 'workflow.mjs'), 'project', 'onboard', '--root', project, '--state-dir', state], { encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  const report = JSON.parse(generated.stdout);
+  const problem = report.problems.find(item => item.code === 'NOT_INSTALLED');
+  assert.ok(problem, generated.stdout);
+  const reinstall = problem.commands[0];
+  // 同一路径换成记录器入口：命令文本不变，只核对真实 shell 实际交给 Node 的 argv。
+  await writeFile(path.join(specialRoot, 'bin', 'workflow.mjs'), "import '../src/entry.mjs';\nprocess.stdout.write(JSON.stringify(process.argv.slice(2)));\n");
+  for (const item of REAL_SHELLS) {
+    t.diagnostic(`shell=${item.command} version=${item.version}`);
+    const result = spawnSync(item.command, ['-NoProfile', '-NonInteractive', '-Command', reinstall], { encoding: 'utf8', windowsHide: true, timeout: 30000, cwd: area });
+    const executed = await lstat(canary).catch(() => null);
+    assert.equal(result.status, 0, `${item.command} 执行失败（canary=${Boolean(executed)}）：${result.stderr}${result.stdout}`);
+    assert.equal(executed, null, '修复命令里的子表达式被方言展开执行');
+    assert.deepEqual(JSON.parse(result.stdout), ['install', '--agent', 'codex', '--state-dir', slash(state)], reinstall);
+  }
+  assert.ok(reinstall.includes(winQuote(slash(path.join(specialRoot, 'bin', 'workflow.mjs')))), `修复命令未按字面量引用插件路径：${reinstall}`);
 });

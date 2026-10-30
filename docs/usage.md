@@ -4,7 +4,7 @@
 
 运行环境为 Windows、Node.js 24+，自动 hooks 已适配 Claude Code 与 Codex / Codeg Codex ACP。Lead、Worker、Reviewer 按[公共方法](workflow.md)分配，均不绑定客户端或模型；其他智能体通过实际可用的委派工具协作，原生 hooks 支持范围见 [README](../README.md#角色与接入支持)。运行时无第三方依赖，无常驻服务，不新增付费模型调用，不要求日常手动调用技能。
 
-开发验证在仓库根目录运行 `npm test`、`npm run check`、`npm run demo`。测试和 demo 使用系统临时目录下 `workflow-tests/` 中的隔离目录、本地 Git 远端和合成事件，不写入仓库，也不改真实全局配置。
+开发验证在仓库根目录运行 `npm test`、`npm run check`、`npm run demo`。这些是源码仓库的自检命令，不属于安装后的产品能力；按改动选择检查、失败判定、组合入口和证据留存见[本仓维护的验证场景与命令](acceptance.md#8-本仓维护的验证场景与命令f10)。测试和 demo 使用系统临时目录下 `workflow-tests/` 中的隔离目录、本地 Git 远端和合成事件，不写入仓库，也不改真实全局配置。
 
 ### 安装与首次接入
 
@@ -28,7 +28,9 @@ node bin/workflow.mjs doctor --agent codex
 node bin/workflow.mjs project onboard --root "D:/某个已明确允许接入的项目"
 ```
 
-`onboard` 分开核对核心接入与可选后台复盘：核心检查（宿主安装与版本、目录与 Git 身份、`AGENTS.md` 残留管理区）全部通过才写入，不通过时不写任何东西，并列出每个问题的修复命令；后台复盘执行器只核对能力、不调用模型，预检问题单独报告，未加 `--enable-learning` 时不阻断核心接入。加 `--enable-learning` 时同时启用后台复盘并注册计划任务（会按配置真实调用模型并消耗额度，需用户同意）；当前会话权限允许时可由代理直接执行，否则请在用户自己的终端执行。显式请求时分别报告接入与学习结果，学习失败不会写成全部成功：核心接入完成但学习未完整生效时返回 `status: partial`，CLI 退出码为 1；未加 `--enable-learning` 时预检问题只提示，退出码仍为 0。已启用后台复盘的项目重复接入时，现有开关与计划任务保持不变，预检失败只报告本次核对结果。不打算启用后台复盘时加 `--skip-learning`，状态记为未启用。解绑用 `project remove --root <项目>`：删除计划任务、AGENTS 管理区、本机状态记录和数据目录，项目内的对齐文件与 `.workflow/` 只列出不删除。底层的 `project enable` 仍可用，但不做预检。
+`onboard` 分开核对核心接入与可选后台复盘：核心检查（宿主安装与版本、目录与 Git 身份、`AGENTS.md` 残留管理区）全部通过才写入，不通过时不写任何东西，并列出每个问题的修复命令；核心检查未通过时不会运行执行器预检，个人或项目配置指定的执行器都不会被调用。后台复盘执行器只核对能力、不调用模型，预检问题单独报告，未加 `--enable-learning` 时不阻断核心接入。加 `--enable-learning` 时同时启用后台复盘并注册计划任务（会按配置真实调用模型并消耗额度，需用户同意）；当前会话权限允许时可由代理直接执行，否则请在用户自己的终端执行。显式请求时分别报告接入与学习结果，学习失败不会写成全部成功：核心接入完成但学习未完整生效时返回 `status: partial`，CLI 退出码为 1；未加 `--enable-learning` 时预检问题只提示，退出码仍为 0。已启用后台复盘的项目重复接入时，现有开关与计划任务保持不变，预检失败只报告本次核对结果。不打算启用后台复盘时加 `--skip-learning`，状态记为未启用。解绑用 `project remove --root <项目>`：删除计划任务、AGENTS 管理区、本机状态记录和数据目录，项目内的对齐文件与 `.workflow/` 只列出不删除。底层的 `project enable` 仍可用，但不做预检。
+
+插件给出的命令可直接粘贴到 Windows PowerShell 5.1 或 PowerShell 7：入口路径与含空格、单引号、`$`、反引号、分号或 `$(...)` 的参数都用单引号字面量书写，不会被展开执行。Windows PowerShell 5.1 调用原生程序时无法原样传递双引号和空参数，这类值以 `workflow-arg64:` 开头的标记书写，命令末尾同时带上 `--workflow-arg64-transport` 开关；CLI 只在看到该开关时还原标记，直接手写的同名 `workflow-arg64:` 普通文本按字面值接收。整条命令照原样粘贴即可，不要改写标记或删除开关。
 
 同一本机目录的绑定由两种宿主共用，切换已安装适配的宿主不必重新接入。同一项目可以同时开多个 Lead 会话，都能写共享资料；并发改同一文件时，后写的一方收到 `CONFLICT`，重读后再写。
 
@@ -78,12 +80,12 @@ hook 提供 project/session/turn/ticket/interruptEpoch/expectedRevision。contex
 常用动作用子命令，一条命令完成，不需要临时文件（`<sessionId>`、`<turnId>` 取本次入口的 identity；`--id` 是 signalId，每个新动作唯一，重试同一动作时命令保持不变）：
 
 ```powershell
-node "<本次hook提供的bin/workflow.mjs>" signal task-start --session <sessionId> --turn <turnId> --id start-1 --task task-readme --route delegated --goal "本次已授权目标" --mode write --paths README.md,LESSONS.md
-node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-1 --package w1 --role worker --status dispatched --channel codeg:claude_code --handle <委派ID>
-node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-2 --package w1 --status consumed --ref <交付提交>
-node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-3 --package r1 --role reviewer --status dispatched --channel codeg:codex --handle <委派ID> --reviews w1
-node "<本次hook提供的bin/workflow.mjs>" signal packages --session <sessionId> --turn <turnId> --id pkg-4 --package r1 --status consumed --verdict PASS --ref <被审提交>
-node "<本次hook提供的bin/workflow.mjs>" signal task-end --session <sessionId> --turn <turnId> --id end-1 --final-ref <交付提交> --evidence "npm test 250/250 通过" --evidence "npm run check 0 错误"
+node '<本次hook提供的bin/workflow.mjs>' signal task-start --session <sessionId> --turn <turnId> --id start-1 --task task-readme --route delegated --goal "本次已授权目标" --mode write --paths README.md,LESSONS.md
+node '<本次hook提供的bin/workflow.mjs>' signal packages --session <sessionId> --turn <turnId> --id pkg-1 --package w1 --role worker --status dispatched --channel codeg:claude_code --handle <委派ID>
+node '<本次hook提供的bin/workflow.mjs>' signal packages --session <sessionId> --turn <turnId> --id pkg-2 --package w1 --status consumed --ref <交付提交>
+node '<本次hook提供的bin/workflow.mjs>' signal packages --session <sessionId> --turn <turnId> --id pkg-3 --package r1 --role reviewer --status dispatched --channel codeg:codex --handle <委派ID> --reviews w1
+node '<本次hook提供的bin/workflow.mjs>' signal packages --session <sessionId> --turn <turnId> --id pkg-4 --package r1 --status consumed --verdict PASS --ref <被审提交>
+node '<本次hook提供的bin/workflow.mjs>' signal task-end --session <sessionId> --turn <turnId> --id end-1 --final-ref <交付提交> --evidence "npm test 250/250 通过" --evidence "npm run check 0 错误"
 ```
 
 CLI 只读当前状态补齐 projectId、ticket、epoch 和 revision，输出信号，由当前 PostToolUse 接受；字段参数见[协议](design/protocol.md#信号)。便捷参数一次只表达一个工作包：`--ref` 对 worker 记 `deliveredRef`、对 reviewer 记 `reviewedRef`，新包需要同时给 `--role`；单包便捷字段必须配 `--package`，否则直接返回 INPUT，不会静默丢弃。task-end 的 `validation.ref` 缺省取 `--final-ref`，`--evidence` 可重复。一次消费并派下一阶段等**同批多个包**、`change`、`waivers` 以及 disposition 等深层结构仍写进 UTF-8 JSON 文件，用 `--input` 附上（文件只放业务字段，不放身份字段）：
@@ -107,7 +109,7 @@ node "<入口>" knowledge capture --session <sessionId> --turn <turnId> --id obs
   "turnId": "<turnId>", "ticket": "<当前ticket>",
   "interruptEpoch": 0, "expectedRevision": 1,
   "taskId": "<稳定taskId>", "signalId": "signal-start-1",
-  "action": "task-start", "goal": "本次已授权目标",
+  "action": "task-start", "goal": "本次已授权目标", "route": "lead-direct",
   "permissions": { "mode": "write", "allowedPaths": ["README.md", "LESSONS.md"] }
 }
 ```
@@ -117,6 +119,8 @@ node "<本次hook提供的bin/workflow.mjs>" signal --input "<任务JSON文件>"
 ```
 
 使用独立直接 shell 调用，当前支持 node/实际 Node 路径加本插件绝对入口；不串接其他 shell 命令（包括前置 `cd`；组合命令只得到“须单独直接调用”的提示，不更新状态）。PowerShell 中文 JSON 用 UTF-8 文件加 --input，不通过 5.1 原生文本管道；--base64 仅作兼容，长串可能被宿主脱敏成占位符而失效。signal 只输出 workflow_signal，当前 PostToolUse 接受回执才表示状态更新；拒绝时用 context 重读 identity/revision，不换 ID 绕过。权限系统或分类器拒绝命令时同样不换写法重试，向用户说明未记录的步骤。
+
+task-start 必须显式声明 route（CLI `--route`，完整 payload 的 `route`）：`operation-only` 用于无经验回执要求的例行操作，`lead-direct` 用于 Lead 自己实施，`delegated` 用于分工并核对包终态、审查与 validation。新任务漏填或值非法返回 `ROUTE`，不建立任务；已存在任务续接可省略 route；旧版本留下、记录中没有 route 的历史任务照常续接，也可在接续时补声明一次，声明后不可改（返回 `ROUTE`）。非 operation-only 的 lead-direct、delegated 与历史无 route 任务照常做 spec 检查。
 
 `action=phase` 声明 executing/operation-only/waiting-user/delivering；delivering 加 deliveryId，可同时提交 disposition。普通查看、指定提交 push、明确快进 pull 用 operation-only，默认零 Worker/Reviewer；低风险单点 Lead 实施，是否独立审查按行为与失败代价决定。结构化提问工具由 hook 自动记 waiting-user；普通文本反问和未识别工具先发 phase waiting-user。
 
