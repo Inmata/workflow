@@ -155,12 +155,12 @@ Unreviewed materials live only on this machine, not in the project. To keep them
 
 ## Upgrading
 
-Upgrading does not change project files, and leaves the bindings, alignment documents, notes and lessons of onboarded projects alone. Run it once on each computer, after finishing any task in progress (install refuses to upgrade while a task is active). The commands below assume this repository is at `D:\git-repo\workflow`; replace the path if yours differs.
+Upgrading does not change project files, and leaves the bindings, alignment documents, notes and lessons of onboarded projects alone. Run it once on each computer, after finishing any task in progress (install refuses to upgrade while a task is active). The commands below assume this repository is at `C:\path\to\workflow`; replace the path if yours differs.
 
 1. Pull the new version:
 
 ```powershell
-cd D:\git-repo\workflow
+cd C:\path\to\workflow
 git pull
 ```
 
@@ -169,7 +169,7 @@ The plugin has no runtime dependencies, so `npm install` is not needed.
 2. Run `install` again for each host you installed. If you only installed one, run only that command:
 
 ```powershell
-cd D:\git-repo\workflow
+cd C:\path\to\workflow
 node bin/workflow.mjs install --agent claude
 node bin/workflow.mjs install --agent codex
 ```
@@ -198,7 +198,7 @@ To rework the alignment document under the new protocol, open a new session in t
 Re-onboarding is only needed in two cases: the new version changed the text of the `AGENTS.md` managed block (the release notes say so), or you want the new version's onboarding checks to go over the project. Finish the plugin upgrade above first, otherwise the checks report a host version mismatch:
 
 ```powershell
-cd D:\git-repo\workflow
+cd C:\path\to\workflow
 node bin/workflow.mjs project onboard --root "D:/your-project"
 ```
 
@@ -265,12 +265,12 @@ Current version 0.8.0. It includes the collaboration rules, CLI, hook adapters f
 Changes in 0.8.0:
 
 - Explicit route for new tasks: `task-start` and full payloads must declare `route` (`operation-only`, `lead-direct` or `delegated`). A new task without it, or with an invalid value, returns `ROUTE` and no task is created. Continuing an existing task may omit it; historical tasks left by older versions (no `route` field in their record) continue as before and may declare it once when resumed, after which it cannot change. The gate still runs spec checks for historical tasks without a route.
-- Spec checks preflight outside the state lock: `task-end` and Stop check specs outside the state lock against the current worktree and `finalRef` (HEAD by default), sharing a 4-second budget for the whole check, so slow Git no longer occupies the state lock needed by other sessions. The preflight binds the commit OID, governed-file digests, spec list and index snapshot into a `binding`; inside the lock it only re-resolves the ref once and compares snapshots, without rerunning status/log/rev-list. If the commit, workspace, index or session/task snapshot changes, the old report is discarded as `spec-check:stale`, which cannot be waived and must be retried; Stop says "spec check could not be confirmed" instead of claiming "no gate items".
+- Spec checks preflight outside the state lock: `task-end` and Stop check specs outside the state lock against the current worktree and `finalRef` (HEAD by default), sharing a 4-second budget for its Git calls (file snapshot reads and the final in-lock ref check are not counted), so slow Git no longer occupies the state lock needed by other sessions. The preflight binds the commit OID, governed-file digests, spec list and index snapshot into a `binding`; inside the lock it only re-resolves the ref once and compares snapshots, without rerunning status/log/rev-list. If the commit, workspace, index or session/task snapshot changes, the old report is discarded as `spec-check:stale`, which cannot be waived and must be retried; Stop says "spec check could not be confirmed" instead of claiming "no gate items".
 - Onboarding preflight order and PowerShell arguments: when core onboarding checks fail, `project onboard` no longer reads or runs an executor configured in personal or project config. Commands generated for users and agents use PowerShell single-quoted literals; paths and arguments containing spaces, single quotes, `$`, backticks, semicolons or `$(...)` are passed literally instead of being expanded or executed. Values Windows PowerShell 5.1 cannot pass verbatim (double quotes and empty arguments) use a `workflow-arg64:` marker that is decoded only when the generated command carries `--workflow-arg64-transport`.
 - Maintenance verification entry: the new `npm run verify` runs the selected `check`, `test` and `demo` scripts from `package.json` in order, keeping each command's raw output plus `summary.json`/`summary.md`; any required check that fails or does not finish makes the overall exit code non-zero, and the demo is always labelled a synthetic smoke.
 - Related boundary fixes: alignment checks treat permission or busy read failures as `errors` and mark the index stale/incomplete instead of reporting deleted files; atomic rollback after a rejected `task-end` is provided by the production hook's transaction boundary, and new direct callers of the protocol function must supply the same boundary.
 
-After upgrading, reinstall the hosts; both hosts share `current`, and each install command only updates the selected host's registration. The AGENTS managed block is unchanged, so re-onboarding is not needed. These behaviours are covered by this repository's tests and synthetic smoke; the release notes do not treat that as real-host acceptance, and real callbacks, model calls and the 4-second budget on very large repositories still need separate verification.
+After upgrading, reinstall the hosts; both hosts share `current`, and each install command only updates the selected host's registration. The AGENTS managed block is unchanged, so re-onboarding is not needed. These behaviours are covered by this repository's tests and synthetic smoke; the release notes do not treat that as real-host acceptance, and real callbacks, model calls and the 4-second Git preflight budget on very large repositories still need separate verification.
 
 Changes in 0.7.0:
 

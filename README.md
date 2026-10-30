@@ -153,12 +153,12 @@ node bin/workflow.mjs project align status --root "D:/你的项目"
 
 ## 升级
 
-升级不改项目文件，不动已接入项目的绑定、对齐文档、材料和经验。每台电脑各执行一次，先结束正在进行的任务（有活动任务时安装会拒绝升级）。以下命令假设本仓库在 `D:\git-repo\workflow`，路径不同时替换成实际目录。
+升级不改项目文件，不动已接入项目的绑定、对齐文档、材料和经验。每台电脑各执行一次，先结束正在进行的任务（有活动任务时安装会拒绝升级）。以下命令假设本仓库在 `C:\path\to\workflow`，路径不同时替换成实际目录。
 
 1. 拉取新版本：
 
 ```powershell
-cd D:\git-repo\workflow
+cd C:\path\to\workflow
 git pull
 ```
 
@@ -167,7 +167,7 @@ git pull
 2. 对已安装的每个宿主分别重新执行 `install`，只装了一个宿主时只运行对应命令：
 
 ```powershell
-cd D:\git-repo\workflow
+cd C:\path\to\workflow
 node bin/workflow.mjs install --agent claude
 node bin/workflow.mjs install --agent codex
 ```
@@ -196,7 +196,7 @@ node bin/workflow.mjs doctor --agent codex
 重新接入只在两种情况下需要：新版本改了 `AGENTS.md` 管理区的文字（版本说明会写明），或者你想用新版的接入预检把项目核对一遍。先完成上面的插件升级，否则接入预检会报宿主版本不一致：
 
 ```powershell
-cd D:\git-repo\workflow
+cd C:\path\to\workflow
 node bin/workflow.mjs project onboard --root "D:/你的项目"
 ```
 
@@ -263,12 +263,12 @@ npm run verify
 0.8.0 的变化：
 
 - 新任务显式分流：`task-start` 和完整 payload 都必须声明 `route`（`operation-only` / `lead-direct` / `delegated`）；新任务漏填或值非法返回 `ROUTE`，不建立任务。已存在任务续接可省略；旧版本留下、记录中没有 `route` 的历史任务照常续接，可在续接时补声明一次，声明后不可改。任务门禁对历史无 `route` 任务照常做 spec 检查。
-- spec 检查锁外预检：`task-end` 与 Stop 在状态锁外按当前 worktree 和 `finalRef`（缺省 HEAD）检查 spec，整次检查共用 4 秒预算，慢 Git 不再占用其他会话需要的状态锁；预检把提交 OID、受管文件摘要、spec 清单和索引快照绑定成 `binding`，锁内只重解析一次 ref 并比对快照，不重跑 status/log/rev-list。提交、工作区、索引或会话/任务快照变化后，旧报告按 `spec-check:stale` 作废，且不可豁免，只能重试；Stop 在无法确认时明确提示“spec 检查无法确认”，不报“门禁无缺项”。
+- spec 检查锁外预检：`task-end` 与 Stop 在状态锁外按当前 worktree 和 `finalRef`（缺省 HEAD）检查 spec，整次检查的 Git 调用共用 4 秒预算（文件快照读取与锁内最终 ref 复核不计入），慢 Git 不再占用其他会话需要的状态锁；预检把提交 OID、受管文件摘要、spec 清单和索引快照绑定成 `binding`，锁内只重解析一次 ref 并比对快照，不重跑 status/log/rev-list。提交、工作区、索引或会话/任务快照变化后，旧报告按 `spec-check:stale` 作废，且不可豁免，只能重试；Stop 在无法确认时明确提示“spec 检查无法确认”，不报“门禁无缺项”。
 - 接入预检顺序与 PowerShell 参数：核心接入检查未通过时，`project onboard` 不读取也不执行个人或项目配置指定的执行器。生成给用户和代理的命令改用 PowerShell 单引号字面量；含空格、单引号、`$`、反引号、分号或 `$(...)` 的路径与参数按原值传递，不再被展开执行。PowerShell 5.1 无法原样传递的双引号和空参数改用 `workflow-arg64:` 标记，并只在生成命令带 `--workflow-arg64-transport` 开关时还原。
 - 维护验证入口：新增 `npm run verify`，按 `package.json` 的 `check`、`test`、`demo` 顺序组合执行选中的检查，保留逐项原始输出与 `summary.json`/`summary.md` 摘要；任一必需检查失败或未完成时整体退出码非零，demo 固定标为合成 smoke。
 - 同时修正的边界：对齐检查遇到权限、占用等读取失败时进入 `errors` 并把索引标为过期/不完整，不再当成文件已删除；`task-end` 拒绝时的整体回滚由生产 Hook 的事务边界保证，直接调用协议函数的新调用方需要自己提供同等边界。
 
-升级后重装宿主即可；两个宿主共用 `current`，安装命令只更新所选宿主的注册。AGENTS 管理区未变，不需要重新接入。以上行为由本仓测试与合成 smoke 覆盖，发布说明不把它们当作真实宿主验收；真实回调、模型调用和超大仓库下的 4 秒预算表现仍需另行验收。
+升级后重装宿主即可；两个宿主共用 `current`，安装命令只更新所选宿主的注册。AGENTS 管理区未变，不需要重新接入。以上行为由本仓测试与合成 smoke 覆盖，发布说明不把它们当作真实宿主验收；真实回调、模型调用和超大仓库下的 4 秒 Git 预检预算表现仍需另行验收。
 
 0.7.0 的变化：
 

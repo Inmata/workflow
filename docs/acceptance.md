@@ -182,7 +182,7 @@ Worker 与 Reviewer（drift-sim）：Codex Worker 包 w-mul 增加 `mul` 和测�
 | 任务分流、门禁与信号 | `node --test test/protocol.test.mjs test/gate.test.mjs test/signal.test.mjs` | 任一用例失败；新任务缺 route 未被拒绝、历史任务无法续接都算失败 | 历史无 route 兼容只由合成样本验证；不覆盖真实宿主回合 |
 | 知识缓存与学习事务 | `node --test test/learning.test.mjs` | 命中、失效或事务断言失败 | 等长且保留时间戳的编辑不保证实时可见，这是已接受边界；不调用真实模型 |
 | 锁、对齐、spec 与 Hook 生命周期 | `node --test test/hooks.test.mjs test/spec.test.mjs test/alignment.test.mjs test/integration.test.mjs` | 任一用例失败；故障样本没复现时只能标“未复现”，不能写通过 | 慢 Git 为注入延迟；宿主 10 秒终止由计时器模拟；读取故障只测了 EACCES；junction 等价性未验证 |
-| Hook spec 预检与总预算 | `node --test test/hooks.test.mjs test/gate.test.mjs test/spec.test.mjs test/protocol.test.mjs test/integration.test.mjs` | 任一用例失败；慢 Git 预检期间竞争调用未取得锁、卡住 Git 超过宿主窗口、多次慢调用累计超窗、干净预检后受管文件/提交/ref/会话/索引变化仍被当成通过、`spec-check:stale` 被豁免，或 Stop 在无法确认时报“门禁无缺项”都算失败 | 4 秒总预算为代码常量，未在真实超大仓库验证；宿主 10 秒上限由子进程计时观察，不是真实宿主终止；索引快照按大小与 mtime，不承诺还原 mtime 的极端写入；大文件仍退回大小与 mtime；慢 Git 仍为注入延迟 |
+| Hook spec 预检与 Git 预算 | `node --test test/hooks.test.mjs test/gate.test.mjs test/spec.test.mjs test/protocol.test.mjs test/integration.test.mjs` | 任一用例失败；慢 Git 预检期间竞争调用未取得锁、卡住 Git 超过宿主窗口、多次慢调用累计超窗、干净预检后受管文件/提交/ref/会话/索引变化仍被当成通过、`spec-check:stale` 被豁免，或 Stop 在无法确认时报“门禁无缺项”都算失败 | 4 秒 Git 调用总预算为代码常量，不覆盖文件快照读取与锁内复核，未在真实超大仓库验证；宿主 10 秒上限由子进程计时观察，不是真实宿主终止；索引快照按大小与 mtime，不承诺还原 mtime 的极端写入；大文件仍退回大小与 mtime；慢 Git 仍为注入延迟 |
 | 交付前全量行为测试 | `npm test` | 任一测试失败或退出码非 0；跳过项要在结论中列出，不能当通过 | 测试中的删除改道未在 junction/目录联接上验证；用例数量和耗时随代码与环境变化 |
 | 仓库一致性（语法、发布清单、版本、hook 声明、文档链接） | `npm run check` | `ok:false` 或退出码非 0 | 不证明业务行为、外部链接可达或真实宿主回调 |
 | CLI、安装或 Hook 生命周期 smoke | `npm run demo` | 退出码非 0 或任一断言失败 | 只有 `synthetic-isolated-cli`；不认证真实 ACP、模型或宿主；`result.json` 随临时目录清理，终端输出或摘要才是可留存证据 |
