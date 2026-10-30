@@ -166,3 +166,66 @@ Worker 与 Reviewer（drift-sim）：Codex Worker 包 w-mul 增加 `mul` 和测�
 - 模拟仓库的 `npm test`（`node --test test/`）在 Node 24.19 报 Cannot find module，与 workflow 无关，用 `node --test` 代替。
 
 结论：0.5.0 的 spec 门禁、不可豁免、Spec-OK 放行、Stop 回合结束核对、Worker 文档影响申报和 Reviewer 对照 spec 核对，在两个宿主上都通过。
+
+## 8. 本仓维护的验证场景与命令（F10）
+
+本节只服务本仓源码维护：一次改动该跑什么、怎样算失败、哪些限制仍然存在。它不改变第 1–7 节的真实宿主验收结论；命令退出成功和合成样例都不能替代真实宿主、模型与用户环境。以下命令都在仓库根目录运行，需要 Node.js 24+。
+
+### 8.1 场景对应表
+
+按改动影响选择受影响场景，不要求每次全跑。“失败判定”说明什么情况不能算通过；“边界”列出该检查不能证明的内容。
+
+| 场景 | 选择（命令） | 失败判定 | 边界 |
+| --- | --- | --- | --- |
+| 接入流程、执行器预检 | `node --test test/onboard.test.mjs test/runner.test.mjs` | 任一用例失败或退出码非 0；核心接入失败时执行器调用数必须为零 | 使用假执行器，不调用模型；涉及 junction/目录联接的删除路径未验证 |
+| 命令生成与参数转义 | `node --test test/entry.test.mjs test/install.test.mjs test/runner.test.mjs test/hooks.test.mjs`，受影响时加 `test/signal.test.mjs` | 任一用例失败或退出码非 0；特殊参数未按原值往返即失败 | 无 PowerShell 的机器跳过真实 shell 用例；POSIX 用例在 Windows 跳过，不能互相替代 |
+| 任务分流、门禁与信号 | `node --test test/protocol.test.mjs test/gate.test.mjs test/signal.test.mjs` | 任一用例失败；新任务缺 route 未被拒绝、历史任务无法续接都算失败 | 历史无 route 兼容只由合成样本验证；不覆盖真实宿主回合 |
+| 知识缓存与学习事务 | `node --test test/learning.test.mjs` | 命中、失效或事务断言失败 | 等长且保留时间戳的编辑不保证实时可见，这是已接受边界；不调用真实模型 |
+| 锁、对齐、spec 与 Hook 生命周期 | `node --test test/hooks.test.mjs test/spec.test.mjs test/alignment.test.mjs test/integration.test.mjs` | 任一用例失败；故障样本没复现时只能标“未复现”，不能写通过 | 慢 Git 为注入延迟；宿主 10 秒终止由计时器模拟；读取故障只测了 EACCES；junction 等价性未验证 |
+| Hook spec 预检与总预算 | `node --test test/hooks.test.mjs test/gate.test.mjs test/spec.test.mjs test/protocol.test.mjs test/integration.test.mjs` | 任一用例失败；慢 Git 预检期间竞争调用未取得锁、卡住 Git 超过宿主窗口、多次慢调用累计超窗、干净预检后受管文件/提交/ref/会话/索引变化仍被当成通过、`spec-check:stale` 被豁免，或 Stop 在无法确认时报“门禁无缺项”都算失败 | 4 秒总预算为代码常量，未在真实超大仓库验证；宿主 10 秒上限由子进程计时观察，不是真实宿主终止；索引快照按大小与 mtime，不承诺还原 mtime 的极端写入；大文件仍退回大小与 mtime；慢 Git 仍为注入延迟 |
+| 交付前全量行为测试 | `npm test` | 任一测试失败或退出码非 0；跳过项要在结论中列出，不能当通过 | 测试中的删除改道未在 junction/目录联接上验证；用例数量和耗时随代码与环境变化 |
+| 仓库一致性（语法、发布清单、版本、hook 声明、文档链接） | `npm run check` | `ok:false` 或退出码非 0 | 不证明业务行为、外部链接可达或真实宿主回调 |
+| CLI、安装或 Hook 生命周期 smoke | `npm run demo` | 退出码非 0 或任一断言失败 | 只有 `synthetic-isolated-cli`；不认证真实 ACP、模型或宿主；`result.json` 随临时目录清理，终端输出或摘要才是可留存证据 |
+| 组合调用与留存 | `npm run verify -- check demo --out <目录>` | 选中的必需检查失败或未完成时退出码为 1；参数错误为 2 | 只组合已有命令并留存结果，不新增断言，也不认证真实环境；`scripts/` 不随 npm 发布副本安装 |
+
+只想跑测试名带 F05、P01 或“检查预算”标记的用例时，可对相关文件加 `--test-name-pattern="F05|P01|检查预算"`。
+
+全量测试和 demo 是否通过以当前提交的实际输出为准；Windows 会跳过仅 POSIX 的用例，跳过项不能当通过。测试数量和耗时随代码与环境变化，不设固定门槛。
+
+### 8.2 组合入口的语义
+
+`npm run verify` 调用 `scripts/verify.mjs`（只在仓库源码中可用，`scripts/` 不随 npm 发布副本安装），它读取 `package.json` 的 `check`、`test`、`demo` 脚本并按此顺序执行：
+
+- 默认运行全部三项；显式列出子集（如 `npm run verify -- check demo`）时只运行选中项，其余在摘要中标为“未运行（未选择）”，不计入必需项。
+- 退出码：选中检查全部通过为 0；任一失败、脚本缺失或运行被终止为 1；参数错误为 2。某一项失败后仍继续执行其余项，保留完整结果。
+- 每项原始输出写到 `<out>/<id>.log`，摘要写到 `<out>/summary.json` 和 `<out>/summary.md`。摘要记录 HEAD、未提交变更数（含未跟踪文件）、Node 与平台、逐项状态/退出码/耗时/日志路径、未运行原因和边界说明。
+- `--out` 默认指向系统状态目录（Windows 为 `%LOCALAPPDATA%\workflow-verify\<仓库目录名>\<UTC 时间>`），避免报告随临时目录清理消失，也避免把日志混进仓库；需要交付或 CI artifact 时用 `--out` 指定。
+- demo 在摘要中固定标为“合成 smoke”，不能由它的退出码推断真实 ACP、模型或宿主联调已完成。
+
+### 8.3 合成 smoke 的契约
+
+`examples/demo.mjs` 是隔离 CLI 冒烟，不是真实宿主联调。维护它时注意两个契约，否则会出现看似产品回归的失败：
+
+- task-start 必须显式声明 `route: 'lead-direct'`；新任务缺 route 会被拒绝（`ROUTE`）。
+- 任务门禁已无缺项但仍为 active 时，第一次 Stop 返回 `decision: 'block'`；发 task-end 后第二次 Stop 才返回 `{}`。把第一次写成 `{}` 会让 demo 失败，也不应为了让它通过而放宽断言。
+
+当前实现按上述契约执行。`npm run demo` 退出 0 只说明合成隔离 CLI 流程通过，不说明真实 ACP、模型或用户宿主已验证。
+
+### 8.4 运行前提与删除边界
+
+- 测试、demo 和安装流程会删除或替换文件：`src/install.mjs` 对符号链接使用非递归删除，其他受管条目使用递归删除；测试清理和 demo 也会删除临时目录。没有外部删除保护时，这些都是真实删除。
+- 仓库不提供删除保护适配器。若本机需要把 Node 删除 API 改道到回收站，需自行通过 `NODE_OPTIONS=--import=<适配器>` 注入，并保证 Hook 或测试子进程继承该变量；`npm run verify` 不保证外部预置，子进程覆盖 `NODE_OPTIONS` 时预置会失效。
+- 这类适配器对 junction/目录联接的等价性未验证；涉及链接目标的删除只能写“删除保护未完整确认”。
+- 本节全部为本地进程级或合成验证。真实宿主回调、实际模型、用户配置与外部系统仍按第 6、7 节单独验收。
+
+### 8.5 维护规则
+
+- 新场景先复用已有命令；确实没有可观察检查时才补最小用例，并回填 8.1。一次性调查输出不自动变成长期门槛。
+- 命令或脚本改名时同步本表和 `package.json`；组合入口直接读取 `package.json`，缺脚本会以非零报告，不会静默跳过。
+- 不需要每次全跑：按改动选择受影响场景，交付前至少运行受影响场景和 `npm run check`；涉及 CLI、安装或 Hook 生命周期时加 demo（合成）；跨模块或范围不确定时跑全量。
+- 场景不再代表真实需求，或维护成本持续高于收益时调整、退役；不以套件规模作为成功指标。
+- 证据留在命令输出和 `npm run verify` 的 `<out>/summary.md`、`<out>/*.log` 中；不要把个人机器路径、会话记录或一次性批次日志写进本文件。
+
+### 8.6 CI
+
+未规划。仓库远端是 GitHub，但已跟踪文件中没有 `.github` 工作流；Actions 是否可用、账户额度、runner 环境和 secrets 策略均未确认。未确认托管条件前不写 CI 配置，也不假设平台能力。若以后确认，首选复用 `npm run verify -- --out <artifact 目录>`，把摘要和原始日志作为 artifact 留存；demo 保持合成标识，需要 PowerShell 或回收站适配的检查要先确定 runner 环境，跳过的用例不能当通过。
