@@ -37,7 +37,7 @@ related:
 - 未声明的历史任务 `task-end` 接受并附 `warning:'route-missing'`，spec 漂移仍被检查。
 - 经真实 PostToolUse 的便捷子命令与完整 payload 得到相同的接受/拒绝行为；伪造输出、组合命令和非本插件入口不被接收。
 - 用户指定分工后，`operation-only`/`lead-direct` 不能消除用户要求的 Worker/Reviewer 分工；`route` 只决定门禁范围，不认证任务复杂度。通道偏离必须在同一 `packages` 信号附 `change.packages`，先声明错误通道再“实际执行与声明一致”不能绕过；未声明通道或未指定角色的旧行为不变。
-- 曾有 PASS 审查的 worker 包（含沿 `supersedes` 链的曾 PASS 事实）改 `canceled` 返回 `PACKAGE`，原账本不变；PASS 事实是单调的：同一批把审查改成 `FIX`/`BLOCKED`、或先单独改 `FIX` 再取消，都不能抹掉曾 PASS，取消仍被拒。旧账本没有历史字段时按当前 PASS 动态推导，并在下一次写账本前落成历史；随后合法返修新 `deliveredRef` 再取得匹配 PASS 仍可通过，不阻塞新 ref 再审。从未审查的包可合法取消，已合法 `waived` 的语义保持不变；审查对象改成指向其他包后，历史 PASS 仍算已审：该包不能改标 `waived`，其 `review:<id>` 缺项也不能用 waiver 抵扣；审查取消而无结论的包仍算未审、可合法 waived；同一批 reviewer 的结论按整批合并后的最终状态计入 waived 判定（含 FIX/BLOCKED），与数组顺序无关。同包返修后旧 `reviewedRef` 不再匹配新 `deliveredRef`，必须重新送审；换新包只能在创建时声明 `supersedes`，接替包需要自己的 PASS，继承的旧结论不能直接抵扣。历史上已被标成 `canceled` 但链路有 PASS 的包仍列入 `review:<id>`。
+- 曾有 PASS 审查的 worker 包（含沿 `supersedes` 链的曾 PASS 事实）改 `canceled` 返回 `PACKAGE`，原账本不变；PASS 事实是单调的：同一批把审查改成 `FIX`/`BLOCKED`、或先单独改 `FIX` 再取消，都不能抹掉曾 PASS，取消仍被拒。旧账本没有历史字段时按当前 PASS 动态推导，并在下一次写账本前落成历史；随后合法返修新 `deliveredRef` 再取得匹配 PASS 仍可通过，不阻塞新 ref 再审。从未有 PASS 的包可合法取消（当前只有 FIX/BLOCKED 而没有 PASS 的包也在内），已合法 `waived` 的语义保持不变；审查对象改成指向其他包后，历史 PASS 仍算已审：该包不能改标 `waived`，其 `review:<id>` 缺项也不能用 waiver 抵扣；历史只单调保留 PASS，重新指向后旧的 FIX/BLOCKED 不留存；当前账本或同一批合并后的最终结论（含 FIX/BLOCKED）仍算已审，waived 判定与数组顺序无关。审查取消而无结论的包仍算未审、可合法 waived。同包返修后旧 `reviewedRef` 不再匹配新 `deliveredRef`，必须重新送审；换新包只能在创建时声明 `supersedes`，接替包需要自己的 PASS，继承的旧结论不能直接抵扣。历史上已被标成 `canceled` 但链路有 PASS 的包仍列入 `review:<id>`。
 - 同一批新建 worker 包并把它标成 `canceled` 时，按本批合并后的目标包与 `supersedes` 链接替关系核对曾 PASS：若同批 reviewer 的 PASS 指向它，或它接替的旧包（链）有 PASS，返回 `PACKAGE`，且不因数组顺序改变；拒绝整批回滚，不写入 worker、reviewer 或 `reviewPasses`。从未有 PASS 的新包仍可合法取消。
 - 同一批 `packages` 中同一 `packageId` 重复出现返回 `PACKAGE`，整批不写入；因此不能借“先消费、再改 `dispatched` 带 `diagnostic`、再消费并写 `note`”绕开首次声明限制。`diagnostic` 的其余首次创建约束不变。
 - 只读诊断免审只能在首次创建 worker 包时用 `diagnostic:{purpose, scope[], reason}` 声明：只允许 `dispatched`、不带 `deliveredRef`、不接替已有包；用途与理由非空，`scope` 为 1-50 项项目内相对路径。合法声明记入包记录，`gateReport` 的 `diagnostic` 列出这些包，免去 `review:<id>`。交付时必须在 `note` 写可定位结论与证据；缺结论列 `diagnostic:<id>` 且不能用 waiver 抵扣。实现包、审查包、事后补声明或修改声明、空理由、空/绝对/越界范围、接替已审包都返回 `PACKAGE`。历史未声明包仍要求审查。
@@ -51,7 +51,7 @@ related:
 
 - 不为历史任务自动补写 `route`，不把缺字段改写成默认值，也不提供迁移命令。
 - 不改变三种分流的契约与门禁缺项内容；`route` 一旦声明不可中途切换。`route` 与 `channel` 只是声明和门禁契约，不认证实际任务复杂度、只读事实、真实委派或代码是否集成；不增加自然语言分类器推断该用哪种分流，也不因文件数自动拆包。
-- `canceled` 只表示放弃该包改动，不证明代码已从最终 ref 消失；插件不伪造代码级集成证明，Lead 仍对集成结果负责。PASS 历史事实只用于取消门禁与历史 canceled 复核，不证明审查真实发生或代码已集成。诊断包的 `scope`、`reason` 与交付 `note` 只是声明与可定位文本，插件不验证进程实际未写、不提供沙箱，也不检查结论真实性；历史未声明包不回写、不自动补豁免，状态文件 schema 版本不变。
+- `canceled` 只表示放弃该包改动，不证明代码已从最终 ref 消失；插件不伪造代码级集成证明，Lead 仍对集成结果负责。PASS 历史事实用于取消门禁、历史 canceled 复核与 waived/审查豁免的已审判定，不证明审查真实发生或代码已集成。诊断包的 `scope`、`reason` 与交付 `note` 只是声明与可定位文本，插件不验证进程实际未写、不提供沙箱，也不检查结论真实性；历史未声明包不回写、不自动补豁免，状态文件 schema 版本不变。
 - 回执消费是宿主/模型行为边界：插件只保证拒绝原因可见、未落盘失败可安全幂等重发，不能保证模型一定阅读回执，也不自动猜测或重放失败信号。
 - 校验只放在协议层，不在 `signal.mjs` 复制一套规则；接收仍只认 PostToolUse 中可核对的直接调用。不覆盖宿主权限真实性的证明，也不代替用户授权；spec 的 Git 调用与预算留在 `src/spec.mjs`，协议只消费生产 Hook 预检的内部结果。`binding` 只随当次预检在内存中传递，不写状态、不做持久缓存；锁内复核的重解析上限独立于 4 秒预检预算，超时按过期处理。
 - 4 秒总预算与 10 秒单次上限只约束 Git 子进程；同步文件读取不检查也无法中断截止时间，其耗时仍会消耗绝对剩余量、缩短后续 Git 可用时间，因此 4 秒不保证整次预检或 Hook 的总时长；宿主自身超时和真实超大仓库的耗时同样不做承诺。不为慢检查新增调度器、持久缓存或 schema 字段。
